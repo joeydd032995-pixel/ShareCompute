@@ -12,13 +12,24 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 | # | Phase | Status |
 |---|---|---|
 | 0 | Planning files + SPM scaffold + vendor infer-ring | complete |
-| 1 | Spikes A & B (MLX teardown; blocked collective) | **blocked — needs a Mac** |
+| 1 | Spikes A & B (MLX teardown; blocked collective) | **complete — BOTH FAILED**, see `findings.md` |
 | 2 | Core value types: `CapabilityProfile`, `Lease`, `NodeState` | complete |
 | 3 | `StagePlanner` — fixes the three F5 defects | complete |
 | 4 | `MembershipService` — epochs, leases, failure detection | complete |
-| 5 | Apple adapter wiring (coordinator, teardown, iOS drain, ring secret) | **not started — cannot compile here** |
+| 5 | Apple adapter wiring | **stopped at the spike gate — awaiting a direction decision** |
 | 6 | Chaos tests via the F6 hooks | not started |
 | 7 | README + docs | complete for what landed |
+
+> **Phase 1 outcome.** Both spikes were answerable by reading the pinned MLX sources, so neither
+> needed hardware. Both failed. `MLXManager.teardown()` cannot be written: there is no free API
+> and `distributed::init` caches its group in a process-lifetime static, so re-initialising
+> returns the stale group. A survivor of a hard failure also cannot recover — the ring backend
+> abandons unfulfilled promises on abort, so the collective waits forever with nothing thrown.
+>
+> The approved plan said "if Spike A fails, stop and re-plan". Phase 5 is therefore **not**
+> started: writing a teardown path now known to be impossible would be waste. `ShareComputeCore`
+> is unaffected because it never imported MLX. See "Re-plan" in `findings.md` for the three
+> options.
 
 ---
 

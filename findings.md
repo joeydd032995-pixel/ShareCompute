@@ -111,30 +111,126 @@ Silicon, so:
 
 ---
 
+## F9 — The app depends on **forks** of MLX, not upstream
+
+`Apps/InferRing/Infer Ring.xcodeproj/project.pbxproj` pins:
+
+- `https://github.com/N1k1tung/mlx-swift` branch `ios-distrib-0.3.0`
+- `https://github.com/N1k1tung/mlx-swift-lm` branch `ios-distrib-0.3.0`
+
+Neither appears in `Package.resolved` (Xcode stores branch-pinned remote packages in the pbxproj).
+The fork pins upstream `ml-explore/mlx` at submodule commit `38ad257088fb2193ad47e527cf6534a689f30943`.
+
+This matters for both spikes: they must be answered against *these* sources, not upstream MLX.
+It also means patching MLX is already within the project's idiom — a fork is being maintained.
+
+---
+
 ## Spike A — Can an MLX `DistributedGroup` be re-initialized in-process?
 
-**Status: BLOCKED — requires Apple hardware. Not run.**
+**Status: ANSWERED — NO. Determined by source inspection; no hardware needed.**
 
-Harness: `Spikes/SpikeA_GroupTeardown/`. Run on a Mac per its README and paste results below.
+Two independent blockers, either of which is fatal on its own.
 
-The epoch model in this milestone depends on the answer. Fill this in before writing the
-`MLXManager.teardown()` production path.
+**1. There is no way to free a group.** `mlx-swift` fork,
+`Source/MLX/DistributedGroup.swift:15-17`:
 
-| Attempt | Setup | Result |
-|---|---|---|
-| | | |
+```swift
+deinit { // this requires slight update for cmlx which I rather avoid, commented out for now
+//        mlx_distributed_group_free(group)
+}
+```
+
+The only free call is commented out, with the fork author noting it needs a cmlx change they
+chose not to make. `grep` over `mlx/distributed/distributed.h` and `distributed_impl.h` finds no
+`finalize`, `shutdown`, `destroy`, `reset` or `cleanup` entry point at all.
+
+**2. Even if it could be freed, re-initialising returns the stale group.** Upstream
+`mlx/distributed/distributed.cpp:141-148`:
+
+```cpp
+Group init(bool strict, const std::string& bk) {
+  static std::unordered_map<std::string, std::shared_ptr<detail::GroupImpl>> backends;
+
+  // Already initialized so return the group.
+  if (auto g = backends.find(bk); g != backends.end()) {
+    return Group(g->second);
+  }
+  ...
+```
+
+`backends` is a **function-local static**, cached for the lifetime of the process. The second and
+every subsequent `mlx_distributed_init` short-circuits and hands back the first group — with the
+original world size and the original hostfile. `MLX_HOSTFILE` and `MLX_RANK`, which
+`Ring/Manager.swift` rewrites per ring formation, are read only on the first call.
+
+**Consequence: `MLXManager.teardown()` as planned cannot be written.** Tearing down and
+re-initialising the group in-process is not a hard problem here, it is an unavailable operation.
+The approved plan gated on this and said to stop and re-plan — see "Re-plan" below.
 
 ---
 
 ## Spike B — Can a survivor escape a blocked collective?
 
-**Status: BLOCKED — requires Apple hardware. Not run.**
+**Status: ANSWERED — NO. Determined by source inspection; no hardware needed.**
 
-Harness: `Spikes/SpikeB_BlockedCollective/`. Run on a Mac per its README and paste results below.
+`mlx/distributed/ring/ring.cpp`. Each socket has a worker thread draining queues of `SocketTask`,
+each of which carries a `std::promise<void>` that the collective awaits.
 
-Determines whether hard-failure recovery is possible at all, or whether M1 is limited to
-guaranteed-graceful / best-effort-hard.
+Promises are fulfilled on the success path only (`ring.cpp:208-217`):
 
-| Attempt | Setup | Result |
-|---|---|---|
-| | | |
+```cpp
+if (delete_recv) { recvs_.front().promise.set_value(); recvs_.pop_front(); ... }
+if (delete_send) { sends_.front().promise.set_value(); sends_.pop_front(); ... }
+```
+
+The failure path (`ring.cpp:260-262`) abandons them:
+
+```cpp
+if (error_count >= 10) {
+  log_info(true, "Too many send/recv errors. Aborting...");
+  return;
+}
+```
+
+The worker returns, leaving the outstanding tasks — and their unfulfilled promises — sitting in
+`recvs_`/`sends_`. The promises are not destroyed, so `future::get()` does not even receive
+`broken_promise`. It waits forever. No C++ exception is thrown, so nothing propagates to Swift and
+the existing `MLX.withError` wrapper in `Manager.swift:35` has nothing to catch.
+
+There is a second, probably more common variant: `error_count` is incremented only when
+`errno != EAGAIN` (`ring.cpp:241`, `:256`), and an orderly close returning `r == 0` is not
+distinguished from "no data yet". A peer that is suspended rather than reset may therefore never
+push the counter to 10 at all — the loop spins indefinitely instead. Both variants end the same
+way: **the survivor hangs permanently.**
+
+Sockets are also explicitly non-blocking with no `SO_RCVTIMEO`/`SO_SNDTIMEO`
+(`ring.cpp:133`, `:140`), so there is no timeout to lean on.
+
+**Consequence:** a Swift-level watchdog can *detect* the hang but cannot clear it. The blocked
+thread is unrecoverable inside the process.
+
+---
+
+## Re-plan (both spikes failed)
+
+What survives untouched: **`ShareComputeCore`**. It deliberately imports neither MLX nor UIKit, so
+none of the above invalidates it. That boundary is the reason the failure is contained.
+
+What changes: an epoch cannot be *enacted* by re-initialising in-process. Three options, in
+preference order:
+
+1. **Patch the MLX fork** — the only route that works on iOS. Needs (a) `mlx_distributed_group_free`
+   exposed through mlx-c, which is precisely the "slight update for cmlx" the fork author deferred;
+   (b) a `distributed::reset()` in `distributed.cpp` that clears the `backends` static and tears
+   down ring sockets; and (c) fulfilling abandoned promises with an exception on the abort path in
+   `ring.cpp` so survivors fail instead of hanging. (c) alone would make hard-failure recovery
+   possible and is the smallest high-value change.
+2. **Process restart** — relaunch with a new hostfile. Viable on macOS, impossible on iOS, so it
+   cannot deliver the milestone's headline scenario.
+3. **Ship detection without re-formation** — no MLX changes at all. Drain-on-background plus
+   heartbeats cannot re-form the ring, but they convert *today's silent permanent hang* into a
+   detected, reported failure with a clear "ring lost" state. Strictly better than current
+   behaviour and independently shippable.
+
+Option 3 is the honest immediate deliverable; option 1 is what actually completes the milestone.
