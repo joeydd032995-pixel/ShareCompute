@@ -115,5 +115,48 @@ Xcode step instead.
 
 ### Next
 
-See "Next actions" in `task_plan.md`. Nothing further should be built against the assumption that
-an MLX group can be re-initialised.
+See "Next actions" in `task_plan.md`.
+
+---
+
+## Session 3 — milestone 2, stage 1
+
+### Done
+1. `main` made the default branch (by the user), which restored CodeRabbit auto-review.
+2. `project.pbxproj` wired to `ShareComputeCore` as a local package — the manual step deferred in
+   session 2, done once the file contents were available.
+3. **Stage 1 MLX patch**: `Patches/mlx/0001-ring-fail-instead-of-hang.patch` plus a standalone
+   verification harness.
+
+### Verification
+
+- `g++ -fsyntax-only -std=c++17` over the patched `ring.cpp` and `ops.cpp` — clean. (MLX's own
+  headers compile on Linux with the `json`/`fmt` headers vendored in mlx-swift, which was an
+  unexpected and very useful discovery: it means the patch can be compile-checked here.)
+- `Patches/mlx/tests/socket_thread_failure_test.cpp` — **15 checks, all passing**, against real
+  `socketpair` sockets, including closing the peer end to drive the `r == 0` path directly. Every
+  wait is bounded so a regression is reported rather than reproduced as a hang.
+- `ShareComputeCore` — still 58 tests, 0 failures.
+
+### Notable events
+
+**The planned approach was wrong and the research caught it.** The plan said "make `ring.cpp`'s
+abort path throw". Reading `mlx/backend/cpu/encoder.h` showed `CommandEncoder::dispatch` has no
+`try`/`catch` and hands tasks to `scheduler::enqueue` — so that change would have converted a hang
+into `std::terminate()` on a shipping App Store app. Separately, all ten future sites use `wait()`,
+which discards exceptions, so fixing the promises alone would have produced silent corruption.
+Both were found before writing code, not after.
+
+**The harness pins the bug, not just the fix.** Its final case mirrors the *unpatched* worker and
+asserts that it hangs. Without that, the suite would prove the new code works but not that the old
+code was broken.
+
+**Did not fork the upstream repos.** Creating repositories under the user's GitHub account is their
+decision, so Stage 1 is held as an appliable patch file with instructions.
+
+### Errors encountered (session 3)
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| `Edit` refused: "File has not been read yet" on the mlx sources | 1 | Read the target ranges first; the tool requires it even for files outside the project |
+| `git sparse-checkout set mlx/scheduler.h` — "not a directory" | 1 | sparse-checkout takes directories; widened to the parent instead |
