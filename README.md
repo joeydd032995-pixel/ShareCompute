@@ -1,0 +1,90 @@
+# ShareCompute
+
+Elastic ring membership for [infer-ring](Apps/InferRing/README.md) — the first milestone of the
+*Distributed Heterogeneous Inference Framework* specification.
+
+infer-ring pools RAM across iOS and macOS devices to run models too large for any single machine.
+Today, **one node disappearing takes down the whole ring**: there is no failure detection, no
+lease, and no lifecycle handling, so backgrounding an iPhone mid-generation hangs every other
+device indefinitely.
+
+This repository adds the membership layer that makes departure a planned event.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `Sources/ShareComputeCore/` | Platform-neutral membership core. **Zero dependencies** — not MLX, not UIKit, not NIO. |
+| `Tests/ShareComputeCoreTests/` | 46 tests, no network and no sleeping. |
+| `Apps/InferRing/` | The vendored infer-ring app, unmodified. The first adapter. |
+| `findings.md` | Research log, including both spike results. Read this first. |
+| `task_plan.md` | Phase status and decisions. |
+| `progress.md` | Session log and test results. |
+
+## Status
+
+**The core is built and tested. Adapter wiring is deliberately not started.**
+
+The plan gated adapter work on two spikes. Both were answerable by reading the pinned MLX sources,
+and **both failed**:
+
+- **An MLX `DistributedGroup` cannot be torn down or re-initialised.** The fork's `deinit` has its
+  `mlx_distributed_group_free` call commented out, and upstream `distributed::init` caches the
+  group in a function-local static — so every subsequent init returns the *stale* group, ignoring
+  the rewritten hostfile.
+- **A survivor cannot escape a blocked collective.** On abort, the ring backend's socket worker
+  returns while leaving outstanding `std::promise<void>`s unfulfilled. No exception is thrown, so
+  nothing reaches Swift, and the collective waits forever.
+
+Full evidence with file and line references is in [`findings.md`](findings.md).
+
+Writing `MLXManager.teardown()` is therefore not a hard task — it is an unavailable operation, and
+building it would be waste. `ShareComputeCore` is unaffected because it never imported MLX; that
+boundary is what contained the failure. See the re-plan at the end of `findings.md` for the three
+ways forward.
+
+## What the core provides
+
+- **`Epoch`** — membership is versioned rather than mutated, because MLX groups cannot be joined
+  or left and every generated token is an all-ranks barrier.
+- **`Lease`** — time-bounded permission to hold work, clamped to what each OS can honour. An iOS
+  device gets 30s because `willResignActive` leaves only a brief window to drain.
+- **`NodeState` / `NodeStateMachine`** — `activeCore`, `activeElastic`, `opportunistic`,
+  `draining`, `suspended`, as a data table. `draining` is added to the spec's set: without it,
+  "leaving" and "already gone" are indistinguishable, which is the ambiguity behind the hang.
+- **`MembershipService`** — epochs, lease renewal, heartbeat hysteresis, anti-flap dwell. Performs
+  no I/O and owns no timer: the host reports outcomes and calls `tick(at:)`, so failure detection
+  is a pure function of injected time.
+- **`StagePlanner`** — replaces `ModelManager.assignShardMetadata`, fixing three defects (see below).
+
+### Shard planning defects fixed
+
+1. **Remainder concentration.** Truncating division per device, with `endLayer = nLayers` on the
+   last rank, put every device's rounding error on one node. On a 32/6/6 GB ring over 48 layers it
+   produced `(34, 6, 8)` — overshooting by 22% on the node with the least headroom. Largest-remainder
+   apportionment now bounds every node to the floor or ceiling of its exact entitlement.
+2. **Unknown memory corrupting the plan.** A missing hardware profile was replaced with a 1 GB
+   guess while that node was excluded from the capacity total, so it counted in the numerator but
+   not the denominator; shard bounds could then exceed `nLayers` and be silently clamped to an
+   empty range. `PlannedMember` requires a real profile, making the state unrepresentable.
+3. **Aggregate-only feasibility.** `checkIfCanLoad` compared model size against the *sum* of ring
+   memory, so a plan could pass and then OOM on the smallest device. Every node is now checked
+   against its own assignment.
+
+### One deliberate divergence from the spec
+
+Spec §12.1 sets `can_host_required_stage = false` for iOS. Applied literally that deletes
+infer-ring's headline feature — combining an iPhone's RAM with a Mac's is the product. iOS keeps
+its eligibility here; the safety the spec is reaching for comes instead from short OS-clamped
+leases and mandatory drain-on-background.
+
+## Building
+
+Requires Swift 6.0+. The core has no dependencies and builds on Linux, macOS and Windows.
+
+```bash
+swift build
+swift test
+```
+
+The Xcode project under `Apps/InferRing/` requires macOS and Apple Silicon and is not built by SPM.
