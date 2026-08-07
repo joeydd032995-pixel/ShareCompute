@@ -44,7 +44,7 @@ index 1762f0e6..31941b33 100644
  
  } // namespace
 diff --git a/mlx/distributed/ring/ring.cpp b/mlx/distributed/ring/ring.cpp
-index ea400428..5402e81a 100644
+index ea400428..86918a90 100644
 --- a/mlx/distributed/ring/ring.cpp
 +++ b/mlx/distributed/ring/ring.cpp
 @@ -161,6 +161,26 @@ class SocketThread {
@@ -503,15 +503,19 @@ index ea400428..5402e81a 100644
      }
    }
  
-@@ -834,6 +921,11 @@ class RingGroup : public GroupImpl {
-   ThreadPool pool_;
-   CommunicationThreads comm_;
+@@ -831,6 +918,15 @@ class RingGroup : public GroupImpl {
+ 
+   bool verbose_;
  
 +  // Sticky failure from a collective that ran on a scheduler thread, waiting to
 +  // be rethrown on a caller thread by check_healthy().
++  //
++  // Declared before pool_ and comm_ deliberately. Members are destroyed in
++  // reverse declaration order, so this way the mutex outlives the thread-owning
++  // members rather than the other way round.
 +  std::mutex failure_mutex_;
 +  std::exception_ptr failure_;
 +
-   std::vector<int> sockets_right_;
-   std::vector<int> sockets_left_;
+   ThreadPool pool_;
+   CommunicationThreads comm_;
  

@@ -17,12 +17,15 @@
 // Every wait uses a bounded timeout: if the patch regresses to the old
 // behaviour the test reports a hang rather than hanging itself.
 
+#include <csignal>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <iostream>
@@ -31,6 +34,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -256,6 +260,16 @@ void check(bool ok, const std::string& what) {
   }
 }
 
+// An unchecked socketpair would leave `sv` indeterminate, and every later
+// fcntl/recv/send/close would then act on arbitrary descriptors -- undefined
+// behaviour dressed up as a test result.
+void make_socketpair(int sv[2]) {
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+    std::cerr << "socketpair failed: " << std::strerror(errno) << "\n";
+    std::exit(1);
+  }
+}
+
 // Bounded wait, so a regression to the old behaviour is reported rather than
 // reproduced.
 enum class Outcome { Threw, Completed, HUNG };
@@ -279,7 +293,7 @@ Outcome await(std::future<void>& f, int timeout_ms = 3000) {
 void test_peer_close_fails_pending_recv() {
   std::cout << "peer closes connection with a recv outstanding\n";
   int sv[2];
-  socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+  make_socketpair(sv);
 
   char buffer[64] = {0};
   {
@@ -301,7 +315,7 @@ void test_peer_close_fails_pending_recv() {
 void test_work_after_failure_is_rejected_immediately() {
   std::cout << "work submitted after the socket died\n";
   int sv[2];
-  socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+  make_socketpair(sv);
 
   char buffer[64] = {0};
   {
@@ -322,11 +336,37 @@ void test_work_after_failure_is_rejected_immediately() {
   close(sv[0]);
 }
 
+// The send path reaches the failure code by a different route than recv: there
+// is no `r == 0` for a write, so ::send returns EPIPE and error_count has to
+// climb to max_errors before fail_all runs. That is the slower of the two paths
+// and worth covering separately.
+//
+// SIGPIPE is ignored in main(); writing to a closed peer raises it, and the
+// default action would kill the harness rather than fail the test.
+void test_peer_close_fails_pending_send() {
+  std::cout << "peer closes connection with a send outstanding\n";
+  int sv[2];
+  make_socketpair(sv);
+
+  // Large enough that the send cannot complete in one go before the peer goes.
+  std::vector<char> payload(1 << 20, 'x');
+  {
+    SocketThread thread(sv[0]);
+    close(sv[1]); // peer disappears before we even try
+    auto f = thread.send(payload.data(), payload.size());
+
+    auto outcome = await(f);
+    check(outcome != Outcome::HUNG, "send future becomes ready (does not hang)");
+    check(outcome == Outcome::Threw, "send future reports the failure");
+  }
+  close(sv[0]);
+}
+
 // A healthy socket must be entirely unaffected.
 void test_healthy_transfer_still_works() {
   std::cout << "healthy socket\n";
   int sv[2];
-  socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+  make_socketpair(sv);
 
   const char* payload = "hello ring";
   size_t n = std::strlen(payload) + 1;
@@ -486,7 +526,7 @@ class LegacySocketThread {
 void test_unpatched_behaviour_hangs() {
   std::cout << "unpatched worker, same scenario (pins the defect)\n";
   int sv[2];
-  socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+  make_socketpair(sv);
 
   char buffer[64] = {0};
   {
@@ -506,8 +546,13 @@ void test_unpatched_behaviour_hangs() {
 } // namespace
 
 int main() {
+  // Writing to a closed socketpair peer raises SIGPIPE, whose default action
+  // would terminate the harness instead of failing a check.
+  std::signal(SIGPIPE, SIG_IGN);
+
   test_healthy_transfer_still_works();
   test_peer_close_fails_pending_recv();
+  test_peer_close_fails_pending_send();
   test_work_after_failure_is_rejected_immediately();
   test_guard_defers_the_throw_to_the_caller();
   test_guard_keeps_the_first_failure();

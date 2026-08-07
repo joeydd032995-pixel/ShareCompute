@@ -48,9 +48,18 @@ cluster — and is worth reporting to `ml-explore/mlx` independently.
 the existing `mlx_error` / `withError` path that `Ring/Manager.swift` already uses.
 
 **Behaviour.** infer-ring runs a collective per token, so a dead peer surfaces as a thrown Swift
-error within roughly one token. The token in flight when the socket dies completes with garbage
-before the next collective throws — callers must discard the trailing token on a ring error rather
-than emit it.
+error within roughly one token.
+
+**Known gap — the trailing token is emitted.** The generation in flight when the socket dies
+completes with garbage before the next collective throws. `ModelManager.streamResponseChunks`
+yields each `.text` chunk as it arrives and `ChatViewModel.send` appends every chunk to
+`fullReply`, so that garbage token reaches the UI, immediately followed by the ring error.
+
+This is **not** fixed here, and the honest reason is that the obvious fix costs more than the
+problem: suppressing it means holding every token back until the next one arrives, adding a token
+of latency to every generation to guard against a rare final token. The user sees one junk token
+and then a clear error naming the device that left, which is a reasonable trade. If it turns out to
+matter, the place to fix it is `ModelManager.streamResponseChunks`.
 
 ### Verification
 
@@ -64,9 +73,15 @@ was done two ways:
 1. **Compilation.** `g++ -fsyntax-only -std=c++17` over the patched `ring.cpp` and `ops.cpp`,
    using the `json` and `fmt` headers vendored in mlx-swift. Both clean.
 2. **Runtime semantics.** `tests/socket_thread_failure_test.cpp` mirrors the patched
-   `SocketThread` and the guard, and drives them against real `socketpair` sockets — including
-   closing the peer end to exercise the `r == 0` path directly. 15 checks, all passing, each with a
-   bounded timeout so a regression is *reported* rather than reproduced as a hang.
+   `SocketThread` and the guard, and drives them against real `socketpair` sockets. 16 checks, all
+   passing, each with a bounded timeout so a regression is *reported* rather than reproduced as a
+   hang.
+
+   Both failure routes are covered, because they are genuinely different: a dead peer on the
+   **recv** side returns `r == 0` and trips `peer_closed` immediately, whereas on the **send** side
+   there is no such signal — `::send` returns `EPIPE` and `error_count` has to climb to
+   `max_errors` first. (`SIGPIPE` is ignored in `main`, or writing to the closed peer would kill
+   the harness instead of failing a check.)
 
    The last case mirrors the **unpatched** worker and asserts that it hangs, so the defect is
    pinned rather than merely described.

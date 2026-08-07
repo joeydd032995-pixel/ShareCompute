@@ -91,11 +91,15 @@ from the filesystem automatically.
 *ancestor* of the `.xcodeproj` rather than a sibling. This could not be verified here — no macOS.
 The mechanical fix is to move the package into its own directory and repoint the reference:
 
-```
+```bash
 mkdir -p Packages/ShareComputeCore
 git mv Package.swift Sources Tests Packages/ShareComputeCore/
 # then in project.pbxproj: relativePath = "../../Packages/ShareComputeCore"
 ```
+
+Note that this also moves the package out of the repository root, so the layout table above and the
+`swift build` / `swift test` commands below then apply from `Packages/ShareComputeCore` rather than
+from the root.
 
 ## What the core provides
 
