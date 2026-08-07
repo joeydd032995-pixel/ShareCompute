@@ -10,6 +10,10 @@ final class RingCoordinator {
     @Inject
     private var bonjourClient: BonjourClient?
 
+    @ObservationIgnored
+    @Inject
+    private var ringHealthMonitor: RingHealthMonitor?
+
     // MARK: - State
     private var peers: [DiscoveredDevice] = []
     private var allDevices: [DiscoveredDevice] = [] // discovered devices including self, sorted by id
@@ -175,7 +179,13 @@ final class RingCoordinator {
                 try await Task.sleep(nanoseconds: 500_000_000)
                 mlxManager.synchronize()
                 dprint("MLX ring started")
-                bonjourClient?.stopSearching()
+
+                // Discovery deliberately keeps running. It used to be stopped here, which meant
+                // the app stopped observing topology at exactly the moment inference began — so a
+                // device disappearing mid-generation was never noticed at all.
+                await MainActor.run {
+                    ringHealthMonitor?.start()
+                }
             }
         }
     }
