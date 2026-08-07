@@ -24,6 +24,10 @@ final class ModelManager {
     @ObservationIgnored
     @Inject
     private var hardwareMonitor: HardwareMonitor?
+
+    @ObservationIgnored
+    @Inject
+    private var ringHealthMonitor: RingHealthMonitor?
     
     // Current loaded model state
     @ObservationIgnored
@@ -197,6 +201,16 @@ final class ModelManager {
         tools: [OpenAPITool]? = nil,
         distributeToPeers: Bool = true
     ) async -> AsyncThrowingStream<ModelResponseChunk, any Error> {
+        // Fail fast rather than issue work into a group that can only hang. Once a rank has left,
+        // the MLX group cannot be rebuilt in-process, so every later request is doomed too.
+        let ringUsable = await MainActor.run { ringHealthMonitor?.beginGeneration() ?? true }
+        if !ringUsable {
+            let message = await MainActor.run {
+                ringHealthMonitor?.statusMessage ?? "The ring is no longer available."
+            }
+            return AsyncThrowingStream { $0.finish(throwing: ModelManagerError.ringLost(message)) }
+        }
+
         if await shouldResetChatSession(history: history, tools: tools) {
             resetChatSession(history: history, tools: tools?.toolSpecs)
             currentToolSignature = toolSignature(for: tools)
@@ -241,11 +255,36 @@ final class ModelManager {
         )
 
         let (stream, continuation) = AsyncThrowingStream<ModelResponseChunk, Error>.makeStream()
+
+        // Runs alongside the generation because the generation itself cannot report this failure.
+        // When a rank departs, MLX blocks inside its ring backend on a promise that is never
+        // fulfilled and never broken — no exception is raised, so `for try await` below simply
+        // never resumes. This task is the only thing that can end that wait.
+        //
+        // It does not unblock MLX; that thread stays wedged until the process exits. What it does
+        // is stop the UI waiting forever and tell the user which device left.
+        let ringWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                let health = await MainActor.run { self?.ringHealthMonitor?.refreshHealth() }
+                if case .lost(let reason) = health {
+                    continuation.finish(
+                        throwing: ModelManagerError.ringLost(
+                            "\(reason.description). This ring can't be rebuilt without restarting the app."
+                        )
+                    )
+                    return
+                }
+            }
+        }
+
         let task = Task { [weak self] in
             var fullReply = ""
             var toolCalls: [ModelResponseToolCall] = []
             do {
                 for try await chunk in originalStream {
+                    await MainActor.run { self?.ringHealthMonitor?.recordProgress() }
                     switch chunk {
                     case .chunk(let text):
                         fullReply += text
@@ -271,6 +310,7 @@ final class ModelManager {
         }
         continuation.onTermination = { _ in
             task.cancel()
+            ringWatchTask.cancel()
         }
         return stream
     }
@@ -746,7 +786,8 @@ enum ModelManagerError: LocalizedError {
     case insufficientResources(String)
     case distributedVisionNotSupported
     case invalidRequest(String)
-    
+    case ringLost(String)
+
     var errorDescription: String? {
         switch self {
         case .notInitialized:
@@ -762,6 +803,8 @@ enum ModelManagerError: LocalizedError {
         case .distributedVisionNotSupported:
             return "Vision inputs are currently only supported for local inference."
         case .invalidRequest(let message):
+            return message
+        case .ringLost(let message):
             return message
         }
     }

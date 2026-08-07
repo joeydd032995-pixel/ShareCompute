@@ -3,6 +3,7 @@ import SwiftUI
 struct RingManagementView: View {
     @Environment(RingCoordinator.self) var coordinator
     @Environment(BonjourClient.self) var bonjourClient
+    @Environment(RingHealthMonitor.self) var ringHealth
 
     var body: some View {
         ScrollView {
@@ -10,6 +11,11 @@ struct RingManagementView: View {
                 // Permission check
                 if bonjourClient.permissionDenied {
                     PermissionErrorBanner()
+                        .padding(.horizontal)
+                }
+
+                if case .lost(let reason) = ringHealth.health {
+                    RingLostBanner(reason: reason)
                         .padding(.horizontal)
                 }
 

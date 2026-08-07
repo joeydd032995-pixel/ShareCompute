@@ -59,7 +59,61 @@ said to stop and re-plan if it failed.
 | `git sparse-checkout init -q` — unknown switch | 1 | Dropped `-q`; the subcommand does not accept it |
 | MLX not in `Package.resolved` | 1 | Xcode stores branch-pinned remote packages in `project.pbxproj`; found the forks there |
 
+---
+
+## Session 2 — option 3: detection without re-formation
+
+Direction chosen after the spikes failed: report the failure, do not attempt to repair the ring.
+
+### Done
+1. `main` created as an orphan baseline holding the vendored infer-ring app, so the PR diff shows
+   only new work. Feature branch rebuilt on top of it, tree verified byte-identical before pushing.
+   PR #1 opened.
+2. `RingWatchdog` in the core — **12 tests**. Total now **58, 0 failures**.
+3. Adapter wiring: `RingHealthMonitor`, `/drain` endpoint and client call, heartbeats via the
+   previously-unused `/ping`, discovery kept alive past MLX init, generation abandonment, fail-fast
+   on new requests, `RingLostBanner`.
+
+### Test results
+
+`/opt/swift/usr/bin/swift test` — **58 tests, 0 failures.**
+
+| Suite | Tests |
+|---|---|
+| `NodeStateMachineTests` | 14 |
+| `StagePlannerTests` | 17 |
+| `MembershipServiceTests` | 15 |
+| `RingWatchdogTests` | 12 |
+
+Adapter files pass `swiftc -parse` (syntax only). **Not type-checked, not built** — no macOS, no
+Xcode, no MLX here.
+
+### Notable events
+
+**A test caught a second design flaw of mine.** `RingWatchdog.isTerminal` only flipped inside
+`evaluate(at:)`, so `beginGeneration` could admit a request into an already-dead ring — precisely
+the hang the type exists to prevent. Fixed by having `beginGeneration` confirm any overdue loss
+first.
+
+**Chose not to add a shared ring secret.** The plan called for one to protect membership-mutating
+endpoints. The only such endpoint in option 3 is `/drain`, and a secret would need a key-exchange
+UX that is a product decision, not mine. Restricting `/drain` to self-announcements — verified
+against the connection's remote address — closes the specific hole being opened, with no new
+dependency and no new UX. Broader control-plane auth stays open.
+
+**Did not edit `project.pbxproj`.** Adding the local package by hand-editing a generated project
+file that cannot be opened or built here risks leaving the app unbuildable. Documented as a manual
+Xcode step instead.
+
+### Errors encountered (session 2)
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| Edit to `RingCoordinator` failed — string not found | 1 | Assumed 20-space indentation; actual was 16. Re-read via grep with context and matched exactly |
+| `grep: No such file or directory` on a path that existed | 1 | Bash cwd had reset between calls; used an absolute path |
+| `RingWatchdog.isTerminal` stale unless `evaluate` was called | 1 | `beginGeneration` now confirms overdue loss before answering |
+
 ### Next
 
-Blocked on a direction decision — see the three options at the end of `findings.md`. Nothing
-further should be built against the assumption that an MLX group can be re-initialised.
+See "Next actions" in `task_plan.md`. Nothing further should be built against the assumption that
+an MLX group can be re-initialised.

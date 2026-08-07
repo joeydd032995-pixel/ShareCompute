@@ -8,12 +8,14 @@ struct InferringApp: App {
     @State private var bonjourServer = BonjourServer()
     @State private var ringCoordinator = RingCoordinator()
     @State private var modelManager = ModelManager()
+    @State private var ringHealthMonitor = RingHealthMonitor()
     private let dataServer = DataServer()
-    
+
     init() {
         DI.register(bonjourClient)
         DI.register(ringCoordinator)
         DI.register(modelManager)
+        DI.register(ringHealthMonitor)
         dataServer.start()
         ringCoordinator.start()
 
@@ -30,5 +32,6 @@ struct InferringApp: App {
         .environment(bonjourServer)
         .environment(ringCoordinator)
         .environment(modelManager)
+        .environment(ringHealthMonitor)
     }
 }

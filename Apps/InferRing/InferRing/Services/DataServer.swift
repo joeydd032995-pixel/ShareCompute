@@ -18,6 +18,9 @@ final class FileServerHandler: ChannelInboundHandler {
     @Inject
     private var hardwareMonitor: HardwareMonitor?
 
+    @Inject
+    private var ringHealthMonitor: RingHealthMonitor?
+
     private var currentRequestHead: HTTPRequestHead?
     private var requestBodyBuffer: ByteBuffer?
 
@@ -88,6 +91,39 @@ final class FileServerHandler: ChannelInboundHandler {
             }
             else if path.hasPrefix("/ping") {
                 sendData(context: context, body: Ping(isAlive: true), status: .ok)
+            }
+            else if path.hasPrefix("/drain") {
+                guard let data = getData(context: context) else { return }
+                guard let request = parseBody(data: data, context: context, type: DrainRequest.self)
+                else { return }
+
+                // A node may only announce its own departure. Resolving the claimed name against
+                // the peer at this connection's remote address stops a device on the LAN from
+                // reporting that some *other* node is leaving, which would let it force the ring
+                // into a declared-dead state on demand.
+                let claimant = remoteIP.flatMap { ip in
+                    ringCoordinator?.ringPeers.first { $0.device.host == ip }
+                }
+                let isSelfAnnouncement = claimant?.device.name == request.nodeName
+
+                if isSelfAnnouncement {
+                    Task { @MainActor in
+                        ringHealthMonitor?.peerAnnouncedDrain(request.nodeName)
+                    }
+                }
+                else {
+                    dprint("Rejected drain for \(request.nodeName) from \(remoteIP ?? "unknown")")
+                }
+
+                sendData(
+                    context: context,
+                    body: DrainResponse(
+                        requestID: request.requestID,
+                        acknowledged: isSelfAnnouncement,
+                        timestamp: Date()
+                    ),
+                    status: .ok
+                )
             }
             else if path.hasPrefix("/loadModel") {
                 guard let data = getData(context: context) else { return }

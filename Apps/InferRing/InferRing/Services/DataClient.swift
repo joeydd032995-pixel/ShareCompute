@@ -161,4 +161,13 @@ extension DataClient {
     func getHardwareProfile(request: HardwareProfileRequest) async -> HardwareProfileResponse? {
         await post(path: "/getHardwareProfile", body: request, timeout: .seconds(10))
     }
+
+    /// Announce that this device is leaving the ring.
+    ///
+    /// The timeout is deliberately tiny. On iOS this is sent from `willResignActive`, which grants
+    /// only a brief window before suspension — it is better to tell some peers and be suspended
+    /// than to wait on a slow one and tell nobody.
+    func announceDrain(request: DrainRequest) async {
+        await post(path: "/drain", body: request, timeout: .seconds(2))
+    }
 }

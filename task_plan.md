@@ -16,9 +16,21 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 | 2 | Core value types: `CapabilityProfile`, `Lease`, `NodeState` | complete |
 | 3 | `StagePlanner` — fixes the three F5 defects | complete |
 | 4 | `MembershipService` — epochs, leases, failure detection | complete |
-| 5 | Apple adapter wiring | **stopped at the spike gate — awaiting a direction decision** |
-| 6 | Chaos tests via the F6 hooks | not started |
+| 5 | Apple adapter wiring — **option 3 scope only** (detection, no re-formation) | code complete; **compiles unverified** |
+| 6 | Chaos tests via the F6 hooks | not started — needs a Mac |
 | 7 | README + docs | complete for what landed |
+
+> **Phase 5 scope.** After the spikes failed, the direction chosen was option 3: detection without
+> re-formation. Delivered: `RingWatchdog` in the core (tested), plus adapter wiring — iOS
+> drain-on-background, a `/drain` endpoint restricted to self-announcements, heartbeats driving
+> `MembershipService` through the previously-unused `/ping`, discovery no longer stopped at MLX
+> init, generation abandonment on confirmed loss, fail-fast on new requests, and a UI banner.
+>
+> **`MLXManager.teardown()` was not written** — it remains impossible. Nothing here rebuilds the
+> ring; it converts a hang into a reported failure.
+>
+> The adapter code passes `swiftc -parse` but has **never been type-checked or built**: this
+> container has no macOS, no Xcode and no MLX. Treat it as unverified until it builds on a Mac.
 
 > **Phase 1 outcome.** Both spikes were answerable by reading the pinned MLX sources, so neither
 > needed hardware. Both failed. `MLXManager.teardown()` cannot be written: there is no free API
@@ -57,7 +69,13 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 
 ## Next actions
 
-1. Run Spike A on a Mac (`Spikes/SpikeA_GroupTeardown/`) and record in `findings.md`.
-   **If Spike A fails, re-plan before writing `MLXManager.teardown()`.**
-2. Run Spike B (`Spikes/SpikeB_BlockedCollective/`), record, and fix the hard-failure policy.
-3. Then phase 5: adapter wiring, on a machine that can build the Xcode project.
+1. On a Mac: add `ShareComputeCore` to the Xcode project as a local package (see README), then
+   build. Expect to fix actor-isolation and API details that could not be checked here.
+2. Verify on hardware (Mac + iPhone, the README's own configuration): start a long generation,
+   background the phone, and confirm the Mac reports "iPhone left the ring" within a few seconds
+   instead of hanging. Then hard-kill the app with no drain and confirm heartbeat eviction reports
+   it within the lease TTL.
+3. Wire the `ShardMetadata.immediateException` / `shouldTimeout` hooks for chaos tests.
+4. Decide on option 1 from `findings.md` — patching the MLX fork. The smallest high-value piece is
+   making `ring.cpp`'s abort path fulfil its promises with an exception instead of abandoning them,
+   which alone would let survivors fail instead of hang.

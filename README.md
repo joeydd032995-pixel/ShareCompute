@@ -23,7 +23,7 @@ This repository adds the membership layer that makes departure a planned event.
 
 ## Status
 
-**The core is built and tested. Adapter wiring is deliberately not started.**
+**Detection is implemented. Re-formation is not possible without patching MLX.**
 
 The plan gated adapter work on two spikes. Both were answerable by reading the pinned MLX sources,
 and **both failed**:
@@ -40,8 +40,49 @@ Full evidence with file and line references is in [`findings.md`](findings.md).
 
 Writing `MLXManager.teardown()` is therefore not a hard task — it is an unavailable operation, and
 building it would be waste. `ShareComputeCore` is unaffected because it never imported MLX; that
-boundary is what contained the failure. See the re-plan at the end of `findings.md` for the three
-ways forward.
+boundary is what contained the failure. See the re-plan at the end of `findings.md`.
+
+### What is implemented: detection without re-formation
+
+The ring cannot be rebuilt, so the achievable goal is to **turn an indefinite silent hang into a
+reported failure**. That is what ships here:
+
+- **iOS announces departure before the OS suspends it.** `willResignActive` fires a fire-and-forget
+  `/drain` to every peer with a 2s timeout. Telling some peers and being suspended beats waiting on
+  a slow one and telling nobody.
+- **Heartbeats actually run.** `DataClient.ping()` and the `/ping` route both already existed and
+  were called from nowhere. They now drive `MembershipService`, with three consecutive misses
+  before eviction so one dropped Wi-Fi packet does not re-plan the ring.
+- **Discovery keeps running.** `RingCoordinator` used to call `bonjourClient?.stopSearching()` the
+  moment the MLX ring came up — it stopped watching topology at exactly the moment inference began.
+- **A generation that can never finish is abandoned.** `RingWatchdog` runs alongside the stream,
+  because the stream cannot report this itself: `for try await` never resumes when MLX is wedged.
+  On loss the continuation finishes with `ModelManagerError.ringLost`, naming the device.
+- **New requests fail fast** once the ring is dead, instead of hanging too.
+
+The wedged MLX thread stays wedged until the process exits — nothing here changes that, and the UI
+says so rather than offering a reconnect button that could not work.
+
+A stall alone is **never** treated as loss. Only a stall *plus* known membership loss is. A large
+prefill on a phone legitimately produces nothing for many seconds, and aborting that would be a
+regression.
+
+### Endpoint authentication
+
+`/drain` accepts only *self*-announcements: the claimed node name must match the peer resolved from
+the connection's remote address, reusing the pattern already in `handleModelLoadRequest`. Without
+that check the endpoint would let any device on the LAN declare some *other* node dead and force
+the ring into a failed state on demand. Broader authentication of the control plane — which is
+entirely unauthenticated today, and broadcasts full conversation history to every peer in cleartext
+— remains open work.
+
+### Required manual step
+
+`Apps/InferRing` must reference `ShareComputeCore`. Add it in Xcode via **File → Add Package
+Dependencies… → Add Local…** and select the repository root, then add `ShareComputeCore` to the
+Infer Ring target. This was not done by editing `project.pbxproj` directly: that file is generated,
+and a blind edit risks corrupting a project that cannot be opened or built in this environment to
+verify.
 
 ## What the core provides
 
