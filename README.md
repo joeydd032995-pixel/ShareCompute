@@ -76,13 +76,26 @@ the ring into a failed state on demand. Broader authentication of the control pl
 entirely unauthenticated today, and broadcasts full conversation history to every peer in cleartext
 — remains open work.
 
-### Required manual step
+### Xcode integration
 
-`Apps/InferRing` must reference `ShareComputeCore`. Add it in Xcode via **File → Add Package
-Dependencies… → Add Local…** and select the repository root, then add `ShareComputeCore` to the
-Infer Ring target. This was not done by editing `project.pbxproj` directly: that file is generated,
-and a blind edit risks corrupting a project that cannot be opened or built in this environment to
-verify.
+`ShareComputeCore` is wired into the Infer Ring app target as a local Swift package
+(`XCLocalSwiftPackageReference`, `relativePath = "../.."` — the repository root, resolved from the
+directory holding the `.xcodeproj`). The `Ring` framework target does not reference it and does not
+need to.
+
+Individual source files did not need adding: the project uses `objectVersion = 77` with
+`PBXFileSystemSynchronizedRootGroup`, so everything under `InferRing/` and `Ring/` is discovered
+from the filesystem automatically.
+
+**If Xcode rejects the package reference**, the likely cause is that the package root is an
+*ancestor* of the `.xcodeproj` rather than a sibling. This could not be verified here — no macOS.
+The mechanical fix is to move the package into its own directory and repoint the reference:
+
+```
+mkdir -p Packages/ShareComputeCore
+git mv Package.swift Sources Tests Packages/ShareComputeCore/
+# then in project.pbxproj: relativePath = "../../Packages/ShareComputeCore"
+```
 
 ## What the core provides
 
