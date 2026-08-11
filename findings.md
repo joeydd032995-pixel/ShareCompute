@@ -343,7 +343,7 @@ declaration site — has to be checked on hardware.
 
 ---
 
-## F15 — llama.cpp RPC as the portable execution engine: viable, with the same robustness gap
+## F15 — llama.cpp RPC as the portable execution engine: the only realistic candidate, and further from ready than it first looks
 
 Read against `ggml-org/llama.cpp` at `9afff1b`. The question was whether its RPC backend could replace
 MLX as the execution layer, since MLX is Apple-only and the specification targets five OSes.
@@ -353,7 +353,7 @@ MLX as the execution layer, since MLX is Apple-only and the specification target
 | Capability | Evidence |
 |---|---|
 | Multi-machine distribution | `llama-cli --rpc host:port,host:port` — "one or several instances", `tools/rpc/README.md` |
-| **Heterogeneous** backends in one cluster | README topology shows CUDA hosts and a Metal host together |
+| Heterogeneous backends in one cluster — *unnegotiated* | README topology shows CUDA hosts and a Metal host together. But `ggml_backend_rpc_device_supports_op` (`ggml-rpc.cpp:1904-1909`) is `//TODO: call the remote backend and cache the results` and **returns `true` for every op** — see gap 6 |
 | Portable *by construction* to all five | `transport.cpp:4-13` splits `winsock2` / `sys/socket`; llama.cpp's general CI covers iOS (`CMAKE_SYSTEM_NAME=iOS`), Android NDK arm64, macOS arm64+Intel, Windows, Linux. **Not the same as an RPC build** — see below |
 | Memory-proportional splitting | "distributes model weights and the KV cache ... in proportion to each device's available memory" |
 | Protocol version negotiation | `RPC_PROTO_MAJOR/MINOR/PATCH`, HELLO handshake. `ggml-rpc.cpp:347` rejects a *differing major* or a server minor *newer than* the client; patch is never compared and an older server minor is accepted. Asymmetric, but MLX has no equivalent at all |
@@ -361,11 +361,24 @@ MLX as the execution layer, since MLX is Apple-only and the specification target
 
 That last row needs care, because the cache design and the runtime behaviour do not agree.
 
-The cache is the same shape as MLX's group cache but holds `weak_ptr` rather than `shared_ptr`, so
-an entry expires once the last owner drops it. Structurally that is what `Patches/mlx/0002` had to
-add to MLX, and MLX's "stale group forever" defect cannot occur here.
+The *socket* cache is the same shape as MLX's group cache but holds `weak_ptr` rather than
+`shared_ptr`, so an entry expires once the last owner drops it. Structurally that is what
+`Patches/mlx/0002` had to add to MLX.
 
-**In practice it does not buy a reconnect.** `ggml_backend_rpc_buffer_context` holds a
+**But MLX's defect does occur here — one level up.** `ggml_backend_rpc_add_server`
+(`ggml-rpc.cpp:2013-2053`) keeps its endpoint registrations in a function-local static
+`std::unordered_map<std::string, ggml_backend_reg_t> reg_map`, returns the existing entry on a
+repeat call (`:2018-2020`), and **offers no removal path**. That is precisely the shape of
+`distributed::init` that this project spent Stage 2 fixing: an owning, process-lifetime,
+function-local static cache that nothing can clear.
+
+The consequence is specific to epoch re-formation, which is the whole reason this assessment exists.
+If a peer leaves and rejoins — restarted, or exposing a different set of devices — the socket may
+reconnect, but `add_server` hands back the **stale registration and its enumerated devices**. A
+llama.cpp path therefore needs its own `finalize()`-equivalent, for the same reason and with the
+same shape as `Patches/mlx/0002`.
+
+**And even the socket cache does not buy a reconnect in practice.** `ggml_backend_rpc_buffer_context` holds a
 `std::shared_ptr<socket_t>` (`ggml-rpc.cpp:232-236`), and every buffer operation calls through
 `ctx->sock` and then `RPC_STATUS_ASSERT` — e.g. `ggml_backend_rpc_buffer_set_tensor` at
 `ggml-rpc.cpp:486-496`. So while a model is loaded the buffers pin the socket, and an I/O failure
@@ -380,23 +393,42 @@ were handling the failure.
    `if (!(x)) GGML_ABORT(...)` (`ggml-rpc.cpp:30`), used at **19 sites**. `ggml_abort` runs the
    optional callback and then calls `abort()` **unconditionally** (`ggml/src/ggml.c:252-272`) — so it
    cannot be intercepted and turned into a recoverable error.
-2. **A silently-dead peer hangs.** `recv_data` (`transport.cpp:482-502`) is a blocking `recv()` loop.
-   The only socket options set anywhere are `TCP_NODELAY` and `SO_REUSEADDR` (`transport.cpp:578`,
-   `:584`) — **no `SO_RCVTIMEO`**. A suspended iPhone or a pulled cable produces no FIN, so the
-   receive blocks forever.
+2. **A silently-dead peer hangs — on both directions.** `recv_data` (`transport.cpp:482-502`) and
+   `send_data` (`transport.cpp:462-480`) are both blocking loops, and **neither `SO_RCVTIMEO` nor
+   `SO_SNDTIMEO` appears anywhere in `ggml/src/ggml-rpc/`**; the only options set are `TCP_NODELAY`
+   and `SO_REUSEADDR` (`transport.cpp:578`, `:584`). A suspended iPhone or a pulled cable produces
+   no FIN, so a receive blocks forever — and so does a **send**, once the kernel socket buffer
+   fills. The send path matters in its own right because model load and tensor upload push large
+   volumes, so it is the likelier place to wedge during a join.
+
+   This project already knows the send and receive routes fail differently: the Stage 1 harness
+   tests them separately for exactly that reason (`Patches/mlx/README.md`, 0001 verification). Any
+   llama.cpp-side fix needs bounded waits on **both**.
 3. **No membership management of any kind.** No heartbeats, no leases, no failure detection, no
    re-planning. `ggml_backend_rpc_add_server()` exists; there is **no** `remove_server`.
 4. **No authentication.** No auth/token/TLS anywhere in the RPC sources, and upstream says so:
    *"the functionality is fragile and insecure. Never run the RPC server on an open network or in a
    sensitive environment!"* Upstream self-describes RPC as "proof-of-concept development stage".
-5. **Two different "16"s, and only one is real.** `GGML_RPC_MAX_SERVERS 16` in the public header is
-   **never referenced** anywhere in the tree — it enforces no server cap at all. Separately,
-   `llama_max_devices()` returns 16 (`src/llama.cpp:85-87`) and *does* constrain the client: it
-   bounds `--tensor-split` parsing (`common/arg.cpp:2737`, `:2803`) and sizes the fitting config
-   (`common/common.h:473`). So the practical ceiling is 16 **devices** on the client side, not 16
-   servers, and a node exposing several accelerators consumes several of those slots.
+5. **A hard 16-device ceiling, from two places — and not the one the header advertises.**
+   `GGML_RPC_MAX_SERVERS 16` in the public header is **never referenced** anywhere in the tree and
+   enforces nothing. The real limits are elsewhere and they bite:
+   - `llama_max_devices()` returns 16 (`src/llama.cpp:85-87`), bounding `--tensor-split` parsing
+     (`common/arg.cpp:2737`, `:2803`) and sizing the fitting config (`common/common.h:473`);
+   - the scheduler asserts `GGML_ASSERT(n_backends <= GGML_SCHED_MAX_BACKENDS)`
+     (`ggml-backend.cpp:1788`, macro at `:753` = 16). `GGML_ASSERT` aborts, so this is a **hard
+     ceiling, not a soft cap**.
 
-### Why this is a good result rather than a bad one
+   The ceiling counts **devices, not servers**, so a node exposing several accelerators consumes
+   several slots. A ring of 16+ heterogeneous nodes is not a tuning exercise; it aborts.
+6. **Heterogeneous placement is asserted, never negotiated.**
+   `ggml_backend_rpc_device_supports_op` (`ggml-rpc.cpp:1904-1909`) is a stub —
+   `//TODO: call the remote backend and cache the results` — that returns `true` unconditionally.
+   The local scheduler therefore believes every remote device can run every op. In a genuinely
+   heterogeneous ring (an iPhone's Metal beside a Windows CPU or a CUDA box) an op the remote
+   backend cannot execute is still assigned to it, failing or aborting at run time rather than
+   being planned around. This is the single biggest hole under the "heterogeneous" headline.
+
+### Why this is still the right direction
 
 Failure modes 1 and 2 are the *same two* this project already characterised and fixed in MLX, and the
 split is instructive:
@@ -405,7 +437,7 @@ split is instructive:
 |---|---|---|---|
 | Orderly peer close | hang (`r == 0` misread as stale `errno`) | catchable error | **process `abort()`** |
 | Silent peer death | hang | catchable error | **hang** (blocking recv, no timeout) |
-| Teardown / rebuild | impossible | `finalize()` | cache permits it, but buffers pin the socket and the abort fires first |
+| Teardown / rebuild | impossible | `finalize()` | **the same defect**: `add_server`'s `reg_map` is an owning static with no removal path |
 | Membership, leases, re-planning | none | `ShareComputeCore` | **none** |
 | Authentication | none (F7) | none (F7) | none, and documented as unsafe |
 
@@ -422,6 +454,29 @@ what llama.cpp RPC lacks. Neither is redundant with the other.
 
 The MLX patches do **not** transfer — different codebase, different failure mechanics. The *approach*
 does: record the failure, return it rather than aborting, give the caller a bounded wait.
+
+### Net assessment, after two rounds of review
+
+This finding was corrected twice under review, both times in the same direction: **every revision
+made llama.cpp RPC look further from ready.** The first draft called the connection cache a solved
+teardown story; the second found buffers pin the socket so the abort fires first; the third found
+`add_server`'s `reg_map` reproduces the MLX static-cache defect outright. That trend is itself worth
+recording — the parts that look finished from the README are the parts that have not been read yet.
+
+What has *not* moved is the reason to care. Nothing else supplies portable execution plus a wire
+protocol across all five target OSes, and the gaps are without exception the kind of work this
+project has already done once. Adopting it means signing up for, at minimum:
+
+1. bounded waits on **both** socket directions (gap 2);
+2. an error-returning path in place of 19 `GGML_ABORT` sites (gap 1);
+3. a `finalize()`-equivalent for `reg_map` (teardown, above);
+4. real `supports_op` negotiation before heterogeneous placement can be trusted (gap 6);
+5. membership, leases and failure detection — which is `ShareComputeCore`, already built;
+6. authentication, which neither project has (F7).
+
+Items 1–4 are upstream patches of roughly Stage 1/Stage 2 size and character. That is a real cost
+and it should be priced in before committing, but it is a **known** cost against a working
+cross-platform engine, which is not true of any alternative examined.
 
 ### Not verified
 
