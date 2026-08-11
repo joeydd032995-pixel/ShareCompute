@@ -354,21 +354,31 @@ MLX as the execution layer, since MLX is Apple-only and the specification target
 |---|---|
 | Multi-machine distribution | `llama-cli --rpc host:port,host:port` — "one or several instances", `tools/rpc/README.md` |
 | **Heterogeneous** backends in one cluster | README topology shows CUDA hosts and a Metal host together |
-| Builds on all five target OSes | `transport.cpp:4-13` splits `winsock2` / `sys/socket`; CI covers iOS (`CMAKE_SYSTEM_NAME=iOS`), Android NDK arm64, macOS arm64+Intel, Windows, Linux |
+| Portable *by construction* to all five | `transport.cpp:4-13` splits `winsock2` / `sys/socket`; llama.cpp's general CI covers iOS (`CMAKE_SYSTEM_NAME=iOS`), Android NDK arm64, macOS arm64+Intel, Windows, Linux. **Not the same as an RPC build** — see below |
 | Memory-proportional splitting | "distributes model weights and the KV cache ... in proportion to each device's available memory" |
-| Protocol version negotiation | `RPC_PROTO_MAJOR/MINOR/PATCH`, HELLO handshake, `ggml-rpc.cpp:347` rejects mismatch. MLX has no equivalent |
-| **Reconnectable** connection cache | `ggml-rpc.cpp:357-367` — function-local static map of **`weak_ptr`**, mutex-guarded |
+| Protocol version negotiation | `RPC_PROTO_MAJOR/MINOR/PATCH`, HELLO handshake. `ggml-rpc.cpp:347` rejects a *differing major* or a server minor *newer than* the client; patch is never compared and an older server minor is accepted. Asymmetric, but MLX has no equivalent at all |
+| Non-owning connection cache | `ggml-rpc.cpp:357-367` — function-local static map of **`weak_ptr`**, mutex-guarded |
 
-That last row is worth dwelling on: it is the same shape as MLX's group cache but holds `weak_ptr`
-rather than `shared_ptr`, so entries expire when the last user drops and a reconnect happens
-naturally. It is, by construction, what `Patches/mlx/0002` had to add to MLX. llama.cpp does not have
-the stale-handle problem.
+That last row needs care, because the cache design and the runtime behaviour do not agree.
+
+The cache is the same shape as MLX's group cache but holds `weak_ptr` rather than `shared_ptr`, so
+an entry expires once the last owner drops it. Structurally that is what `Patches/mlx/0002` had to
+add to MLX, and MLX's "stale group forever" defect cannot occur here.
+
+**In practice it does not buy a reconnect.** `ggml_backend_rpc_buffer_context` holds a
+`std::shared_ptr<socket_t>` (`ggml-rpc.cpp:232-236`), and every buffer operation calls through
+`ctx->sock` and then `RPC_STATUS_ASSERT` — e.g. `ggml_backend_rpc_buffer_set_tensor` at
+`ggml-rpc.cpp:486-496`. So while a model is loaded the buffers pin the socket, and an I/O failure
+**aborts the process before any replacement could be created**. A new socket appears only if every
+strong owner releases the failed one *and* a later `get_socket()` runs. This is not transparent
+reconnect and it is not health-aware; it is a cache that would permit reconnect if something else
+were handling the failure.
 
 ### The gaps — which are precisely this project's subject matter
 
 1. **A departing peer aborts the whole process.** `RPC_STATUS_ASSERT` is
    `if (!(x)) GGML_ABORT(...)` (`ggml-rpc.cpp:30`), used at **19 sites**. `ggml_abort` runs the
-   optional callback and then calls `abort()` **unconditionally** (`ggml/src/ggml.c:263-272`) — so it
+   optional callback and then calls `abort()` **unconditionally** (`ggml/src/ggml.c:252-272`) — so it
    cannot be intercepted and turned into a recoverable error.
 2. **A silently-dead peer hangs.** `recv_data` (`transport.cpp:482-502`) is a blocking `recv()` loop.
    The only socket options set anywhere are `TCP_NODELAY` and `SO_REUSEADDR` (`transport.cpp:578`,
@@ -379,8 +389,12 @@ the stale-handle problem.
 4. **No authentication.** No auth/token/TLS anywhere in the RPC sources, and upstream says so:
    *"the functionality is fragile and insecure. Never run the RPC server on an open network or in a
    sensitive environment!"* Upstream self-describes RPC as "proof-of-concept development stage".
-5. `GGML_RPC_MAX_SERVERS 16` is declared in the public header but **never referenced** anywhere in
-   the tree — an unenforced cap, so the real limit is untested rather than 16.
+5. **Two different "16"s, and only one is real.** `GGML_RPC_MAX_SERVERS 16` in the public header is
+   **never referenced** anywhere in the tree — it enforces no server cap at all. Separately,
+   `llama_max_devices()` returns 16 (`src/llama.cpp:85-87`) and *does* constrain the client: it
+   bounds `--tensor-split` parsing (`common/arg.cpp:2737`, `:2803`) and sizes the fitting config
+   (`common/common.h:473`). So the practical ceiling is 16 **devices** on the client side, not 16
+   servers, and a node exposing several accelerators consumes several of those slots.
 
 ### Why this is a good result rather than a bad one
 
@@ -391,13 +405,15 @@ split is instructive:
 |---|---|---|---|
 | Orderly peer close | hang (`r == 0` misread as stale `errno`) | catchable error | **process `abort()`** |
 | Silent peer death | hang | catchable error | **hang** (blocking recv, no timeout) |
-| Teardown / rebuild | impossible | `finalize()` | already fine (`weak_ptr` cache) |
+| Teardown / rebuild | impossible | `finalize()` | cache permits it, but buffers pin the socket and the abort fires first |
 | Membership, leases, re-planning | none | `ShareComputeCore` | **none** |
 | Authentication | none (F7) | none (F7) | none, and documented as unsafe |
 
-llama.cpp got right the two things MLX got wrong — `n == 0` is correctly treated as peer-closed
-(`transport.cpp:497`), and the connection cache is non-owning — then converts that correct detection
-into a process abort.
+llama.cpp got right the two things MLX got structurally wrong — `n == 0` is correctly treated as
+peer-closed (`transport.cpp:497`), and the connection cache is non-owning — and then throws the
+advantage away by converting that correct detection into a process abort. Detecting the failure
+accurately and then calling `abort()` is not better than MLX's post-Stage-1 behaviour; it is worse,
+because a caller can catch an exception and cannot catch an `abort()`.
 
 **The complementarity is the point.** llama.cpp RPC supplies portable execution and a wire protocol,
 which is exactly what `ShareComputeCore` cannot supply and MLX cannot make portable.
@@ -409,8 +425,14 @@ does: record the failure, return it rather than aborting, give the caller a boun
 
 ### Not verified
 
-Nothing here was built or run. This is a source reading at one commit. Specifically unproven: that
-`GGML_RPC=ON` actually compiles for iOS and Android (CI covers the main libraries, and the RPC CI job
-runs on Ubuntu only — `build-rpc.yml:38`); that an iOS app may run an `rpc-server` at all given no
-background execution (this project's own F4/§12.1 constraints); real throughput over Wi-Fi; and
-whether `--tensor-split` has the apportionment defects `StagePlanner` fixed (F5).
+Nothing here was built or run. This is a source reading at one commit.
+
+**The portability claim is the weakest link and should not be leaned on.** llama.cpp's *general* CI
+builds for all five OSes, but that is not an RPC build. The only RPC-specific job is
+`ubuntu-24-rpc`, it runs on Ubuntu arm64 alone, and it is marked `continue-on-error: true`
+(`build-rpc.yml:37-38`) — so RPC is not gating upstream CI on any platform, and `GGML_RPC=ON` for
+iOS, Android and Windows is unproven rather than merely untested-here.
+
+Also unproven: whether an iOS app may run an `rpc-server` at all given no background execution (this
+project's own F4 and §12.1 constraints); real throughput over Wi-Fi; and whether `--tensor-split`
+carries the apportionment defects `StagePlanner` fixed (F5).
