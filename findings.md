@@ -547,15 +547,33 @@ The build log shows `Linking ShareComputeCore.o`, and `xcodebuild -list` reports
 `ShareComputeCore` scheme alongside `Infer Ring` and `Ring`. **The reference resolves and the
 target builds.** The fallback is not needed.
 
-### The build failure itself was ours, not the project's
+### The build failure: `fmt/src/format.cc`, cause not yet known
 
-`Cmlx` failed compiling `fmt/src/format.cc` for **x86_64** iphonesimulator. A generic
-simulator destination builds every slice including x86_64 for Intel Macs, and MLX is
-Apple-Silicon-only. Fixed with `ARCHS=arm64`; there is no x86_64 story for this app.
+Both Xcode jobs died in the same place, and the first diagnosis was **wrong**:
 
-Two lessons for the workflows, both applied: `xcpretty` swallows compiler diagnostics — the
-first failure reported *which* command failed and never *why* — so the raw log is now teed and
-grepped on failure. And `-destination generic/...` is not architecture-neutral.
+| Job | Config | Arch | Result |
+|---|---|---|---|
+| iOS Simulator | Release | **x86_64** | `format.o` failed |
+| macOS | Debug | **arm64** | `format.o` failed |
+
+Seeing only the iOS log, this looked architectural — a generic simulator destination builds
+every slice including x86_64, and MLX is Apple-Silicon-only. The macOS job then failed on
+**arm64**, on the same file, in a different build configuration. So it is neither
+architecture- nor configuration-specific, and `ARCHS=arm64` is **not** the fix.
+
+`ARCHS=arm64` is kept anyway on its own merits — this app requires Apple Silicon, so an x86_64
+slice is work with no consumer — but it should not be mistaken for a repair.
+
+The actual cause is still unknown, because `xcpretty` swallowed every diagnostic: the failure
+reported *which* compile command failed and never *why*. Both jobs now tee the raw log and grep
+it for `error:` with context on failure, which is what should produce the answer. Standing
+hypothesis, untested: `macos-latest` tracks a current Xcode, and the pinned mlx-swift vendors an
+`fmt` old enough to disagree with that toolchain — the Metal sources in the same build already
+warn `constexpr if is a C++17 extension`, which hints at a standard-level mismatch somewhere in
+this vendored tree.
+
+The lesson that does hold: **a CI whose purpose is to surface compile errors must not pipe them
+through a prettifier that drops them.** One filtered log produced one confident wrong diagnosis.
 
 ### Still not established
 
