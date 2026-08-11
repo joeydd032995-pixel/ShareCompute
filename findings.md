@@ -282,7 +282,7 @@ recorded in F9.
 
 `project.pbxproj` declares both mlx-swift packages with `kind = branch`:
 
-```
+```text
 repositoryURL = "https://github.com/N1k1tung/mlx-swift";
 requirement = { branch = "ios-distrib-0.3.0"; kind = branch; };
 ```
@@ -324,7 +324,7 @@ ARC therefore guarantees the wrapper outlives every user, and freeing in `deinit
 **But the same audit found the real constraint on Stage 3.** `MLXManager.loadModel` passes the group
 into `tensorAutoParallel` / `pipelineAutoParallel`, which store it on the sharded layers, giving:
 
-```
+```text
 ModelManager → ModelContext → model → sharded layers → DistributedGroup → C handle → shared_ptr<GroupImpl>
 ```
 

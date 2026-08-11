@@ -1,8 +1,15 @@
 diff --git a/mlx/distributed/distributed.cpp b/mlx/distributed/distributed.cpp
-index 3cde6a26..5bb3f343 100644
+index 3cde6a26..3ecf252c 100644
 --- a/mlx/distributed/distributed.cpp
 +++ b/mlx/distributed/distributed.cpp
-@@ -138,12 +138,59 @@ Group Group::split(int color, int key /* = -1 */) const {
+@@ -1,5 +1,6 @@
+ // Copyright © 2024 Apple Inc.
+ 
++#include <mutex>
+ #include <unordered_map>
+ 
+ #include "mlx/backend/cuda/cuda.h"
+@@ -138,12 +139,85 @@ Group Group::split(int color, int key /* = -1 */) const {
    return Group(group_->split(color, key));
  }
  
@@ -23,9 +30,24 @@ index 3cde6a26..5bb3f343 100644
 +  return backends_;
 +}
 +
++// Serialises every access to that map.
++//
++// Upstream's find/insert were already unsynchronised, but finalize() adds a
++// clear(), and clear() concurrent with find() is undefined behaviour rather
++// than merely a lost update. More importantly, finalize()'s check-then-clear is
++// only meaningful if it is atomic: without this lock a concurrent init() could
++// hand out a Group in the window between the use-count check and the clear, and
++// finalize() would then destroy an impl the caller had just taken a reference
++// to -- exactly the case the check exists to prevent.
++std::mutex& backends_mutex() {
++  static std::mutex mutex_;
++  return mutex_;
++}
++
 +} // namespace
 +
 +bool finalize() {
++  std::lock_guard<std::mutex> lock(backends_mutex());
 +  auto& cache = backends();
 +
 +  // How many cache entries alias each impl: init() stores every group twice,
@@ -52,11 +74,22 @@ index 3cde6a26..5bb3f343 100644
 +  // Dropping these references runs the existing teardown: ~RingGroup() shuts
 +  // down and closes its sockets, and ~SocketThread() sets stop_, notifies, and
 +  // joins its worker. That machinery was always correct -- it simply never ran.
++  //
++  // Those joins happen while the lock is held, which is safe only because the
++  // ring's socket workers never re-enter this file: they do socket I/O and
++  // fulfil promises, and touch neither init() nor finalize(). A worker that
++  // could reach either would deadlock here.
 +  cache.clear();
 +  return true;
 +}
 +
 +Group init(bool strict /* = false */, const std::string& bk /* = "any" */) {
++  // Held across group construction, not just the lookup. Locking only around
++  // find() and insert() would let two threads each build a group and each
++  // insert it -- two live rings in one process, which is the failure this
++  // patch exists to prevent. The cost is that a slow backend init (ring::init
++  // waits on peers) blocks a concurrent finalize() until it completes.
++  std::lock_guard<std::mutex> lock(backends_mutex());
 +  auto& cache = backends();
  
    // Already initialized so return the group.
@@ -65,7 +98,7 @@ index 3cde6a26..5bb3f343 100644
      return Group(g->second);
    }
  
-@@ -188,9 +235,9 @@ Group init(bool strict /* = false */, const std::string& bk /* = "any" */) {
+@@ -188,9 +262,9 @@ Group init(bool strict /* = false */, const std::string& bk /* = "any" */) {
    if (group == nullptr) {
      group = std::make_shared<detail::EmptyGroup>();
    } else {
@@ -78,10 +111,10 @@ index 3cde6a26..5bb3f343 100644
  }
  
 diff --git a/mlx/distributed/distributed.h b/mlx/distributed/distributed.h
-index 00c7a80e..0d136055 100644
+index 00c7a80e..74ef4ed0 100644
 --- a/mlx/distributed/distributed.h
 +++ b/mlx/distributed/distributed.h
-@@ -58,4 +58,33 @@ struct MLX_API Group {
+@@ -58,4 +58,36 @@ struct MLX_API Group {
   */
  MLX_API Group init(bool strict = false, const std::string& bk = "any");
  
@@ -108,9 +141,12 @@ index 00c7a80e..0d136055 100644
 + * in the caller's own code, so calling again without releasing it will fail
 + * identically.
 + *
-+ * The use counts this inspects are only meaningful while no other thread is
-+ * copying or destroying a Group, which is already required by the quiesce
-+ * precondition above.
++ * This call is internally synchronised against init(), so the two are safe to
++ * call concurrently and the check-then-teardown is atomic. That does not make
++ * the *use counts* exact: a Group copied or destroyed on another thread changes
++ * a count without touching the cache, so a concurrent holder can still be
++ * missed. Only the quiesce precondition above rules that out -- the lock
++ * protects the cache, not your handles.
 + */
 +MLX_API bool finalize();
 +

@@ -98,7 +98,7 @@ therefore the C handle — outlives every user. Freeing in `deinit` is safe here
 `loadModel` passes the group into `tensorAutoParallel` / `pipelineAutoParallel`, which store it on
 the sharded layers. That produces this retain chain:
 
-```
+```text
 ModelManager → ModelContext → model → sharded layers → DistributedGroup → C handle → shared_ptr<GroupImpl>
 ```
 

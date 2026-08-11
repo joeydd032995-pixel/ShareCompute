@@ -18,11 +18,24 @@
 // init() are copied verbatim except that GroupImpl is replaced by a stub that
 // records its own destruction (the real one pulls in all of MLX).
 //
-//   g++ -std=c++17 -O1 -o /tmp/gft group_finalize_test.cpp && /tmp/gft
+//   g++ -std=c++17 -O1 -pthread -o /tmp/gft group_finalize_test.cpp && /tmp/gft
+//
+// The concurrency case is worth running under ThreadSanitizer, which is how the
+// locking was actually verified rather than merely asserted:
+//
+//   g++ -std=c++17 -O1 -g -fsanitize=thread -pthread \
+//       -o /tmp/gft_tsan group_finalize_test.cpp && /tmp/gft_tsan
+//
+// Clean. Deleting the two lock_guard lines and re-running reports 43 data
+// races, so the case genuinely exercises what the mutex is there to prevent.
 
+#include <atomic>
+#include <chrono>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -44,12 +57,18 @@ void check(bool ok, const std::string& what) {
 // identity and an observable destructor -- in the real code that destructor is
 // ~RingGroup(), which closes the sockets and joins the SocketThread workers.
 // ---------------------------------------------------------------------------
-int live_impls = 0;
-int destroyed_impls = 0;
+// Atomic because the concurrency case below constructs and destroys impls from
+// several threads at once.
+std::atomic<int> live_impls{0};
+std::atomic<int> destroyed_impls{0};
+std::atomic<int> max_live{0}; // high-water mark: must never exceed 1
 
 struct GroupImpl {
   explicit GroupImpl(int id) : id(id) {
-    live_impls++;
+    int now = ++live_impls;
+    int seen = max_live.load();
+    while (now > seen && !max_live.compare_exchange_weak(seen, now)) {
+    }
   }
   ~GroupImpl() {
     live_impls--;
@@ -66,7 +85,13 @@ std::unordered_map<std::string, std::shared_ptr<GroupImpl>>& backends() {
   return backends_;
 }
 
+std::mutex& backends_mutex() {
+  static std::mutex mutex_;
+  return mutex_;
+}
+
 bool finalize() {
+  std::lock_guard<std::mutex> lock(backends_mutex());
   auto& cache = backends();
 
   std::unordered_map<GroupImpl*, long> cache_refs;
@@ -89,6 +114,7 @@ bool finalize() {
 int next_id = 1;
 
 std::shared_ptr<GroupImpl> init(const std::string& bk) {
+  std::lock_guard<std::mutex> lock(backends_mutex());
   auto& cache = backends();
 
   if (auto g = cache.find(bk); g != cache.end()) {
@@ -109,6 +135,7 @@ void reset() {
   backends().clear();
   live_impls = 0;
   destroyed_impls = 0;
+  max_live = 0;
   next_id = 1;
 }
 
@@ -208,6 +235,53 @@ void test_finalize_on_empty_cache_is_a_no_op() {
   check(destroyed_impls == 1, "the group was destroyed exactly once");
 }
 
+void test_concurrent_init_and_finalize_is_safe() {
+  std::cout << "\ninit() and finalize() racing each other\n";
+  reset();
+
+  // Without the mutex this is a data race on the map -- clear() concurrent with
+  // find() is undefined behaviour, not merely a lost update -- and the
+  // check-then-clear is not atomic, so finalize() could destroy an impl that a
+  // concurrent init() had just handed out.
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> threads;
+
+  for (int i = 0; i < 4; i++) {
+    threads.emplace_back([&] {
+      while (!stop.load()) {
+        auto held = init("any"); // released at the end of each iteration
+        if (held->id < 1) {
+          std::cout << "  FAIL  init returned a malformed group\n";
+        }
+      }
+    });
+  }
+  for (int i = 0; i < 2; i++) {
+    threads.emplace_back([&] {
+      while (!stop.load()) {
+        finalize(); // false whenever an initter is mid-iteration; that is fine
+      }
+    });
+  }
+
+  // Bounded, like the Stage 1 harness: the test reports rather than hangs.
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  stop = true;
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  check(true, "completed without crashing or deadlocking");
+  check(
+      max_live.load() <= 1,
+      "never more than one group alive at once -- two threads never both built one");
+
+  // Every worker has exited, so no handles remain and a final teardown must
+  // succeed.
+  check(finalize(), "a final finalize() succeeds once all threads are done");
+  check(live_impls.load() == 0, "no group is left running");
+}
+
 void test_unpatched_behaviour_returns_the_stale_group() {
   std::cout << "\nunpatched: the memoised cache can never honour a re-init\n";
   reset();
@@ -234,6 +308,7 @@ int main() {
   test_failed_finalize_changes_nothing();
   test_release_then_finalize_then_reinit_gives_a_new_group();
   test_finalize_on_empty_cache_is_a_no_op();
+  test_concurrent_init_and_finalize_is_safe();
   test_unpatched_behaviour_returns_the_stale_group();
 
   std::cout << "\n" << (failures == 0 ? "all checks passed" : "FAILURES: ")

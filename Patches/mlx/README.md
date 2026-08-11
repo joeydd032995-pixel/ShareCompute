@@ -118,6 +118,7 @@ cache held the last reference forever.
 | New `bool finalize()` drops the cached references | Running the destructors *is* the teardown — no new shutdown path is written |
 | `finalize()` checks every impl's use count **before** clearing anything | See below. This is the part worth reviewing |
 | `finalize()` returns whether the teardown actually happened | A silent no-op here re-creates the exact bug being fixed |
+| A mutex serialises all cache access, in both `init()` and `finalize()` | See below |
 
 **Why the check comes before the clear.** A `Group` handle held anywhere else keeps its impl alive,
 so clearing the cache would not destroy it. The first version of this patch cleared first and
@@ -131,6 +132,28 @@ The caller is exactly where they started, which is a state they can reason about
 
 This was caught by `tests/group_finalize_test.cpp`, not by review — the test asserted the
 consequence and the consequence was wrong.
+
+**Why the mutex.** Upstream's `find`/`insert` on the static map were already unsynchronised, but
+`finalize()` adds a `clear()`, and `clear()` concurrent with `find()` is undefined behaviour rather
+than a lost update. The stronger reason is that the check-then-clear above is only meaningful if it
+is *atomic*: without a lock a concurrent `init()` could hand out a `Group` in the window between the
+use-count check and the clear, and `finalize()` would then destroy an impl the caller had just taken
+a reference to — precisely the case the check exists to prevent.
+
+Two consequences worth knowing:
+
+- **`init()` holds the lock across group construction**, not just the lookup. Locking only around
+  `find` and `insert` would let two threads each build a group and each insert it — two live rings in
+  one process. The cost is that a slow `ring::init` (waiting on peers) blocks a concurrent
+  `finalize()` until it returns.
+- **The destructor joins run under the lock.** `cache.clear()` → `~RingGroup()` → `~SocketThread()`
+  → `join()`. That is safe only because the ring's socket workers never re-enter this file — they do
+  socket I/O and fulfil promises, and touch neither `init()` nor `finalize()`. A worker that could
+  reach either would deadlock.
+
+The lock protects the *cache*, not the caller's handles. A `Group` copied or destroyed on another
+thread changes a use count without touching the cache, so a concurrent holder can still be missed;
+only the quiesce precondition rules that out.
 
 **Why a `bool` rather than `void`.** Ignoring a failed teardown reproduces the original defect
 silently: re-init hands back a group whose membership is stale, nothing crashes, and the ring is
@@ -157,11 +180,15 @@ g++ -std=c++17 -O1 -o /tmp/gft tests/group_finalize_test.cpp && /tmp/gft
    *unpatched* one as a negative control — the latter fails with `'finalize' is not a member of
    'mlx::core::distributed'`. The two patches are genuinely linked, not independently plausible.
 3. **Runtime semantics.** `tests/group_finalize_test.cpp` mirrors the cache, `finalize()` and
-   `init()`'s cache interaction against a stub impl that records its own destruction. 27 checks, all
+   `init()`'s cache interaction against a stub impl that records its own destruction. 31 checks, all
    passing, covering: teardown really destroys; two cache keys aliasing one impl destroy it exactly
    once (a double free here is a crash); an outstanding handle blocks teardown and is reported; a
    failed `finalize()` leaves the cache untouched; the supported release → finalize → re-init
    sequence yields a genuinely new group; empty and repeated calls are no-ops.
+4. **Thread safety, under ThreadSanitizer.** The harness runs four threads calling `init()` against
+   two calling `finalize()` for a bounded 200 ms, asserting that no more than one group is ever alive
+   at once. TSan-clean — and deleting the two `lock_guard` lines and re-running reports **43 data
+   races**, so the case genuinely exercises what the mutex prevents rather than merely running.
 
    The last case mirrors the **unpatched** cache and asserts that re-init returns the same group, so
    the defect is pinned rather than merely described.
