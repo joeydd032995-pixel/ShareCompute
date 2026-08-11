@@ -1,0 +1,521 @@
+diff --git a/mlx/distributed/distributed_impl.h b/mlx/distributed/distributed_impl.h
+index d889587a..82104d0c 100644
+--- a/mlx/distributed/distributed_impl.h
++++ b/mlx/distributed/distributed_impl.h
+@@ -30,6 +30,15 @@ class GroupImpl {
+   virtual void all_min(const array& input, array& output, Stream stream) = 0;
+   virtual void
+   sum_scatter(const array& input, array& output, Stream stream) = 0;
++
++  // Rethrow the failure of an earlier asynchronous collective, if there was
++  // one.
++  //
++  // Backends whose errors surface synchronously need not override this. The
++  // ring backend does: its transfers run on scheduler threads, where an
++  // exception cannot legally escape, so it records the failure and rethrows it
++  // here instead -- on the caller's own thread, where it can propagate.
++  virtual void check_healthy() {}
+ };
+ 
+ /* Define the MLX stream that the communication should happen in. */
+diff --git a/mlx/distributed/ops.cpp b/mlx/distributed/ops.cpp
+index 1762f0e6..31941b33 100644
+--- a/mlx/distributed/ops.cpp
++++ b/mlx/distributed/ops.cpp
+@@ -13,11 +13,15 @@ namespace mlx::core::distributed {
+ namespace {
+ 
+ Group to_group(std::optional<Group> group) {
+-  if (group.has_value()) {
+-    return group.value();
+-  } else {
+-    return distributed::init();
+-  }
++  auto g = group.has_value() ? group.value() : distributed::init();
++
++  // Surface a failure from an earlier collective here, while we are still on
++  // the caller's thread and an exception can legally propagate out through the
++  // C API. Every entry point in this file funnels through to_group, so this
++  // single call covers all of them.
++  g.raw_group()->check_healthy();
++
++  return g;
+ }
+ 
+ } // namespace
+diff --git a/mlx/distributed/ring/ring.cpp b/mlx/distributed/ring/ring.cpp
+index ea400428..86918a90 100644
+--- a/mlx/distributed/ring/ring.cpp
++++ b/mlx/distributed/ring/ring.cpp
+@@ -161,6 +161,26 @@ class SocketThread {
+     std::promise<void> promise;
+   };
+ 
++  // Fail every queued task and refuse any future ones. Caller must hold
++  // queue_mutex_.
++  //
++  // The worker used to simply return on abort, leaving each pending promise
++  // both unfulfilled and undestroyed. The waiting future therefore never became
++  // ready and never received broken_promise either, so a peer dropping out
++  // wedged every surviving rank forever with no diagnostic at all.
++  void fail_all(const char* reason) {
++    failure_ = std::make_exception_ptr(
++        std::runtime_error(std::string("[ring] ") + reason));
++    for (auto& task : recvs_) {
++      task.promise.set_exception(failure_);
++    }
++    for (auto& task : sends_) {
++      task.promise.set_exception(failure_);
++    }
++    recvs_.clear();
++    sends_.clear();
++  }
++
+   std::future<void> send_impl(const char* buffer, size_t size) {
+     std::promise<void> send_completed_promise;
+     auto send_completed_future = send_completed_promise.get_future();
+@@ -171,6 +191,12 @@ class SocketThread {
+ 
+     {
+       std::unique_lock lock(queue_mutex_);
++      // The socket is dead and the worker has exited, so nothing would ever
++      // drain this queue. Fail now rather than enqueue an immortal task.
++      if (failure_) {
++        send_completed_promise.set_exception(failure_);
++        return send_completed_future;
++      }
+       sends_.emplace_back(SocketTask(
+           const_cast<char*>(buffer), size, std::move(send_completed_promise)));
+     }
+@@ -188,6 +214,10 @@ class SocketThread {
+ 
+     {
+       std::unique_lock lock(queue_mutex_);
++      if (failure_) {
++        recv_completed_promise.set_exception(failure_);
++        return recv_completed_future;
++      }
+       recvs_.emplace_back(
+           SocketTask(buffer, size, std::move(recv_completed_promise)));
+     }
+@@ -200,7 +230,9 @@ class SocketThread {
+   }
+ 
+   void worker() {
++    constexpr int max_errors = 10;
+     int error_count = 0;
++    bool peer_closed = false;
+     bool delete_recv = false;
+     bool delete_send = false;
+     while (true) {
+@@ -238,6 +270,14 @@ class SocketThread {
+           task.size -= r;
+           delete_recv = task.size == 0;
+           error_count = 0;
++        } else if (r == 0) {
++          // The peer closed the connection cleanly. This used to fall into the
++          // errno branch below, where errno is stale from some earlier call and
++          // is very often EAGAIN -- so an orderly shutdown (an iOS app being
++          // suspended, most commonly) never incremented error_count at all and
++          // this loop simply spun forever.
++          peer_closed = true;
++          log_info(true, "Peer closed socket", fd_);
+         } else if (errno != EAGAIN) {
+           error_count++;
+           log_info(
+@@ -258,8 +298,12 @@ class SocketThread {
+         }
+       }
+ 
+-      if (error_count >= 10) {
++      if (error_count >= max_errors || peer_closed) {
+         log_info(true, "Too many send/recv errors. Aborting...");
++        std::unique_lock lock(queue_mutex_);
++        fail_all(
++            peer_closed ? "peer closed the connection"
++                        : "too many socket errors");
+         return;
+       }
+     }
+@@ -272,6 +316,9 @@ class SocketThread {
+   std::condition_variable condition_;
+   std::list<SocketTask> sends_;
+   std::list<SocketTask> recvs_;
++  // Set once the socket is unusable; doubles as the "this thread has given up"
++  // flag. Guarded by queue_mutex_.
++  std::exception_ptr failure_;
+ };
+ 
+ class CommunicationThreads {
+@@ -501,32 +548,34 @@ class RingGroup : public GroupImpl {
+                       nbytes = input.nbytes(),
+                       output_ptr = output.data<char>(),
+                       this]() {
+-      constexpr size_t min_send_size = 262144;
+-      size_t n_gathers = std::max(
+-          std::min(
+-              sockets_right_.size() + sockets_left_.size(),
+-              nbytes / min_send_size),
+-          size_t(1));
+-      size_t bytes_per_gather = ceildiv(nbytes, n_gathers);
+-      std::vector<std::future<void>> all_gathers;
+-      for (int i = 0; i < n_gathers; i++) {
+-        auto offset = i * bytes_per_gather;
+-        all_gathers.emplace_back(pool_.enqueue(
+-            std::bind(
+-                &RingGroup::all_gather_impl,
+-                this,
+-                input_ptr + offset,
+-                output_ptr + offset,
+-                nbytes,
+-                offset + bytes_per_gather > nbytes ? nbytes - offset
+-                                                   : bytes_per_gather,
+-                sockets_right_[i / 2],
+-                sockets_left_[i / 2],
+-                (i % 2) ? -1 : 1)));
+-      }
+-      for (auto& f : all_gathers) {
+-        f.wait();
+-      }
++      run_guarded([&]() {
++        constexpr size_t min_send_size = 262144;
++        size_t n_gathers = std::max(
++            std::min(
++                sockets_right_.size() + sockets_left_.size(),
++                nbytes / min_send_size),
++            size_t(1));
++        size_t bytes_per_gather = ceildiv(nbytes, n_gathers);
++        std::vector<std::future<void>> all_gathers;
++        for (int i = 0; i < n_gathers; i++) {
++          auto offset = i * bytes_per_gather;
++          all_gathers.emplace_back(pool_.enqueue(
++              std::bind(
++                  &RingGroup::all_gather_impl,
++                  this,
++                  input_ptr + offset,
++                  output_ptr + offset,
++                  nbytes,
++                  offset + bytes_per_gather > nbytes ? nbytes - offset
++                                                     : bytes_per_gather,
++                  sockets_right_[i / 2],
++                  sockets_left_[i / 2],
++                  (i % 2) ? -1 : 1)));
++        }
++        for (auto& f : all_gathers) {
++          f.get();
++        }
++      });
+     });
+   }
+ 
+@@ -535,19 +584,21 @@ class RingGroup : public GroupImpl {
+     encoder.set_input_array(input);
+     encoder.dispatch(
+         [input_ptr = input.data<char>(), nbytes = input.nbytes(), dst, this]() {
+-          int right = (rank_ + 1) % size_;
+-          int left = (rank_ + size_ - 1) % size_;
+-          if (dst == right) {
+-            send(sockets_right_, input_ptr, nbytes);
+-          } else if (dst == left) {
+-            send(sockets_left_, input_ptr, nbytes);
+-          } else {
+-            std::ostringstream msg;
+-            msg << "[ring] Send only supported to direct neighbors "
+-                << "but tried to send to " << dst << " from " << rank_
+-                << std::endl;
+-            throw std::runtime_error(msg.str());
+-          }
++          run_guarded([&]() {
++            int right = (rank_ + 1) % size_;
++            int left = (rank_ + size_ - 1) % size_;
++            if (dst == right) {
++              send(sockets_right_, input_ptr, nbytes);
++            } else if (dst == left) {
++              send(sockets_left_, input_ptr, nbytes);
++            } else {
++              std::ostringstream msg;
++              msg << "[ring] Send only supported to direct neighbors "
++                  << "but tried to send to " << dst << " from " << rank_
++                  << std::endl;
++              throw std::runtime_error(msg.str());
++            }
++          });
+         });
+   }
+ 
+@@ -556,22 +607,24 @@ class RingGroup : public GroupImpl {
+     encoder.set_output_array(out);
+     encoder.dispatch(
+         [out_ptr = out.data<char>(), nbytes = out.nbytes(), src, this]() {
+-          // NOTE: We 'll check the sockets with the opposite order of send so
+-          // that they work even with 2 nodes where left and right is the same
+-          // neighbor.
+-          int right = (rank_ + 1) % size_;
+-          int left = (rank_ + size_ - 1) % size_;
+-          if (src == left) {
+-            recv(sockets_left_, out_ptr, nbytes);
+-          } else if (src == right) {
+-            recv(sockets_right_, out_ptr, nbytes);
+-          } else {
+-            std::ostringstream msg;
+-            msg << "[ring] Recv only supported from direct neighbors "
+-                << "but tried to recv from " << src << " to " << rank_
+-                << std::endl;
+-            throw std::runtime_error(msg.str());
+-          }
++          run_guarded([&]() {
++            // NOTE: We 'll check the sockets with the opposite order of send so
++            // that they work even with 2 nodes where left and right is the same
++            // neighbor.
++            int right = (rank_ + 1) % size_;
++            int left = (rank_ + size_ - 1) % size_;
++            if (src == left) {
++              recv(sockets_left_, out_ptr, nbytes);
++            } else if (src == right) {
++              recv(sockets_right_, out_ptr, nbytes);
++            } else {
++              std::ostringstream msg;
++              msg << "[ring] Recv only supported from direct neighbors "
++                  << "but tried to recv from " << src << " to " << rank_
++                  << std::endl;
++              throw std::runtime_error(msg.str());
++            }
++          });
+         });
+   }
+ 
+@@ -579,7 +632,39 @@ class RingGroup : public GroupImpl {
+     throw std::runtime_error("[ring] sum_scatter not supported.");
+   }
+ 
++  void check_healthy() override {
++    std::lock_guard<std::mutex> lock(failure_mutex_);
++    if (failure_) {
++      std::rethrow_exception(failure_);
++    }
++  }
++
+  private:
++  // Run a collective body, recording any failure rather than letting it escape.
++  //
++  // Nothing may throw out of a dispatched task. CommandEncoder::dispatch binds
++  // the callable and hands it to scheduler::enqueue, and there is no try/catch
++  // anywhere in that path -- so an escaping exception unwinds a scheduler
++  // thread with no handler and calls std::terminate(), killing the process.
++  //
++  // The failure is instead stashed and rethrown from check_healthy(), which
++  // runs on the caller's own thread. Note this also contains the throws that
++  // were already reachable from inside these lambdas (unsupported send/recv
++  // targets, and an all_reduce too small to split), each of which could
++  // terminate the process today.
++  template <typename F>
++  void run_guarded(F&& body) {
++    try {
++      body();
++    } catch (...) {
++      std::lock_guard<std::mutex> lock(failure_mutex_);
++      if (!failure_) {
++        // Keep the first failure: it names what actually broke the ring.
++        failure_ = std::current_exception();
++      }
++    }
++  }
++
+   template <typename T, typename ReduceOp>
+   void all_reduce(
+       const array& input,
+@@ -591,67 +676,69 @@ class RingGroup : public GroupImpl {
+     auto& encoder = cpu::get_command_encoder(stream);
+     encoder.set_output_array(output);
+     encoder.dispatch([in_ptr, out_ptr, size = input.size(), this, reduce_op]() {
+-      // If the input data cannot be split into size_ segments then copy it and
+-      // all reduce a local buffer prefilled with 0s.
+-      size_t nbytes = size * sizeof(T);
+-      if (size < size_) {
+-        // TODO: Maybe allocate dynamically so we don't have the constraint
+-        // below?
+-        if (sizeof(T) * size_ > 1024) {
+-          std::ostringstream msg;
+-          msg << "Can't perform the ring all reduce of " << size
+-              << " elements with a ring of size " << size_;
+-          throw std::runtime_error(msg.str());
+-        }
++      run_guarded([&]() {
++        // If the input data cannot be split into size_ segments then copy it
++        // and all reduce a local buffer prefilled with 0s.
++        size_t nbytes = size * sizeof(T);
++        if (size < size_) {
++          // TODO: Maybe allocate dynamically so we don't have the constraint
++          // below?
++          if (sizeof(T) * size_ > 1024) {
++            std::ostringstream msg;
++            msg << "Can't perform the ring all reduce of " << size
++                << " elements with a ring of size " << size_;
++            throw std::runtime_error(msg.str());
++          }
+ 
+-        char buffer[1024];
+-        std::memset(buffer, 0, size_ * sizeof(T));
+-        std::memcpy(buffer, in_ptr, nbytes);
+-        all_reduce_impl<T, ReduceOp>(
+-            reinterpret_cast<T*>(buffers_.data()),
+-            reinterpret_cast<T*>(buffer),
+-            size_,
+-            sockets_right_[0],
+-            sockets_left_[0],
+-            -1,
+-            reduce_op);
+-        std::memcpy(out_ptr, buffer, nbytes);
+-        return;
+-      }
++          char buffer[1024];
++          std::memset(buffer, 0, size_ * sizeof(T));
++          std::memcpy(buffer, in_ptr, nbytes);
++          all_reduce_impl<T, ReduceOp>(
++              reinterpret_cast<T*>(buffers_.data()),
++              reinterpret_cast<T*>(buffer),
++              size_,
++              sockets_right_[0],
++              sockets_left_[0],
++              -1,
++              reduce_op);
++          std::memcpy(out_ptr, buffer, nbytes);
++          return;
++        }
+ 
+-      // If not inplace all reduce then copy the input to the output first
+-      if (in_ptr != out_ptr) {
+-        std::memcpy(out_ptr, in_ptr, nbytes);
+-      }
++        // If not inplace all reduce then copy the input to the output first
++        if (in_ptr != out_ptr) {
++          std::memcpy(out_ptr, in_ptr, nbytes);
++        }
+ 
+-      // Split the all reduces so that each member has at least 1 buffer to
+-      // send/recv per segment.
+-      constexpr size_t min_send_size = 262144;
+-      size_t n_reduces = std::max(
+-          std::min(
+-              sockets_right_.size() + sockets_left_.size(),
+-              nbytes / (size_ * min_send_size)),
+-          size_t(1));
+-      size_t step = ceildiv(size, n_reduces);
+-      std::vector<std::future<void>> all_sums;
+-
+-      for (int i = 0; i < n_reduces; i++) {
+-        all_sums.emplace_back(pool_.enqueue(
+-            std::bind(
+-                &RingGroup::all_reduce_impl<T, ReduceOp>,
+-                this,
+-                reinterpret_cast<T*>(
+-                    buffers_.data() + i * ALL_SUM_SIZE * ALL_SUM_BUFFERS),
+-                reinterpret_cast<T*>(out_ptr) + i * step,
+-                std::min(size, (i + 1) * step) - i * step,
+-                sockets_right_[i / 2],
+-                sockets_left_[i / 2],
+-                (i % 2) ? -1 : 1,
+-                reduce_op)));
+-      }
+-      for (auto& f : all_sums) {
+-        f.wait();
+-      }
++        // Split the all reduces so that each member has at least 1 buffer to
++        // send/recv per segment.
++        constexpr size_t min_send_size = 262144;
++        size_t n_reduces = std::max(
++            std::min(
++                sockets_right_.size() + sockets_left_.size(),
++                nbytes / (size_ * min_send_size)),
++            size_t(1));
++        size_t step = ceildiv(size, n_reduces);
++        std::vector<std::future<void>> all_sums;
++
++        for (int i = 0; i < n_reduces; i++) {
++          all_sums.emplace_back(pool_.enqueue(
++              std::bind(
++                  &RingGroup::all_reduce_impl<T, ReduceOp>,
++                  this,
++                  reinterpret_cast<T*>(
++                      buffers_.data() + i * ALL_SUM_SIZE * ALL_SUM_BUFFERS),
++                  reinterpret_cast<T*>(out_ptr) + i * step,
++                  std::min(size, (i + 1) * step) - i * step,
++                  sockets_right_[i / 2],
++                  sockets_left_[i / 2],
++                  (i % 2) ? -1 : 1,
++                  reduce_op)));
++        }
++        for (auto& f : all_sums) {
++          f.get();
++        }
++      });
+     });
+   }
+ 
+@@ -737,8 +824,8 @@ class RingGroup : public GroupImpl {
+       }
+ 
+       if (j >= 0) {
+-        sends[b].wait();
+-        recvs[b].wait();
++        sends[b].get();
++        recvs[b].get();
+         if (2 * j < send_plan.size()) {
+           reduce_op(
+               recv_buffers[j % ALL_SUM_BUFFERS],
+@@ -749,8 +836,8 @@ class RingGroup : public GroupImpl {
+ 
+       std::swap(a, b);
+     }
+-    sends[b].wait();
+-    recvs[b].wait();
++    sends[b].get();
++    recvs[b].get();
+   }
+ 
+   void all_gather_impl(
+@@ -784,8 +871,8 @@ class RingGroup : public GroupImpl {
+       send_segment = (send_segment + size_ + direction) % size_;
+       recv_segment = (recv_segment + size_ + direction) % size_;
+ 
+-      sent.wait();
+-      recvd.wait();
++      sent.get();
++      recvd.get();
+     }
+   }
+ 
+@@ -804,7 +891,7 @@ class RingGroup : public GroupImpl {
+           std::min(data_size, (i + 1) * segment_size) - i * segment_size));
+     }
+     for (auto& f : sends) {
+-      f.wait();
++      f.get();
+     }
+   }
+ 
+@@ -822,7 +909,7 @@ class RingGroup : public GroupImpl {
+           std::min(data_size, (i + 1) * segment_size) - i * segment_size));
+     }
+     for (auto& f : recvs) {
+-      f.wait();
++      f.get();
+     }
+   }
+ 
+@@ -831,6 +918,15 @@ class RingGroup : public GroupImpl {
+ 
+   bool verbose_;
+ 
++  // Sticky failure from a collective that ran on a scheduler thread, waiting to
++  // be rethrown on a caller thread by check_healthy().
++  //
++  // Declared before pool_ and comm_ deliberately. Members are destroyed in
++  // reverse declaration order, so this way the mutex outlives the thread-owning
++  // members rather than the other way round.
++  std::mutex failure_mutex_;
++  std::exception_ptr failure_;
++
+   ThreadPool pool_;
+   CommunicationThreads comm_;
+ 

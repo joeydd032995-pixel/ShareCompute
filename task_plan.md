@@ -67,15 +67,34 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 
 ---
 
+---
+
+## Milestone 2 — patch MLX so the ring survives node loss
+
+| # | Stage | Status |
+|---|---|---|
+| 1 | `ring.cpp` fail-instead-of-hang | **complete** — `Patches/mlx/`, 15 harness checks pass |
+| 2 | Make the group rebuildable (`distributed.cpp` reset, mlx-c free/finalize, mlx-swift) | not started |
+| 3 | Epoch re-formation in infer-ring (`MLXManager.teardown()`, non-terminal `RingWatchdog`) | not started |
+
+**Stage 1 outcome.** The design changed materially during implementation. Two findings (F10, F11 in
+`findings.md`) ruled out the obvious approach: `CommandEncoder::dispatch` has no `try`/`catch`, so
+throwing from a collective would crash the process rather than fix the hang; and all ten future
+sites use `wait()`, which discards an exception silently, so fixing the promises alone would have
+produced data corruption. The failure is therefore *recorded* on the scheduler thread and rethrown
+from `to_group()` on the caller's thread.
+
+Stage 1 needs **no mlx-c or mlx-swift change** — the error rides the existing `mlx_error` /
+`withError` path — so it is independently shippable and worth offering upstream to `ml-explore/mlx`.
+
 ## Next actions
 
-1. On a Mac: add `ShareComputeCore` to the Xcode project as a local package (see README), then
-   build. Expect to fix actor-isolation and API details that could not be checked here.
-2. Verify on hardware (Mac + iPhone, the README's own configuration): start a long generation,
-   background the phone, and confirm the Mac reports "iPhone left the ring" within a few seconds
-   instead of hanging. Then hard-kill the app with no drain and confirm heartbeat eviction reports
-   it within the lease TTL.
-3. Wire the `ShardMetadata.immediateException` / `shouldTimeout` hooks for chaos tests.
-4. Decide on option 1 from `findings.md` — patching the MLX fork. The smallest high-value piece is
-   making `ring.cpp`'s abort path fulfil its promises with an exception instead of abandoning them,
-   which alone would let survivors fail instead of hang.
+1. Decide whether to fork `ml-explore/mlx`, `ml-explore/mlx-c` and `N1k1tung/mlx-swift`. Stage 1 is
+   held as a patch file rather than a fork because creating repositories under an account is the
+   owner's call.
+2. On a Mac: apply the patch, build MLX as part of the app, and run the Stage 1 hardware test —
+   hard-kill a peer mid-generation and confirm a **thrown Swift error within about one token**,
+   neither a hang nor a crash. Test both `SIGKILL` and cable-pull, which take different `errno` paths.
+3. Add `ShareComputeCore` to the Xcode project (now wired in `project.pbxproj`) and type-check the
+   adapter — actor isolation around `@MainActor RingHealthMonitor` is the likely breakage.
+4. Then Stage 2, then Stage 3.

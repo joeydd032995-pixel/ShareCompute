@@ -234,3 +234,41 @@ preference order:
    behaviour and independently shippable.
 
 Option 3 is the honest immediate deliverable; option 1 is what actually completes the milestone.
+
+---
+
+## F10 — An exception may not escape a dispatched MLX task
+
+`mlx/backend/cpu/encoder.h`, `CommandEncoder::dispatch` binds the callable and hands it to
+`scheduler::enqueue`. There is **no `try`/`catch` in that path**; the only one in `scheduler.h` is
+inside `~Scheduler()`. An exception thrown from a collective's execution path therefore unwinds a
+scheduler thread with no handler and calls `std::terminate()`.
+
+**Consequence:** the intuitive fix for Spike B — "make `ring.cpp` throw" — converts a hang into a
+hard crash of a shipping App Store app. Failures must be *recorded* on the scheduler thread and
+rethrown from the graph-building layer, which runs on the caller's own thread.
+
+Note three throws are **already** reachable from inside those lambdas today (unsupported send/recv
+neighbours, and an `all_reduce` too small to split), so this crash is latent in upstream MLX.
+
+---
+
+## F11 — `wait()` silently discards the failure
+
+All ten future consumption sites in `ring.cpp` call `f.wait()`, never `f.get()`.
+`std::future::wait()` returns **normally** on a promise carrying an exception — the state is ready,
+and nothing is thrown.
+
+**Consequence:** setting exceptions on the promises without also converting every `wait()` to
+`get()` would replace the hang with *silent data corruption* — execution continuing over
+incomplete buffers. That is strictly worse than the current behaviour, because a hang is at least
+visible. The two changes are only safe together.
+
+---
+
+## F12 — `Cmlx` is a source target
+
+`Package.swift` in the mlx-swift fork declares `Target.target(name: "Cmlx", path: "Source/Cmlx", …)`,
+compiling the vendored `mlx` and `mlx-c` submodule sources directly through SwiftPM — no binary
+framework, no CMake step. Patching MLX means editing submodule sources and rebuilding normally,
+which is what makes milestone 2 tractable at all.

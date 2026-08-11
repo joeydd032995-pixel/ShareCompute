@@ -76,13 +76,30 @@ the ring into a failed state on demand. Broader authentication of the control pl
 entirely unauthenticated today, and broadcasts full conversation history to every peer in cleartext
 — remains open work.
 
-### Required manual step
+### Xcode integration
 
-`Apps/InferRing` must reference `ShareComputeCore`. Add it in Xcode via **File → Add Package
-Dependencies… → Add Local…** and select the repository root, then add `ShareComputeCore` to the
-Infer Ring target. This was not done by editing `project.pbxproj` directly: that file is generated,
-and a blind edit risks corrupting a project that cannot be opened or built in this environment to
-verify.
+`ShareComputeCore` is wired into the Infer Ring app target as a local Swift package
+(`XCLocalSwiftPackageReference`, `relativePath = "../.."` — the repository root, resolved from the
+directory holding the `.xcodeproj`). The `Ring` framework target does not reference it and does not
+need to.
+
+Individual source files did not need adding: the project uses `objectVersion = 77` with
+`PBXFileSystemSynchronizedRootGroup`, so everything under `InferRing/` and `Ring/` is discovered
+from the filesystem automatically.
+
+**If Xcode rejects the package reference**, the likely cause is that the package root is an
+*ancestor* of the `.xcodeproj` rather than a sibling. This could not be verified here — no macOS.
+The mechanical fix is to move the package into its own directory and repoint the reference:
+
+```bash
+mkdir -p Packages/ShareComputeCore
+git mv Package.swift Sources Tests Packages/ShareComputeCore/
+# then in project.pbxproj: relativePath = "../../Packages/ShareComputeCore"
+```
+
+Note that this also moves the package out of the repository root, so the layout table above and the
+`swift build` / `swift test` commands below then apply from `Packages/ShareComputeCore` rather than
+from the root.
 
 ## What the core provides
 
@@ -118,6 +135,33 @@ Spec §12.1 sets `can_host_required_stage = false` for iOS. Applied literally th
 infer-ring's headline feature — combining an iPhone's RAM with a Mac's is the product. iOS keeps
 its eligibility here; the safety the spec is reaching for comes instead from short OS-clamped
 leases and mandatory drain-on-background.
+
+## Agent roster
+
+`.claude/agents/` holds 20 role definitions — two architects, two specialists, five platform trios
+(designer / developer / backend), and a tester. `CLAUDE.md` carries the project context every one of
+them starts from; `.claude/skills/orchestration/SKILL.md` holds the routing, file-ownership and
+escalation rules.
+
+Nothing is spawned by default. Dispatch a role when the work needs knowledge you would otherwise
+build from scratch, when two tasks touch disjoint paths, or when you want the work isolated in a
+worktree — not merely because a task has several parts.
+
+Three things worth knowing before dispatching:
+
+- **Nine roles are gated.** `linux-*`, `windows-*` and `android-*` have no runtime to target: MLX is
+  Apple-only, so until the specification's Phase 1a (portable IR + wire protocol) and a non-MLX
+  execution path exist, those nodes cannot run. Their definitions say so and refuse the work.
+- **One writer per path.** `Sources/ShareComputeCore/**` belongs to `senior-architect` alone;
+  everyone else files a change request in `findings.md`. That boundary is what contained both MLX
+  spike failures without touching the core.
+- **Most platform work cannot be verified here.** This container has no macOS, Xcode, Android SDK or
+  Windows. Every definition carries the verification matrix and the rule to state what was *not*
+  verified.
+
+```bash
+python3 scripts/validate-agents.py    # lint the roster
+```
 
 ## Building
 
