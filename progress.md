@@ -133,7 +133,7 @@ See "Next actions" in `task_plan.md`.
 - `g++ -fsyntax-only -std=c++17` over the patched `ring.cpp` and `ops.cpp` — clean. (MLX's own
   headers compile on Linux with the `json`/`fmt` headers vendored in mlx-swift, which was an
   unexpected and very useful discovery: it means the patch can be compile-checked here.)
-- `Patches/mlx/tests/socket_thread_failure_test.cpp` — **15 checks, all passing**, against real
+- `Patches/mlx/tests/socket_thread_failure_test.cpp` — **16 checks, all passing**, against real
   `socketpair` sockets, including closing the peer end to drive the `r == 0` path directly. Every
   wait is bounded so a regression is reported rather than reproduced as a hang.
 - `ShareComputeCore` — still 58 tests, 0 failures.
@@ -160,3 +160,112 @@ decision, so Stage 1 is held as an appliable patch file with instructions.
 |---|---|---|
 | `Edit` refused: "File has not been read yet" on the mlx sources | 1 | Read the target ranges first; the tool requires it even for files outside the project |
 | `git sparse-checkout set mlx/scheduler.h` — "not a directory" | 1 | sparse-checkout takes directories; widened to the parent instead |
+
+---
+
+## Session 4 — Milestone 2 Stage 2: the group becomes rebuildable
+
+### What was built
+
+Three coupled patches, one per repository in the build chain:
+
+| Patch | Change |
+|---|---|
+| `Patches/mlx/0002-distributed-finalize.patch` | `init`'s function-local static moves behind a `backends()` accessor; new `bool finalize()` |
+| `Patches/mlx-c/0001-export-group-free-and-finalize.patch` | Public `mlx_distributed_group_free` (private inline helper already existed) + `mlx_distributed_finalize` |
+| `Patches/mlx-swift/0001-free-group-and-expose-finalize.patch` | `deinit` restored; `static func finalize() -> Bool` |
+
+Plus `Patches/README.md` as the entry point for the whole chain, per-repo READMEs, and
+`Patches/mlx/tests/group_finalize_test.cpp`.
+
+### Test results
+
+| Check | Result |
+|---|---|
+| `ShareComputeCore` | 58 tests, 0 failures |
+| `tests/socket_thread_failure_test.cpp` (Stage 1) | 16 checks, all pass |
+| `tests/group_finalize_test.cpp` (Stage 2) | 27 checks, all pass |
+| `g++ -fsyntax-only` — `distributed.cpp`, `ring.cpp`, `ops.cpp`, `distributed_group.cpp` | all clean, from pristine checkouts with patches applied in order |
+| `swiftc -parse` — `DistributedGroup.swift` | clean (**syntax only** — does not resolve `import Cmlx`) |
+| `git apply --check` — all four patches against pristine pinned checkouts | all apply |
+
+### Notable events
+
+**The test corrected the design, not review.** The first `finalize()` cleared the cache and then
+reported via `weak_ptr::expired()`. Writing the case for "what happens on a failed teardown" showed
+the result was worse than the bug being fixed: the old group leaves the cache but keeps running its
+socket threads, so the next `init()` builds a *second* live ring in the same process. Rewritten to
+check every impl's use count **before** clearing, so a failed `finalize()` is inert. The doc comments
+had already been written asserting the wrong consequence.
+
+**A negative control, not just a green compile.** The mlx-c half was compiled against the *unpatched*
+MLX header as well as the patched one. It fails with `'finalize' is not a member of
+'mlx::core::distributed'`, which is what makes the passing compile evidence that the two halves agree
+on the symbol rather than two changes that merely look consistent.
+
+**Bumping the mlx-c submodule was considered and rejected.** Upstream HEAD does export
+`mlx_distributed_group_free`, but it redesigned the whole distributed API to out-param plus `int`
+status, so every mlx-swift call site would change against an MLX version the app has never built
+against — and `mlx_distributed_finalize` still would not exist. A ten-line patch at the known-good
+pin is smaller and more verifiable.
+
+**Two findings recorded.** F13: `ios-distrib-0.3.0` is a **tag**, and `project.pbxproj` asks for it
+as a branch — which matters when Stage 3 repoints at the forks. The submodule pins Stage 1 and 2 were
+written against are confirmed correct. F14: the loaded model retains the ring through the sharded
+layers, so Stage 3's `teardown()` must release `ModelContext` before calling `finalize()`.
+
+### What is still unverified
+
+Unchanged from session 3, and it is the larger half. None of the four patches has been built as part
+of MLX, linked, run on Apple hardware, or exercised against a real multi-device ring. Specifically
+for Stage 2: nothing here shows that `~RingGroup()` and `~SocketThread()` complete promptly and
+without deadlock against real sockets whose peer has already left — the harness stub has a trivial
+destructor. That is the first thing to check on hardware.
+
+### Errors encountered (session 4)
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| `Edit` refused: "File has not been read yet" on `distributed.cpp` | 1 | Read the file first — same lesson as session 3, on a file re-opened after a context break |
+| Assumed the pinned mlx-c already exported `mlx_distributed_group_free` | 1 | The attached clone was at HEAD, not the pin. Fetched `0726ca9` and diffed: only the *private* helper existed there |
+| Documented `finalize()`'s failure mode wrongly in three places | 1 | The test disproved it before commit; implementation changed and comments rewritten |
+
+### Review round 1 (CodeRabbit, PR #3)
+
+Ten actionable comments. One was a real defect in the patch; the rest were documentation.
+
+**The cache was not thread-safe — valid, and worse than reported.** `finalize()`'s `clear()` racing
+`init()`'s `find`/`insert` is undefined behaviour, but the sharper problem is that the
+check-then-clear was not *atomic*: a concurrent `init()` could hand out a `Group` in the window
+between the use-count check and the clear, so `finalize()` would destroy an impl the caller had just
+taken a reference to — the exact case the check exists to prevent. Upstream's `find`/`insert` were
+already unsynchronised; `finalize()` made it consequential.
+
+Fixed with one mutex covering both functions, held across group construction in `init()` (so two
+threads cannot each build a ring) and across the destructor joins in `finalize()`. The join-under-
+lock is safe only because the ring's socket workers never re-enter `distributed.cpp`; that is now a
+comment in the patch, because a future change could break it.
+
+Verified rather than asserted: a new bounded concurrency case (4 × `init` against 2 × `finalize`,
+200 ms, asserting at most one live group) is **TSan-clean**, and deleting the two `lock_guard` lines
+makes the same case report **43 data races**. Harness now 31 checks.
+
+The mutex protects the cache, not the caller's handles — a `Group` copied on another thread still
+moves a use count without touching the cache. The header says so rather than implying the lock makes
+`finalize()` fully thread-safe.
+
+**Documentation fixes.** The `Patches/README.md` apply block was genuinely broken: successive
+`cd`s nested, so mlx-c would have been cloned inside mlx. Rewritten with sibling clones in subshells
+and *executed end to end* to confirm, along with the compile and negative-control commands, which
+were placeholders (`<file>`, `...`) rather than runnable. mlx-swift now checks out the immutable
+commit with the tag verified against it first, since a tag can move. Also documented `finalize()`'s
+release-then-check ordering in `Patches/README.md` and `task_plan.md` (release *every* handle —
+`ModelContext` and `MLXManager.group` — then check the `bool`); corrected a stale "15 checks" in the
+session 3 entry to 16; removed a superseded "remains impossible" line in `task_plan.md`; labelled
+three unlabelled fenced blocks.
+
+**Not taken: a Swift lifecycle regression test.** Asked for an XCTest asserting ARC calls
+`mlx_distributed_group_free`, that both C symbols link, and that release → `finalize()` → re-init
+yields a new group. It is the right test and it cannot run here — no macOS, no Xcode, and the Swift
+half has never been type-checked. Committing an unrunnable test file would assert coverage this
+container cannot back. It is instead written up as a required hardware test in `task_plan.md`.

@@ -1,0 +1,52 @@
+diff --git a/Source/MLX/DistributedGroup.swift b/Source/MLX/DistributedGroup.swift
+index cdd09b1..9bc3cf4 100644
+--- a/Source/MLX/DistributedGroup.swift
++++ b/Source/MLX/DistributedGroup.swift
+@@ -12,8 +12,14 @@ public final class DistributedGroup {
+         self.group = group
+     }
+ 
+-    deinit { // this requires slight update for cmlx which I rather avoid, commented out for now
+-//        mlx_distributed_group_free(group)
++    /// Releases this handle's reference to the underlying group.
++    ///
++    /// Every `DistributedGroup` owns a distinct C handle -- `initialize` and `split` each allocate
++    /// one -- so this frees exactly one reference and never double-frees. The group itself is only
++    /// destroyed once no references remain, including the one the C library caches internally;
++    /// see ``finalize()``.
++    deinit {
++        mlx_distributed_group_free(group)
+     }
+ 
+     /// Returns the rank of the current process within the distributed group.
+@@ -39,6 +45,30 @@ public final class DistributedGroup {
+         return DistributedGroup(group: group)
+     }
+ 
++    /// Releases the groups cached by ``initialize(strict:)`` so a later call can build a new one.
++    ///
++    /// `mlx_distributed_init` memoises the group it creates, so without this a second
++    /// ``initialize(strict:)`` returns the *first* call's group and silently ignores a rewritten
++    /// hostfile -- the ring re-forms with the departed member still in it.
++    ///
++    /// Release every `DistributedGroup` you hold before calling this. Each one is a reference, and
++    /// the group is torn down only when the last one goes. That means the instances must actually
++    /// be deallocated, not merely set to `nil`: a group captured by a running generation task is
++    /// still retained.
++    ///
++    /// - Returns: `true` if the groups were torn down. `false` means a handle is still held, so
++    ///   nothing was destroyed and nothing was changed -- a later ``initialize(strict:)`` returns
++    ///   the same group as before. Treat it as an error and find the handle that outlived the
++    ///   teardown; calling again without releasing it fails identically.
++    ///
++    /// - Important: Quiesce the ring first. A collective in flight over a group being torn down is
++    ///   undefined behaviour.
++    // Deliberately not @discardableResult: ignoring a false is exactly the mistake this return
++    // value exists to prevent, so a caller who really means to ignore it must write `_ =`.
++    public static func finalize() -> Bool {
++        mlx_distributed_finalize()
++    }
++
+     /// Splits the current distributed group into subgroups.
+     /// - Parameters:
+     ///   - color: The color used to split the group.

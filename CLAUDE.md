@@ -21,7 +21,8 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | Apple adapter — drain-on-background, heartbeats, generation watchdog | written, **never compiled** |
 | Xcode wiring of `ShareComputeCore` as a local package | written, **never opened in Xcode** |
 | Milestone 2 Stage 1 — MLX ring fails instead of hanging | patch written, syntax-checked, harness passes |
-| Milestone 2 Stages 2–3 — group teardown, epoch re-formation | not started |
+| Milestone 2 Stage 2 — group teardown (`finalize()` across mlx, mlx-c, mlx-swift) | 3 patches written, syntax-checked, harness passes |
+| Milestone 2 Stage 3 — epoch re-formation in the app | not started |
 | Linux / Windows / Android adapters | **blocked**, see below |
 
 Working documents: `task_plan.md` (phases, decisions, errors), `findings.md` (research log, read
@@ -32,10 +33,16 @@ this one), `progress.md` (session log, test results).
 Established by reading the pinned MLX sources. Full evidence with file and line references is in
 `findings.md`.
 
-1. **An MLX `DistributedGroup` cannot be torn down or re-initialised.** The fork's `deinit` has its
-   only free call commented out, and upstream `distributed::init` caches groups in a
+1. **An MLX `DistributedGroup` could not be torn down or re-initialised.** The fork's `deinit` had
+   its only free call commented out, and upstream `distributed::init` caches groups in a
    *function-local static*, returning the stale group on every later call and ignoring the rewritten
-   hostfile. This is why membership is modelled as **epochs** rather than mutation.
+   hostfile. This is why membership is modelled as **epochs** rather than mutation — and epochs stay
+   the model, because a group still cannot be *mutated*.
+
+   `Patches/` now supplies the missing teardown (`finalize()` across all three repos), so
+   destroy-and-rebuild is available to Stage 3. Two constraints come with it: `finalize()` returns
+   `false` and changes nothing while any handle is still held, and the loaded model retains the
+   group through its sharded layers (F14), so `ModelContext` must be released first.
 2. **Every generated token is an all-ranks barrier.** `PipelineLastLayer` runs `allGather` on every
    forward pass. A lease cannot be attached to a rank sitting inside a per-token collective.
 3. **An exception must never escape a dispatched MLX task.** `CommandEncoder::dispatch` hands the
