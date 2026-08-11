@@ -5,6 +5,7 @@ import Ring
 import MLX
 import MLXLMCommon
 import MLXLLM
+import ShareComputeCore
 import Tokenizers
 internal import ConcurrencyExtras
 #if os(iOS)
@@ -267,8 +268,11 @@ final class ModelManager {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled else { return }
+                // Optional twice over: `self` is weak and the monitor may be unset, so the
+                // optional-chained call yields `RingHealth?`. The trailing `?` matches through it —
+                // a bare `.lost` pattern does not match an optional.
                 let health = await MainActor.run { self?.ringHealthMonitor?.refreshHealth() }
-                if case .lost(let reason) = health {
+                if case .lost(let reason)? = health {
                     continuation.finish(
                         throwing: ModelManagerError.ringLost(
                             "\(reason.description). This ring can't be rebuilt without restarting the app."

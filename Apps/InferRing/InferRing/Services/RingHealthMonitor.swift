@@ -165,7 +165,11 @@ final class RingHealthMonitor {
             queue: .main
         ) { _ in
             MainActor.assumeIsolated {
-                Task { await RingHealthMonitor.announceLocalDrain() }
+                // Explicit generic arguments, because a bare `Task { }` here is ambiguous between
+                // Task.init(priority:operation:) and Task.init(name:priority:operation:) — every
+                // leading parameter of both has a default, so the trailing closure alone does not
+                // pick one. announceLocalDrain() is async and non-throwing, hence <Void, Never>.
+                Task<Void, Never> { await RingHealthMonitor.announceLocalDrain() }
             }
         }
         #endif

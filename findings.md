@@ -651,3 +651,58 @@ Two candidates, neither yet attempted:
 That `-DFMT_CONSTEVAL=` actually clears the build — it is applied but not yet observed passing.
 Whether anything downstream depends on fmt's compile-time checking is also unchecked; nothing in
 this project calls fmt directly.
+
+---
+
+## F18 — First type-check of the Apple adapter: three real defects
+
+The `FMT_CONSTEVAL` workaround (F17) cleared `fmt`, the build went the whole way through MLX, and
+**for the first time this project's own Swift reached a compiler**:
+
+```text
+CompileSwift normal arm64 (in target 'Infer Ring' from project 'Infer Ring')
+```
+
+It found three defects, all in code written by this project, none of which `swiftc -parse` could
+ever have caught. The session-long caveat — *"passes `swiftc -parse`, which is syntax only"* — was
+not a formality; it was hiding exactly this.
+
+| File | Error | Cause |
+|---|---|---|
+| `Screens/RingManagement/RingManagementView.swift:17` | `'let' binding pattern cannot appear in an expression` | missing `import ShareComputeCore` |
+| `Services/ModelManager.swift:271` | same | missing `import ShareComputeCore` |
+| `Services/RingHealthMonitor.swift:168` | `ambiguous use of 'init(name:priority:operation:)'` | bare `Task { }` |
+
+### The misleading diagnostic
+
+Both `let` errors point at column 31 — the `let` *inside* `if case .lost(let reason) = …` — and the
+pattern syntax is correct. The real cause is that `RingHealth` lives in `ShareComputeCore`, which
+neither file imports. Both reach its cases through leading-dot syntax (`.lost(…)`) without ever
+naming the type, so a search for the type name finds nothing: **the defect is invisible to grep for
+`RingHealth`.** Only two files of the seven touching ring health were missing the import, and both
+happened to be the two that never spell the type out.
+
+### A second defect at the same site, not reported
+
+`ModelManager.swift:271` had `if case .lost(let reason) = health` where
+`health` is `RingHealth?` — `MainActor.run { self?.ringHealthMonitor?.refreshHealth() }` yields an
+optional through the chaining. A bare pattern does not match an optional; it needs `.lost(let
+reason)?`. The compiler never said so because the missing import failed first. Fixed pre-emptively
+rather than waiting for a second round.
+
+### The `Task` ambiguity is real, not cascading
+
+`RingHealthMonitor.swift` *does* import `ShareComputeCore`, so this one stands alone. Swift 6.2 added
+`Task.init(name:priority:operation:)` beside `init(priority:operation:)`; every leading parameter of
+both has a default, so a bare `Task { }` with only a trailing closure does not select one. Fixed with
+explicit generic arguments — `Task<Void, Never> { … }` — since `announceLocalDrain()` is `async` and
+non-throwing.
+
+This is the concurrency-boundary code `findings.md` and every agent definition flagged as the
+least-verified thing in the repository. The first compiler contact found a defect in it.
+
+### Not verified
+
+That these three fixes are sufficient. The compiler stops early, so later files may hold further
+errors that nothing has reached yet — `RingCoordinator`, `DataServer` and `InferringApp` all touch
+ring health and have never been type-checked past this point.

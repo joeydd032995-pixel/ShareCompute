@@ -1,3 +1,4 @@
+import ShareComputeCore
 import SwiftUI
 
 struct RingManagementView: View {
