@@ -491,3 +491,74 @@ iOS, Android and Windows is unproven rather than merely untested-here.
 Also unproven: whether an iOS app may run an `rpc-server` at all given no background execution (this
 project's own F4 and §12.1 constraints); real throughput over Wi-Fi; and whether `--tensor-split`
 carries the apportionment defects `StagePlanner` fixed (F5).
+
+---
+
+## F16 — First real Xcode build: F13 resolved, and two new facts
+
+CI on macOS finally compiled this project (PR #7). Three results, all from the
+`Build for iOS Simulator` job log at commit `31f914d`.
+
+### F13 is answered: the branch-named-tag resolves cleanly
+
+F13 recorded that `project.pbxproj` declares `kind = branch, branch = "ios-distrib-0.3.0"`
+for a name that exists only as a **tag**, and flagged as unverified "whether Xcode currently
+resolves this, fails, or silently falls back."
+
+It resolves, without complaint, to exactly the commit the patches were written against:
+
+```text
+Checking out ios-distrib-0.3.0 (c53d302) of package 'mlx-swift'
+  mlx-swift:    https://github.com/N1k1tung/mlx-swift    @ ios-distrib-0.3.0 (c53d302)
+  mlx-swift-lm: https://github.com/N1k1tung/mlx-swift-lm @ ios-distrib-0.3.0 (e2b659f)
+```
+
+**So this is not a defect and Stage 3 does not need to fix it.** Repointing at the forks
+should keep the same form rather than "correcting" it to `kind = revision`. F13's
+consequence is withdrawn; its factual half — that the name is a tag — stands, and `c53d302`
+is confirmed as what actually gets built.
+
+### New: two packages claim the identity `mlx-swift`
+
+```text
+Conflicting identity for mlx-swift: dependency 'github.com/ml-explore/mlx-swift' and
+dependency 'github.com/n1k1tung/mlx-swift' both point to the same package identity
+'mlx-swift'. This will be escalated to an error in future versions of SwiftPM.
+```
+
+Something in the graph — most likely `mlx-swift-lm` or `swift-transformers` — depends on
+**upstream** `ml-explore/mlx-swift` while the app pins the `N1k1tung` fork. SwiftPM currently
+picks one and warns. Upstream says plainly that this becomes an **error** in a future SwiftPM.
+
+This is a real time bomb under the fork strategy, and it is *not* caused by anything in this
+project: it exists in the vendored app as shipped. It matters for `Patches/` because when it
+does become an error, the build stops until the graph is de-duplicated — and every patch here
+assumes the `N1k1tung` fork is what gets built. Not yet investigated: which dependency pulls
+in upstream, and whether a `.package(name:)` override or a fork of the intermediate package is
+the cheaper fix.
+
+### `ShareComputeCore`'s Xcode wiring works
+
+`README.md` warned that the `XCLocalSwiftPackageReference` with `relativePath = "../.."` might
+be rejected because the package root is an *ancestor* of the `.xcodeproj`, and gave a fallback
+procedure, noting it "could not be verified here — no macOS."
+
+The build log shows `Linking ShareComputeCore.o`, and `xcodebuild -list` reports a
+`ShareComputeCore` scheme alongside `Infer Ring` and `Ring`. **The reference resolves and the
+target builds.** The fallback is not needed.
+
+### The build failure itself was ours, not the project's
+
+`Cmlx` failed compiling `fmt/src/format.cc` for **x86_64** iphonesimulator. A generic
+simulator destination builds every slice including x86_64 for Intel Macs, and MLX is
+Apple-Silicon-only. Fixed with `ARCHS=arm64`; there is no x86_64 story for this app.
+
+Two lessons for the workflows, both applied: `xcpretty` swallows compiler diagnostics — the
+first failure reported *which* command failed and never *why* — so the raw log is now teed and
+grepped on failure. And `-destination generic/...` is not architecture-neutral.
+
+### Still not established
+
+Whether the Apple-side Swift **type-checks**. The failure above is in a vendored C++
+dependency, reached before any of this project's Swift was compiled. `RingHealthMonitor`,
+the `@MainActor` boundaries, and the drain path remain uncompiled.

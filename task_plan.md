@@ -139,7 +139,10 @@ Two things changed during implementation, both worth carrying forward:
    token**, neither a hang nor a crash — test both `SIGKILL` and cable-pull, which take different
    `errno` paths. For Stage 2, confirm `~RingGroup()` and `~SocketThread()` complete promptly and
    without deadlock when a peer has *already* gone; the harness stub cannot show this.
-4. Repoint `project.pbxproj` at the forks. Note F13: the current reference is `kind = branch` naming
-   something that exists only as a **tag**, so it cannot be copied as-is.
+4. Repoint `project.pbxproj` at the forks. **Keep the existing `kind = branch` form** — F16 showed
+   SwiftPM resolves the branch-named-tag cleanly to `c53d302`, so F13's worry was unfounded and
+   "correcting" it to `kind = revision` would be a change for its own sake. Watch instead for the
+   conflicting `mlx-swift` package identity F16 records, which upstream says becomes a hard error in
+   a future SwiftPM.
 5. Add `ShareComputeCore` to the Xcode project (now wired in `project.pbxproj`) and type-check the
    adapter — actor isolation around `@MainActor RingHealthMonitor` is the likely breakage.

@@ -45,11 +45,29 @@ jobs:
         # `xcrun xctrace list devices | grep iPhone` device-name scrape, which
         # breaks whenever the runner image's simulator set changes. Nothing is
         # run, so no booted device is needed.
+        #
+        # ARCHS=arm64 is load-bearing. A generic simulator destination builds
+        # every slice, including x86_64 for Intel Macs, and MLX is
+        # Apple-Silicon-only -- the first run died compiling the x86_64 slice of
+        # Cmlx. There is no x86_64 story for this app, so don't build one.
+        #
+        # The raw log is kept because xcpretty swallows compiler diagnostics:
+        # the first failure reported only which command failed, never why.
         run: |
           set -o pipefail
           xcodebuild clean build \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
             -destination "generic/platform=iOS Simulator" \
+            ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO \
-            | xcpretty
+            2>&1 | tee /tmp/xcodebuild-ios.log | xcpretty
+
+      - name: Surface compiler errors
+        if: failure()
+        run: |
+          echo "===== error: lines, with context ====="
+          grep -E -B2 -A8 "error:" /tmp/xcodebuild-ios.log | head -150 \
+            || echo "(no 'error:' lines -- the failure was not a compile error)"
+          echo "===== last 60 raw lines ====="
+          tail -60 /tmp/xcodebuild-ios.log

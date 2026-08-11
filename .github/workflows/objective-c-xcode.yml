@@ -48,11 +48,26 @@ jobs:
         run: xcodebuild -list -project "$PROJECT"
 
       - name: Build and analyze
+        # ARCHS=arm64 for the same reason as the iOS job: MLX is
+        # Apple-Silicon-only, and the standard macOS arch set can include
+        # x86_64. The app requires Apple Silicon anyway.
+        #
+        # The raw log is kept because xcpretty swallows compiler diagnostics.
         run: |
           set -o pipefail
           xcodebuild clean build analyze \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
             -destination "platform=macOS" \
+            ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO \
-            | xcpretty
+            2>&1 | tee /tmp/xcodebuild-macos.log | xcpretty
+
+      - name: Surface compiler errors
+        if: failure()
+        run: |
+          echo "===== error: lines, with context ====="
+          grep -E -B2 -A8 "error:" /tmp/xcodebuild-macos.log | head -150 \
+            || echo "(no 'error:' lines -- the failure was not a compile error)"
+          echo "===== last 60 raw lines ====="
+          tail -60 /tmp/xcodebuild-macos.log
