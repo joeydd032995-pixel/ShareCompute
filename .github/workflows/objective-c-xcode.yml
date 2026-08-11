@@ -15,6 +15,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 env:
   # The .xcodeproj is not at the repository root -- the root is the
   # ShareComputeCore Swift package. The starter workflow's `xcodebuild -list`
@@ -31,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Show toolchain
         run: |
