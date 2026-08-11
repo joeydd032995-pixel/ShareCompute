@@ -136,6 +136,33 @@ infer-ring's headline feature — combining an iPhone's RAM with a Mac's is the 
 its eligibility here; the safety the spec is reaching for comes instead from short OS-clamped
 leases and mandatory drain-on-background.
 
+## Agent roster
+
+`.claude/agents/` holds 20 role definitions — two architects, two specialists, five platform trios
+(designer / developer / backend), and a tester. `CLAUDE.md` carries the project context every one of
+them starts from; `.claude/skills/orchestration/SKILL.md` holds the routing, file-ownership and
+escalation rules.
+
+Nothing is spawned by default. Dispatch a role when the work needs knowledge you would otherwise
+build from scratch, when two tasks touch disjoint paths, or when you want the work isolated in a
+worktree — not merely because a task has several parts.
+
+Three things worth knowing before dispatching:
+
+- **Nine roles are gated.** `linux-*`, `windows-*` and `android-*` have no runtime to target: MLX is
+  Apple-only, so until the specification's Phase 1a (portable IR + wire protocol) and a non-MLX
+  execution path exist, those nodes cannot run. Their definitions say so and refuse the work.
+- **One writer per path.** `Sources/ShareComputeCore/**` belongs to `senior-architect` alone;
+  everyone else files a change request in `findings.md`. That boundary is what contained both MLX
+  spike failures without touching the core.
+- **Most platform work cannot be verified here.** This container has no macOS, Xcode, Android SDK or
+  Windows. Every definition carries the verification matrix and the rule to state what was *not*
+  verified.
+
+```bash
+python3 scripts/validate-agents.py    # lint the roster
+```
+
 ## Building
 
 Requires Swift 6.0+. The core has no dependencies and builds on Linux, macOS and Windows.
