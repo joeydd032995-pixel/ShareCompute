@@ -580,3 +580,74 @@ through a prettifier that drops them.** One filtered log produced one confident 
 Whether the Apple-side Swift **type-checks**. The failure above is in a vendored C++
 dependency, reached before any of this project's Swift was compiled. `RingHealthMonitor`,
 the `@MainActor` boundaries, and the drain path remain uncompiled.
+
+---
+
+## F17 — The pinned mlx-swift does not compile with current Xcode
+
+This is a **project-level blocker, not a CI artifact**. It will hit anyone building infer-ring
+today, on a real Mac as much as on a runner.
+
+### The error
+
+```text
+fmt/include/fmt/format-inl.h:1389:33: error: call to consteval function
+'fmt::basic_format_string<char, int>::basic_format_string<FMT_COMPILE_STRING, 0>'
+is not a constant expression
+ 1389 |       out = fmt::format_to(out, FMT_STRING("p{}"),
+5 errors generated.
+```
+
+Both Xcode jobs die here, on `arm64` and `x86_64`, in Debug and Release alike — it is neither
+architecture- nor configuration-specific (correcting the first diagnosis in F16).
+
+### The two halves
+
+| | |
+|---|---|
+| Vendored `fmt` | **10.2.1** (`FMT_VERSION 100201`, January 2024), in `mlx-swift/Source/Cmlx/fmt` |
+| Runner toolchain | **Xcode 26.6**, SDK `iPhoneSimulator26.5`, from the compile command line |
+
+Newer clang tightened how `consteval` propagates through immediate-escalating functions, and
+fmt 10.2.1 predates the fix. `FMT_STRING(...)` builds a compile-string type whose `consteval`
+constructor is no longer accepted as a constant expression.
+
+### Why the chosen workaround is legitimate rather than a hack
+
+`FMT_CONSTEVAL` is defined behind `#ifndef` (`fmt/core.h:224`), and fmt itself defines it **empty**
+for toolchains where consteval misbehaves — its own comment says *"consteval is broken in MSVC
+before VS2019 16.10 and Apple clang before 14."* A no-consteval build is therefore a **supported
+fmt configuration**, not a workaround invented here. Xcode 26.6 is simply another toolchain in
+that category for this fmt version. The cost is losing compile-time format-string validation
+inside MLX's own logging.
+
+Both Xcode jobs now pass `OTHER_CPLUSPLUSFLAGS="-DFMT_CONSTEVAL="`. `OTHER_CPLUSPLUSFLAGS` rather
+than `GCC_PREPROCESSOR_DEFINITIONS` deliberately: mlx-swift's `Package.swift` declares
+`.define("MLX_VERSION", …)` and `.define("MLX_ENABLE_NAX", "1")` for `Cmlx`, which land in
+`GCC_PREPROCESSOR_DEFINITIONS`, so overriding *that* from the command line would clobber them.
+
+### The durable fix belongs in the fork
+
+A CI build setting fixes CI. It does nothing for a developer opening the project in Xcode, who
+hits the identical error. The real repair is in `joeydd032995-pixel/mlx-swift`, and it is exactly
+the idiom `Patches/` already uses — a `Patches/mlx-swift/0002-…` alongside the existing `0001`.
+Two candidates, neither yet attempted:
+
+- **Define `FMT_CONSTEVAL` empty in `Package.swift`'s `cxxSettings`** — one line, matches what fmt
+  already does for older Apple clang, and keeps fmt 10.2.1.
+- **Bump vendored fmt to 11.x** — fixes it properly, but is a larger vendored-source change and
+  MLX may use fmt 10 APIs.
+
+### Consequences beyond the build
+
+- **Any Stage 3 work needs a toolchain decision.** "Build it on a Mac" is not sufficient
+  instruction while this stands; the Mac needs either an older Xcode or the fork patched.
+- This is the **second** upstream-toolchain problem in the same vendored tree, after the
+  conflicting `mlx-swift` package identity in F16. Both are latent in the app as shipped, and both
+  are arguments for the fork strategy rather than against it.
+
+### Not verified
+
+That `-DFMT_CONSTEVAL=` actually clears the build — it is applied but not yet observed passing.
+Whether anything downstream depends on fmt's compile-time checking is also unchecked; nothing in
+this project calls fmt directly.

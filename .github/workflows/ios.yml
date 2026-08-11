@@ -15,6 +15,10 @@ on:
   pull_request:
     branches: [ "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -34,8 +38,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Show toolchain
-        run: xcodebuild -version
+      - name: Available toolchains
+        # Recorded for diagnosis: the pinned mlx-swift vendors fmt 10.2.1, which
+        # does not compile under Xcode 26's clang (findings.md F17). If the
+        # FMT_CONSTEVAL workaround below ever stops working, pinning an older
+        # Xcode here is the fallback -- this listing says which exist.
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "(no versioned Xcodes)"
+          xcodebuild -version
 
       - name: Confirm the scheme exists
         run: xcodebuild -list -project "$PROJECT"
@@ -60,6 +70,7 @@ jobs:
             -scheme "$SCHEME" \
             -destination "generic/platform=iOS Simulator" \
             ARCHS=arm64 \
+            OTHER_CPLUSPLUSFLAGS="-DFMT_CONSTEVAL=" \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee /tmp/xcodebuild-ios.log | xcpretty
 
