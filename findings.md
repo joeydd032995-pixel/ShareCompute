@@ -272,3 +272,71 @@ visible. The two changes are only safe together.
 compiling the vendored `mlx` and `mlx-c` submodule sources directly through SwiftPM — no binary
 framework, no CMake step. Patching MLX means editing submodule sources and rebuilding normally,
 which is what makes milestone 2 tractable at all.
+
+---
+
+## F13 — `ios-distrib-0.3.0` is a tag, and the project asks for it as a branch
+
+Confirming which sources Stage 2 had to be written against turned up a discrepancy in the pin
+recorded in F9.
+
+`project.pbxproj` declares both mlx-swift packages with `kind = branch`:
+
+```
+repositoryURL = "https://github.com/N1k1tung/mlx-swift";
+requirement = { branch = "ios-distrib-0.3.0"; kind = branch; };
+```
+
+On the remote, `ios-distrib-0.3.0` exists **only as a tag**, at `c53d302197489acbb6b3a81dc1635d0aae75b163`.
+The branches are `ane`, `ios-distrib`, `main` and `update` — there is no branch of that name. This
+also explains F9's aside that neither package appears in `Package.resolved`.
+
+The good news is that the pins Stage 1 and Stage 2 were written against are **confirmed correct**:
+tag `ios-distrib-0.3.0` is exactly the tree whose submodules are `mlx@38ad2570` and `mlx-c@0726ca9`.
+
+The consequence is for **Stage 3**, not for the patches. Repointing the project at the forks means
+writing that reference by hand, and it cannot be copied as-is: a `kind = branch` requirement naming
+a tag is what is there now. Use `kind = revision` with the commit, or a real branch on the fork.
+
+Not verified: whether Xcode currently resolves this, fails, or silently falls back — that needs
+macOS. It is recorded because Stage 3 has to write this reference, not because the app is known
+broken today.
+
+---
+
+## F14 — The loaded model holds the ring, which constrains Stage 3's teardown order
+
+Restoring mlx-swift's commented-out `deinit` (Stage 2) meant auditing whether anything in the app
+relies on a C `Group` outliving its Swift wrapper — the leak has been the behaviour for the life of
+the fork, so such a call site would become a use-after-free.
+
+**No such call site exists.** Every holder retains the Swift wrapper class, not the raw
+`mlx_distributed_group`:
+
+| Holder | What it holds |
+|---|---|
+| `Ring/Manager.swift` — `MLXManager.group` | `DistributedGroup?` |
+| `Ring/AutoParallel.swift` — `AllToShardedLinear`, `ShardedToAllLinear` | `public let group: DistributedGroup` |
+| `Ring/TensorParallel.swift` — sharded MoE layers | `public let group: DistributedGroup` |
+
+ARC therefore guarantees the wrapper outlives every user, and freeing in `deinit` is safe.
+
+**But the same audit found the real constraint on Stage 3.** `MLXManager.loadModel` passes the group
+into `tensorAutoParallel` / `pipelineAutoParallel`, which store it on the sharded layers, giving:
+
+```
+ModelManager → ModelContext → model → sharded layers → DistributedGroup → C handle → shared_ptr<GroupImpl>
+```
+
+So `MLXManager.teardown()` **cannot** be `group = nil; DistributedGroup.finalize()`. Whenever a
+sharded model is loaded — the normal state of the app — the layers still hold the group,
+`finalize()` returns `false`, and by design changes nothing. **The loaded `ModelContext` must be
+released before finalize.**
+
+This is a sequencing requirement, not a defect: Stage 2's check-before-clear is what makes the
+mistake visible rather than silent. Without the `bool`, this would have presented as a ring that
+re-formed with stale membership and no error anywhere.
+
+Not verified: this is a reading of the Swift sources, not a run. Whether releasing `ModelContext`
+actually drops every layer reference — MLX modules can retain children in ways not obvious from the
+declaration site — has to be checked on hardware.

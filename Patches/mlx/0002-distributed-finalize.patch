@@ -1,0 +1,117 @@
+diff --git a/mlx/distributed/distributed.cpp b/mlx/distributed/distributed.cpp
+index 3cde6a26..5bb3f343 100644
+--- a/mlx/distributed/distributed.cpp
++++ b/mlx/distributed/distributed.cpp
+@@ -138,12 +138,59 @@ Group Group::split(int color, int key /* = -1 */) const {
+   return Group(group_->split(color, key));
+ }
+ 
+-Group init(bool strict /* = false */, const std::string& bk /* = "any" */) {
++namespace {
++
++// The initialised groups, keyed by backend name.
++//
++// This was a function-local static inside init(). Hoisting it behind an
++// accessor is what makes finalize() possible: while these shared_ptrs are held,
++// the last reference to a GroupImpl can never drop, so ~RingGroup() never runs
++// and a re-init returns the stale group rather than honouring a rewritten
++// hostfile.
++std::unordered_map<std::string, std::shared_ptr<detail::GroupImpl>>& backends() {
+   static std::unordered_map<std::string, std::shared_ptr<detail::GroupImpl>>
+-      backends;
++      backends_;
++  return backends_;
++}
++
++} // namespace
++
++bool finalize() {
++  auto& cache = backends();
++
++  // How many cache entries alias each impl: init() stores every group twice,
++  // once under "any" and once under the resolved backend name.
++  std::unordered_map<detail::GroupImpl*, long> cache_refs;
++  for (const auto& entry : cache) {
++    cache_refs[entry.second.get()]++;
++  }
++
++  // A use count above this cache's own contribution means a Group handle is
++  // still held somewhere, and dropping the cache would not destroy the impl.
++  //
++  // This is checked across the whole cache before anything is cleared, because
++  // a teardown cannot be undone: clearing first would leave a group that is
++  // gone from the cache but still running its socket threads, and the next
++  // init() would then build a *second* live ring alongside it. Failing without
++  // touching anything leaves the caller exactly where they started.
++  for (const auto& entry : cache) {
++    if (entry.second.use_count() > cache_refs[entry.second.get()]) {
++      return false;
++    }
++  }
++
++  // Dropping these references runs the existing teardown: ~RingGroup() shuts
++  // down and closes its sockets, and ~SocketThread() sets stop_, notifies, and
++  // joins its worker. That machinery was always correct -- it simply never ran.
++  cache.clear();
++  return true;
++}
++
++Group init(bool strict /* = false */, const std::string& bk /* = "any" */) {
++  auto& cache = backends();
+ 
+   // Already initialized so return the group.
+-  if (auto g = backends.find(bk); g != backends.end()) {
++  if (auto g = cache.find(bk); g != cache.end()) {
+     return Group(g->second);
+   }
+ 
+@@ -188,9 +235,9 @@ Group init(bool strict /* = false */, const std::string& bk /* = "any" */) {
+   if (group == nullptr) {
+     group = std::make_shared<detail::EmptyGroup>();
+   } else {
+-    backends.insert({"any", group});
++    cache.insert({"any", group});
+   }
+-  backends.insert({std::move(bk_), group});
++  cache.insert({std::move(bk_), group});
+   return Group(group);
+ }
+ 
+diff --git a/mlx/distributed/distributed.h b/mlx/distributed/distributed.h
+index 00c7a80e..0d136055 100644
+--- a/mlx/distributed/distributed.h
++++ b/mlx/distributed/distributed.h
+@@ -58,4 +58,33 @@ struct MLX_API Group {
+  */
+ MLX_API Group init(bool strict = false, const std::string& bk = "any");
+ 
++/**
++ * Release the cached groups so that a subsequent init() builds a new one.
++ *
++ * init() memoises the group it creates, so on its own it can never honour a
++ * changed hostfile: the second call returns the first call's group. Dropping
++ * the cached references here runs each backend's existing teardown -- for the
++ * ring backend that is ~RingGroup() closing its sockets and ~SocketThread()
++ * joining its worker.
++ *
++ * A cached impl is only destroyed once every other reference to it is gone, so
++ * callers must release their own Group handles first. Calling a collective on
++ * a group whose ring has been torn down is undefined; quiesce the ring before
++ * calling this.
++ *
++ * Returns true if the cached groups were torn down. False means a Group handle
++ * is still held somewhere, so nothing could be destroyed -- and in that case
++ * nothing is changed at all: the cache is left intact and the next init()
++ * returns the same group it would have before.
++ *
++ * Treat a false as an error rather than retrying. The surviving reference is
++ * in the caller's own code, so calling again without releasing it will fail
++ * identically.
++ *
++ * The use counts this inspects are only meaningful while no other thread is
++ * copying or destroying a Group, which is already required by the quiesce
++ * precondition above.
++ */
++MLX_API bool finalize();
++
+ } // namespace mlx::core::distributed

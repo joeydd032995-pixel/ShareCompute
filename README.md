@@ -15,15 +15,29 @@ This repository adds the membership layer that makes departure a planned event.
 | Path | What it is |
 |---|---|
 | `Sources/ShareComputeCore/` | Platform-neutral membership core. **Zero dependencies** — not MLX, not UIKit, not NIO. |
-| `Tests/ShareComputeCoreTests/` | 46 tests, no network and no sleeping. |
+| `Tests/ShareComputeCoreTests/` | 58 tests, no network and no sleeping. |
 | `Apps/InferRing/` | The vendored infer-ring app, unmodified. The first adapter. |
+| `Patches/` | Patches to MLX, mlx-c and mlx-swift. Start at [`Patches/README.md`](Patches/README.md). |
 | `findings.md` | Research log, including both spike results. Read this first. |
 | `task_plan.md` | Phase status and decisions. |
 | `progress.md` | Session log and test results. |
 
 ## Status
 
-**Detection is implemented. Re-formation is not possible without patching MLX.**
+**Detection ships. The MLX patches that make re-formation possible are written; wiring them into
+the app is not done.**
+
+| Milestone | State |
+|---|---|
+| M1 — detection without re-formation | merged |
+| M2 Stage 1 — a departing peer fails instead of hanging | patch written, 16 harness checks |
+| M2 Stage 2 — the group can be torn down and rebuilt | patches written, 27 harness checks |
+| M2 Stage 3 — epoch re-formation in the app | **not started** |
+
+None of the patches has been built as part of MLX or run on Apple hardware. See
+[`Patches/README.md`](Patches/README.md).
+
+### How this got here
 
 The plan gated adapter work on two spikes. Both were answerable by reading the pinned MLX sources,
 and **both failed**:
@@ -38,9 +52,11 @@ and **both failed**:
 
 Full evidence with file and line references is in [`findings.md`](findings.md).
 
-Writing `MLXManager.teardown()` is therefore not a hard task — it is an unavailable operation, and
-building it would be waste. `ShareComputeCore` is unaffected because it never imported MLX; that
-boundary is what contained the failure. See the re-plan at the end of `findings.md`.
+Writing `MLXManager.teardown()` was therefore not a hard task — it was an *unavailable operation*,
+and building it would have been waste. `ShareComputeCore` was unaffected because it never imported
+MLX; that boundary is what contained the failure. Milestone 1 shipped detection alone, and milestone
+2 went after the constraint itself: `Patches/mlx/0002` supplies the `finalize()` that Spike A found
+missing, so the operation now exists and Stage 3 can be written against it.
 
 ### What is implemented: detection without re-formation
 

@@ -1,24 +1,18 @@
-# MLX patches
+# `mlx` patches
 
-Patches against MLX that infer-ring needs in order to survive a node leaving the ring.
-
-They are kept here as patch files rather than as forks because forking
-`ml-explore/mlx`, `ml-explore/mlx-c` and `N1k1tung/mlx-swift` creates repositories under an
-account, which is a decision for the repository owner rather than something to do implicitly.
-
-## Applying
+Patches against `ml-explore/mlx`. See [`../README.md`](../README.md) for the repository chain, the
+fork list, and the order all the patches must be applied in.
 
 ```bash
 git clone https://github.com/ml-explore/mlx
 cd mlx
 git checkout 38ad257088fb2193ad47e527cf6534a689f30943   # the commit mlx-swift pins
 git apply /path/to/Patches/mlx/0001-ring-fail-instead-of-hang.patch
+git apply /path/to/Patches/mlx/0002-distributed-finalize.patch
 ```
 
-The pin comes from the `Source/Cmlx/mlx` submodule of
-`N1k1tung/mlx-swift` at branch `ios-distrib-0.3.0`, which is what the app builds against.
-`Cmlx` is a **source** SwiftPM target, not a prebuilt binary, so a patched submodule is compiled
-directly — there is no CMake step and no artifact to regenerate.
+The pin comes from the `Source/Cmlx/mlx` submodule of `N1k1tung/mlx-swift` at tag
+`ios-distrib-0.3.0`, which is what the app builds against.
 
 ---
 
@@ -91,3 +85,91 @@ updated in step if `ring.cpp` changes.
 
 **Not verified:** the patch has never been built as part of MLX, nor run on Apple hardware, nor
 exercised against a real multi-device ring. Stage 1 of the plan describes the hardware tests.
+
+---
+
+## 0002 — `finalize()`, so the group can be rebuilt
+
+**The bug.** `distributed::init` caches the group it builds in a **function-local static**, keyed by
+backend name:
+
+```cpp
+Group init(bool strict, const std::string& bk) {
+  static std::unordered_map<std::string, std::shared_ptr<detail::GroupImpl>> backends;
+  if (auto g = backends.find(bk); g != backends.end()) {
+    return Group(g->second);           // <-- every call after the first
+  }
+```
+
+Nothing can reach that static to clear it. The first `init` wins for the life of the process, so a
+second `init` after a node leaves returns the **stale** group and ignores the rewritten hostfile —
+the ring "re-forms" with the departed member still in it. This is `findings.md` Spike A, and it is
+why milestone 1 shipped detection without re-formation.
+
+The teardown itself was never missing: `~RingGroup()` closes its sockets and `~SocketThread()` sets
+`stop_`, notifies and joins its worker. That machinery is correct. It simply never ran, because the
+cache held the last reference forever.
+
+**What the patch changes.**
+
+| Change | Why |
+|---|---|
+| The static moves out of `init` into a file-local `backends()` accessor | A function-local static is unreachable from anywhere else; nothing could clear it |
+| New `bool finalize()` drops the cached references | Running the destructors *is* the teardown — no new shutdown path is written |
+| `finalize()` checks every impl's use count **before** clearing anything | See below. This is the part worth reviewing |
+| `finalize()` returns whether the teardown actually happened | A silent no-op here re-creates the exact bug being fixed |
+
+**Why the check comes before the clear.** A `Group` handle held anywhere else keeps its impl alive,
+so clearing the cache would not destroy it. The first version of this patch cleared first and
+reported afterwards via `weak_ptr::expired()` — which is accurate, but leaves the worst possible
+state on failure: the old group is gone from the cache yet **still running its socket threads**, and
+the next `init()` builds a *second* live ring beside it. Two rings, one process.
+
+Checking first makes failure inert. If any impl is referenced from outside the cache, `finalize()`
+returns `false` having changed nothing, and the next `init()` returns what it always would have.
+The caller is exactly where they started, which is a state they can reason about.
+
+This was caught by `tests/group_finalize_test.cpp`, not by review — the test asserted the
+consequence and the consequence was wrong.
+
+**Why a `bool` rather than `void`.** Ignoring a failed teardown reproduces the original defect
+silently: re-init hands back a group whose membership is stale, nothing crashes, and the ring is
+merely wrong. That is the same shape as the `wait()`/`get()` defect in 0001, and it gets the same
+treatment — the failure is made returnable, and the Swift wrapper deliberately omits
+`@discardableResult` so ignoring it has to be written out.
+
+Counting is exact rather than "is the use count 1": `init` stores every group **twice**, once under
+`"any"` and once under the resolved backend name, so the cache's own contribution is counted per
+impl before comparing.
+
+**Requires** the matching `mlx-c` and `mlx-swift` patches to be reachable from Swift; `mlx-c/0001`
+does not compile without this one.
+
+### Verification
+
+```bash
+g++ -std=c++17 -O1 -o /tmp/gft tests/group_finalize_test.cpp && /tmp/gft
+```
+
+1. **Compilation.** `g++ -fsyntax-only -std=c++17` over the patched `distributed.cpp`, from a
+   pristine `38ad2570` checkout with `0001` and `0002` applied in order. Clean.
+2. **Coupling.** The mlx-c half was compiled against this patched header, and then against the
+   *unpatched* one as a negative control — the latter fails with `'finalize' is not a member of
+   'mlx::core::distributed'`. The two patches are genuinely linked, not independently plausible.
+3. **Runtime semantics.** `tests/group_finalize_test.cpp` mirrors the cache, `finalize()` and
+   `init()`'s cache interaction against a stub impl that records its own destruction. 27 checks, all
+   passing, covering: teardown really destroys; two cache keys aliasing one impl destroy it exactly
+   once (a double free here is a crash); an outstanding handle blocks teardown and is reported; a
+   failed `finalize()` leaves the cache untouched; the supported release → finalize → re-init
+   sequence yields a genuinely new group; empty and repeated calls are no-ops.
+
+   The last case mirrors the **unpatched** cache and asserts that re-init returns the same group, so
+   the defect is pinned rather than merely described.
+
+The test mirrors the patch rather than including it — MLX cannot be compiled here — so it must be
+updated in step if `distributed.cpp` changes.
+
+**Not verified:** never built as part of MLX, never run on Apple hardware, never exercised against a
+real ring. In particular, nothing here proves that `~RingGroup()` and `~SocketThread()` complete
+promptly and without deadlock when the sockets are real and a peer has already gone — the stub impl
+has a trivial destructor. That is the first thing to check on hardware.

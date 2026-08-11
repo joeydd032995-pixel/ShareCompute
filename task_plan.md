@@ -73,8 +73,8 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 
 | # | Stage | Status |
 |---|---|---|
-| 1 | `ring.cpp` fail-instead-of-hang | **complete** — `Patches/mlx/`, 15 harness checks pass |
-| 2 | Make the group rebuildable (`distributed.cpp` reset, mlx-c free/finalize, mlx-swift) | not started |
+| 1 | `ring.cpp` fail-instead-of-hang | **complete** — `Patches/mlx/0001`, 16 harness checks pass |
+| 2 | Make the group rebuildable (`distributed.cpp` `finalize()`, mlx-c free/finalize, mlx-swift) | **complete** — 3 patches, 27 harness checks pass |
 | 3 | Epoch re-formation in infer-ring (`MLXManager.teardown()`, non-terminal `RingWatchdog`) | not started |
 
 **Stage 1 outcome.** The design changed materially during implementation. Two findings (F10, F11 in
@@ -87,14 +87,35 @@ from `to_group()` on the caller's thread.
 Stage 1 needs **no mlx-c or mlx-swift change** — the error rides the existing `mlx_error` /
 `withError` path — so it is independently shippable and worth offering upstream to `ml-explore/mlx`.
 
+**Stage 2 outcome.** Three coupled patches, one per repository, documented in `Patches/README.md`.
+`distributed::init`'s function-local static moves behind an accessor and a new `finalize()` drops the
+cached references, which runs the teardown that `~RingGroup()` and `~SocketThread()` always
+implemented but never reached.
+
+Two things changed during implementation, both worth carrying forward:
+
+- **`finalize()` returns `bool`, and checks before it clears.** The first version cleared the cache
+  and reported afterwards. That is accurate but leaves the worst state on failure — the old group
+  gone from the cache yet still running its socket threads, with the next `init()` building a second
+  live ring beside it. Checking every impl's use count first makes a failed teardown inert. The test
+  caught this, not review.
+- **F14 — the loaded model holds the ring.** Auditing whether restoring mlx-swift's `deinit` could
+  cause a use-after-free (it cannot; everything retains the Swift wrapper) turned up the retain chain
+  `ModelContext → model → sharded layers → DistributedGroup`. This is a hard constraint on Stage 3:
+  `teardown()` must release the model *before* calling `finalize()`, or the call correctly does
+  nothing.
+
 ## Next actions
 
-1. Decide whether to fork `ml-explore/mlx`, `ml-explore/mlx-c` and `N1k1tung/mlx-swift`. Stage 1 is
-   held as a patch file rather than a fork because creating repositories under an account is the
-   owner's call.
-2. On a Mac: apply the patch, build MLX as part of the app, and run the Stage 1 hardware test —
-   hard-kill a peer mid-generation and confirm a **thrown Swift error within about one token**,
-   neither a hang nor a crash. Test both `SIGKILL` and cable-pull, which take different `errno` paths.
-3. Add `ShareComputeCore` to the Xcode project (now wired in `project.pbxproj`) and type-check the
+1. **Stage 3** — epoch re-formation in the app. Now unblocked: `finalize()` is the operation Spike A
+   recorded as unavailable. Must honour F14's ordering, and `RingWatchdog`'s loss becomes
+   non-terminal.
+2. On a Mac: apply all four patches, build MLX as part of the app, and run the hardware tests. For
+   Stage 1, hard-kill a peer mid-generation and confirm a **thrown Swift error within about one
+   token**, neither a hang nor a crash — test both `SIGKILL` and cable-pull, which take different
+   `errno` paths. For Stage 2, confirm `~RingGroup()` and `~SocketThread()` complete promptly and
+   without deadlock when a peer has *already* gone; the harness stub cannot show this.
+3. Repoint `project.pbxproj` at the forks. Note F13: the current reference is `kind = branch` naming
+   something that exists only as a **tag**, so it cannot be copied as-is.
+4. Add `ShareComputeCore` to the Xcode project (now wired in `project.pbxproj`) and type-check the
    adapter — actor isolation around `@MainActor RingHealthMonitor` is the likely breakage.
-4. Then Stage 2, then Stage 3.
