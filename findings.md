@@ -701,8 +701,31 @@ non-throwing.
 This is the concurrency-boundary code `findings.md` and every agent definition flagged as the
 least-verified thing in the repository. The first compiler contact found a defect in it.
 
+### Round two: two fixed, one replaced by a fix-induced error
+
+The next build confirmed both missing-import errors gone and the optional-pattern fix holding.
+One error remained, and it was **caused by the previous fix**:
+
+```text
+RingHealthMonitor.swift:167:23: error: conflicting arguments to generic parameter 'T'
+('Void' vs. 'Task<Void, Never>')
+```
+
+`MainActor.assumeIsolated` is generic over its closure's result. Writing `Task<Void, Never> { … }`
+as the closure's single expression makes it an implicit *return*, so `T` inferred as
+`Task<Void, Never>` where the notification handler wants `Void`. The original bare `Task { }` had
+the same shape; the ambiguity error simply fired first and masked it.
+
+Fixed with `_ = Task<Void, Never> { … }`, which makes the body a statement. The discard is also
+correct on its own terms: the drain is deliberately fire-and-forget, because awaiting a peer during
+`willResignActive` risks suspension having told nobody.
+
+Worth recording as a pattern rather than a one-off: **one compile round can only reveal the errors
+that come first.** Three rounds so far have each uncovered a defect the previous round hid — the
+architecture error masked the fmt error, fmt masked the imports, and the import fix let a
+fix-induced generic-inference error surface. Budget several rounds, not one.
+
 ### Not verified
 
-That these three fixes are sufficient. The compiler stops early, so later files may hold further
-errors that nothing has reached yet — `RingCoordinator`, `DataServer` and `InferringApp` all touch
-ring health and have never been type-checked past this point.
+That this is the last of them. The compiler still stops early, and `RingCoordinator`, `DataServer`
+and `InferringApp` all touch ring health without having been reached.
