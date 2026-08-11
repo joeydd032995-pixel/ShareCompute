@@ -1,4 +1,13 @@
-name: iOS starter workflow
+name: iOS build
+
+# Builds the Infer Ring app for the iOS Simulator.
+#
+# There is no Test step: the app project has eight native targets and *zero*
+# test bundles, so `test-without-building` could only ever fail. The Swift
+# package's tests run in core.yml instead.
+#
+# Like the macOS job, expect real failures before this goes green -- none of
+# the Apple-side Swift has ever been type-checked.
 
 on:
   push:
@@ -6,39 +15,36 @@ on:
   pull_request:
     branches: [ "main" ]
 
+env:
+  # Not at the repository root -- see the note in objective-c-xcode.yml.
+  PROJECT: "Apps/InferRing/Infer Ring.xcodeproj"
+  SCHEME: "Infer Ring"
+
 jobs:
   build:
-    name: Build and Test default scheme using any available iPhone simulator
+    name: Build for iOS Simulator
     runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set Default Scheme
-        run: |
-          scheme_list=$(xcodebuild -list -json | tr -d "\n")
-          default=$(echo $scheme_list | ruby -e "require 'json'; puts JSON.parse(STDIN.gets)['project']['targets'][0]")
-          echo $default | cat >default
-          echo Using default scheme: $default
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Confirm the scheme exists
+        run: xcodebuild -list -project "$PROJECT"
+
       - name: Build
-        env:
-          scheme: ${{ 'default' }}
-          platform: ${{ 'iOS Simulator' }}
+        # A *generic* simulator destination avoids the starter workflow's
+        # `xcrun xctrace list devices | grep iPhone` device-name scrape, which
+        # breaks whenever the runner image's simulator set changes. Nothing is
+        # run, so no booted device is needed.
         run: |
-          # xcrun xctrace returns via stderr, not the expected stdout (see https://developer.apple.com/forums/thread/663959)
-          device=`xcrun xctrace list devices 2>&1 | grep -oE 'iPhone.*?[^\(]+' | head -1 | awk '{$1=$1;print}' | sed -e "s/ Simulator$//"`
-          if [ $scheme = default ]; then scheme=$(cat default); fi
-          if [ "`ls -A | grep -i \\.xcworkspace\$`" ]; then filetype_parameter="workspace" && file_to_build="`ls -A | grep -i \\.xcworkspace\$`"; else filetype_parameter="project" && file_to_build="`ls -A | grep -i \\.xcodeproj\$`"; fi
-          file_to_build=`echo $file_to_build | awk '{$1=$1;print}'`
-          xcodebuild build-for-testing -scheme "$scheme" -"$filetype_parameter" "$file_to_build" -destination "platform=$platform,name=$device"
-      - name: Test
-        env:
-          scheme: ${{ 'default' }}
-          platform: ${{ 'iOS Simulator' }}
-        run: |
-          # xcrun xctrace returns via stderr, not the expected stdout (see https://developer.apple.com/forums/thread/663959)
-          device=`xcrun xctrace list devices 2>&1 | grep -oE 'iPhone.*?[^\(]+' | head -1 | awk '{$1=$1;print}' | sed -e "s/ Simulator$//"`
-          if [ $scheme = default ]; then scheme=$(cat default); fi
-          if [ "`ls -A | grep -i \\.xcworkspace\$`" ]; then filetype_parameter="workspace" && file_to_build="`ls -A | grep -i \\.xcworkspace\$`"; else filetype_parameter="project" && file_to_build="`ls -A | grep -i \\.xcodeproj\$`"; fi
-          file_to_build=`echo $file_to_build | awk '{$1=$1;print}'`
-          xcodebuild test-without-building -scheme "$scheme" -"$filetype_parameter" "$file_to_build" -destination "platform=$platform,name=$device"
+          set -o pipefail
+          xcodebuild clean build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty

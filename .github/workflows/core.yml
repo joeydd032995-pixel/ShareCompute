@@ -1,0 +1,74 @@
+name: ShareComputeCore
+
+# The membership core has no dependencies -- not MLX, not UIKit, not NIO -- so
+# it builds and tests anywhere Swift runs. That is the whole point of the
+# boundary, and this job is what keeps it honest: an accidental import of an
+# Apple-only module would fail here immediately.
+#
+# It also runs the C++ harnesses that pin the MLX patches, which need only g++.
+#
+# Unlike the two Xcode jobs, everything here is expected to pass today.
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  core:
+    name: swift test on Linux
+    runs-on: ubuntu-latest
+    container: swift:6.1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+  patches:
+    name: MLX patch harnesses
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stage 1 — ring fails instead of hanging
+        working-directory: Patches/mlx/tests
+        run: |
+          g++ -std=c++17 -O1 -pthread -o /tmp/stf socket_thread_failure_test.cpp
+          /tmp/stf
+
+      - name: Stage 2 — group finalize
+        working-directory: Patches/mlx/tests
+        run: |
+          g++ -std=c++17 -O1 -pthread -o /tmp/gft group_finalize_test.cpp
+          /tmp/gft
+
+      - name: Stage 2 — group finalize under ThreadSanitizer
+        # The concurrency case is the reason finalize() takes a mutex. Removing
+        # the locks makes this same case report 43 data races.
+        working-directory: Patches/mlx/tests
+        run: |
+          g++ -std=c++17 -O1 -g -fsanitize=thread -pthread -o /tmp/gft_tsan group_finalize_test.cpp
+          /tmp/gft_tsan
+
+  agents:
+    name: Agent roster lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate agent definitions
+        run: python3 scripts/validate-agents.py
