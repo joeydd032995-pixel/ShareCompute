@@ -168,11 +168,16 @@ removes them from the model's listing entirely: they cost nothing per turn and c
   command carries dispatch mechanics only — arguments, the ownership pre-flight, the report contract
   — and never role knowledge. A 40-line body cap in the validator is what actually enforces that;
   pointing at the agent file would not.
-- **The nine gated roles answer inline and spawn nothing.** This is a safety decision, not a cost
-  one. Fork resolution falls back to `general-purpose` on an agent name it cannot resolve, and
-  `general-purpose` has `Write`. The gated roles are read-only *by construction* and that toolset is
-  the entire gate, so one typo in `agent:` would hand a blocked role write access with no error
-  anywhere. The validator's `agent:`-resolution check is the highest-value line in it.
+- **The nine gated roles answer inline and spawn nothing.** Fork resolution falls back to
+  `general-purpose` on an agent name it cannot resolve, and that fallback is **silent** — one typo in
+  `agent:` produces no error anywhere. Inline is the option that fails *visibly*. The validator's
+  `agent:`-resolution check is the highest-value line in it.
+
+  Inline is **not** a tool restriction, and an earlier version of this section said otherwise. The
+  skill body runs with the caller's toolset, and the gated agents' own toolsets never apply to this
+  path at all — nor are those agents read-only: all nine carry `Bash`. The gate is **instructional**,
+  enforced by the definitions refusing the work, with the absent `Write`/`Edit` as defence in depth.
+  `findings.md` F19 records the correction.
 
 Three workflow commands are model-invocable, deliberately — they are not routing decisions:
 `/verify` (the verification matrix and, as importantly, what it does *not* cover), `/patches` (apply
@@ -182,6 +187,12 @@ F-number, evidence with `file:line`, mandatory unverified section).
 `/verify` knowingly shadows a same-named built-in skill. That is normally a reason never to create
 one, and is the documented exception: how a project verifies is project-specific, and here it has to
 name the large half that this container cannot check at all.
+
+**That shadow is a design intent, not an observed behaviour.** It rests on reading the shipped CLI
+bundle, where a project skill displaces a same-named bundled one; nothing here has confirmed it at
+runtime. Typing `/verify` in an interactive session and seeing *this* file's content — the five
+commands and the container's limits — rather than the generic built-in is the check that would
+settle it, and it has not been run.
 
 Three things worth knowing before dispatching:
 

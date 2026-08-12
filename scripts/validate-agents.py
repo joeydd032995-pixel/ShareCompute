@@ -12,9 +12,13 @@ The skill half matters more than it looks. A forked skill resolves its agent lik
     agentType === "general-purpose") ?? m[0]
 
 — so a misspelled `agent:` does not error. It silently lands on `general-purpose`, which
-carries the full toolset including Write. The nine gated roles are read-only *by
-construction*, and that toolset is the entire gate, so one typo would hand them write
-access with no warning anywhere. The `agent:` resolution check below is what catches it.
+carries the full toolset including Write. The `agent:` resolution check below is what
+catches that, and it is the highest-value check here.
+
+What it is *not* is a permission boundary. The gated roles' gate is instructional — their
+definitions refuse the work — and those definitions are not read-only either: all nine
+carry Bash. See `findings.md` F19; an earlier version of this docstring said the toolset
+was the gate, which was wrong.
 
 Exits non-zero on any failure.
 """
@@ -79,10 +83,18 @@ skill_descriptions: list[tuple[str, str]] = []
 
 
 def fail(path: pathlib.Path, message: str) -> None:
+    """Record one problem against a file. Collected rather than raised, so a single run
+    reports every fault instead of stopping at the first."""
     problems.append(f"{path.relative_to(ROOT)}: {message}")
 
 
 def parse_front_matter(path: pathlib.Path, text: str):
+    """Parse the leading `---` block, or record why it could not be parsed and return None.
+
+    Strict on purpose: the harness logs `YAML frontmatter failed to parse and was ignored`
+    and drops the *whole* block, so an unquoted `: ` in a description would silently take
+    `agent:`, `context:` and `disable-model-invocation` with it.
+    """
     if not text.startswith("---\n"):
         fail(path, "missing YAML front matter (file must start with '---')")
         return None
@@ -102,6 +114,11 @@ def parse_front_matter(path: pathlib.Path, text: str):
 
 
 def check(path: pathlib.Path) -> None:
+    """Lint one `.claude/agents/<name>.md` role definition.
+
+    Identity keys off the filename, since that is what `subagent_type` resolves against —
+    a `name:` that disagrees with it dispatches to nothing.
+    """
     text = path.read_text(encoding="utf-8")
     meta = parse_front_matter(path, text)
     if meta is None:
@@ -199,6 +216,15 @@ def check_skill(path: pathlib.Path, agent_names: set[str]) -> None:
         if HONESTY_RULE.lower() not in body.lower():
             fail(path, f"workflow skill must carry the verification rule: '{HONESTY_RULE}'")
 
+        # The inverse of the role-skill rule, and it needs enforcing for the same reason.
+        # These three dispatch nobody, so they are not a routing decision and do not compete
+        # with orchestration. `verify` in particular *shadows* a model-invocable built-in:
+        # disabling it here would subtract a capability rather than replace one.
+        if meta.get("disable-model-invocation") is True:
+            fail(path, "workflow skills stay model-invocable — they dispatch nobody, so they "
+                       "are not a routing decision, and a disabled 'verify' would strictly "
+                       "subtract from the built-in skill it shadows")
+
     if not is_role:
         return
 
@@ -225,11 +251,12 @@ def check_skill(path: pathlib.Path, agent_names: set[str]) -> None:
 
     gated = slug.startswith(GATED_PREFIXES)
     if gated:
-        # Inline, deliberately. A wrong `agent:` silently resolves to general-purpose,
-        # which has Write — and these roles having no Write IS the gate.
+        # Inline, deliberately: a wrong `agent:` resolves to general-purpose with no error,
+        # and inline is the option that fails visibly. Not a tool restriction — see F19.
         if "context" in meta or "agent" in meta:
             fail(path, "gated role skills must not fork: a mistyped 'agent' falls back to "
-                       "general-purpose, which has Write, and the missing Write is the gate")
+                       "general-purpose silently, and inline dispatch is the variant that "
+                       "fails where someone can see it")
         if "GATED" not in (description or ""):
             fail(path, "gated role skill must say GATED in its description")
         if "blocked" not in body.lower():
@@ -249,6 +276,7 @@ def check_skill(path: pathlib.Path, agent_names: set[str]) -> None:
 
 
 def main() -> int:
+    """Lint every agent and skill, then report. Returns 0 when clean, 1 on any problem."""
     if not AGENTS.is_dir():
         print(f"no agent directory at {AGENTS}", file=sys.stderr)
         return 1
@@ -308,9 +336,11 @@ def main() -> int:
 
     gated = sum(1 for n in seen_names if n.startswith(GATED_PREFIXES))
     workflow = sum(1 for p in skill_files if p.parent.name in WORKFLOW_SKILLS)
+    router = sum(1 for p in skill_files if p.parent.name == ORCHESTRATION_SKILL)
     print(
         f"checked {len(files)} agent definitions ({gated} gated), "
-        f"{len(skill_files)} skills ({len(role_skills)} role, {workflow} workflow)"
+        f"{len(skill_files)} skills ({len(role_skills)} role, {workflow} workflow, "
+        f"{router} router)"
     )
 
     if problems:

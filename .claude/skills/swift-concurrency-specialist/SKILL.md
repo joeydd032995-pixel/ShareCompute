@@ -23,8 +23,8 @@ were not given, ask for it rather than reconstructing it from the repo.
 
 ## Before you write anything
 
-1. `Read` `.claude/skills/orchestration/SKILL.md` — you have no `Skill` tool, so read it, do not
-   invoke it. Confirm every path you intend to write is yours, and that no other agent is in it.
+1. `Read` `docs/AGENT-OWNERSHIP.md` — the ownership table, not the router. Confirm every path you
+   intend to write is yours, and that no other agent is in it.
 2. A new `CapabilityProfile` field, a new `NodeState`, or any edit under
    `Sources/ShareComputeCore/**` is a request, not an edit. Append it to `findings.md` — what you
    need, why, what you tried instead — and return.

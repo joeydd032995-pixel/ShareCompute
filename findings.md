@@ -729,3 +729,55 @@ fix-induced generic-inference error surface. Budget several rounds, not one.
 
 That this is the last of them. The compiler still stops early, and `RingCoordinator`, `DataServer`
 and `InferringApp` all touch ring health without having been reached.
+
+---
+
+## F19 — The gated roles are not read-only, and inline dispatch does not restrict tools either
+
+PR #8 justified answering the nine gated commands (`/linux-*`, `/windows-*`, `/android-*`) inline
+rather than forking, with this rationale, repeated in **13 places**:
+
+> The nine gated roles are read-only by construction, and that toolset *is* the gate.
+
+Both halves are false.
+
+**They are not read-only.** Every gated definition lists `Bash`:
+
+```text
+.claude/agents/linux-backend.md:4     tools: Read, Grep, Glob, Bash, TaskCreate, TaskUpdate
+.claude/agents/linux-designer.md:4    tools: Read, Grep, Glob, Bash
+.claude/agents/windows-designer.md:4  tools: Read, Grep, Glob, Bash
+…all nine, same shape
+```
+
+`Bash` writes files. "No `Write`, no `Edit`" narrows the write surface; it does not close it.
+
+**And the toolset never applies anyway.** A gated command runs **inline** — the body executes in the
+caller's context, with the caller's tools. The gated agent is never spawned, so its `tools:` list is
+not consulted on this path at all. The rationale appealed to a restriction that the chosen mechanism
+does not invoke, to justify choosing that mechanism.
+
+The design survives; the reason changes. Forking on a *correct* agent name would genuinely apply the
+narrower toolset — it is forking on a *wrong* one that is dangerous, because resolution falls back to
+`general-purpose` (which has `Write`) with no error anywhere. Inline is not the safe option, it is
+the **visible** one: it fails where an operator can see it. The gate itself is instructional — the
+definitions state the block and refuse the work — with the absent `Write`/`Edit` as defence in depth.
+
+Surfaced by CodeRabbit on PR #8, though filed as "use `allowed-tools` to enforce it", which would
+have made things worse: `allowed-tools` pre-approves tools for an invocation, it does not deny
+others, so a read-only-looking list would have read as enforcement while enforcing nothing.
+
+**Verified:** `grep -m1 '^tools:' .claude/agents/{linux,windows,android}-*.md` — nine files, all
+carrying `Bash`. The `agentType === "general-purpose") ?? m[0]` fallback was read out of the shipped
+CLI bundle at `/opt/claude-code/bin/claude`.
+
+**Not verified:** no slash command has ever been typed in this repository. That a fork spawns the
+named agent, that a gated command spawns nothing, that `background: false` blocks rather than
+detaching, and that inline bodies really do inherit the caller's toolset are all read from the bundle
+and from documentation, never observed at dispatch. Confirming them needs an interactive session.
+
+**Consequence:** the claim is withdrawn from all 13 sites. Gated roles keep `Bash` — a blocked role
+still needs to explore the repository to answer the platform questions it exists for — so the honest
+statement is that the gate is instructional, and this project should stop describing any part of the
+agent roster as a permission boundary. `scripts/validate-agents.py` pins the mechanical half it *can*
+check: that `agent:` resolves to a real definition, and that gated skills never fork.

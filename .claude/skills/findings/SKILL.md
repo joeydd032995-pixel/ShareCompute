@@ -33,6 +33,11 @@ grep -nE '^#+ *F[0-9]+' findings.md | tail -3
 
 Take the next integer. Do not reuse or renumber.
 
+There is no lock on this, and it does not need one: `findings.md` is a file in a git working tree,
+not a shared database. If you are in a worktree and another agent appends concurrently, you both
+append at end-of-file and **git conflicts** — that is the detection. Resolve it by renumbering
+*yours* to follow theirs; never drop a finding to make a merge clean.
+
 ## The shape
 
 ```markdown
@@ -40,8 +45,15 @@ Take the next integer. Do not reuse or renumber.
 
 <What was established, and the evidence.>
 
+**Verified:** <the command you ran or the file:line you read, verbatim>
+
+**Not verified:** <the boundary — what this does not establish, and what it would take>
+
 **Consequence:** <what changes because of this — a design decision, a blocked path, a rule>
 ```
+
+The last two are slots, not decoration. The rule below is stated in prose all over this repository
+and skipped anyway; a template with a blank in it is harder to skip than a paragraph asking nicely.
 
 Four things separate a finding from a note:
 

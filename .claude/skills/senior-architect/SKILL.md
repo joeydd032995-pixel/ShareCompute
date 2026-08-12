@@ -25,8 +25,8 @@ were not given, ask for it rather than reconstructing it from the repo.
 ## Before you write anything
 
 1. You are the one role with the `Skill` tool, so `orchestration` is available to invoke rather than
-   read. You also own `.claude/**` — if a rule in it is wrong, correcting it is your job, not a
-   request to anyone.
+   read; the ownership table it used to carry is now `docs/AGENT-OWNERSHIP.md`. You own both, plus
+   `.claude/**` — if a rule in them is wrong, correcting it is your job, not a request to anyone.
 2. The contract is yours alone, which inverts the rule every other role follows: nobody files a
    request with you and waits for permission — you make the change. What you owe in exchange is that
    `Tests/ShareComputeCoreTests/**` moves in the same commit, and that `ShareComputeCore` still

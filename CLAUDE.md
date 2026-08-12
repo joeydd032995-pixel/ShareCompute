@@ -90,7 +90,8 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | `ShareComputeCore` | **yes** | `/opt/swift/usr/bin/swift test` (Swift 6.1.2) |
 | MLX C++ patch compiles | **yes** | `g++ -fsyntax-only -std=c++17` with mlx-swift's vendored `json`/`fmt` headers |
 | MLX failure semantics | **yes** | `Patches/mlx/tests/socket_thread_failure_test.cpp` against real `socketpair` |
-| Agent roster and slash commands | **yes** | `python3 scripts/validate-agents.py` |
+| Agent/skill files — *static* metadata | **yes** | `python3 scripts/validate-agents.py` — parses front matter and checks the mappings |
+| Slash commands at **dispatch** | **no** | needs an interactive session: that a fork spawns the named agent, that `background: false` blocks, that a gated command spawns nothing, that `/verify` displaces the built-in |
 | Swift syntax of Apple code | partial | `swiftc -parse` — syntax only. It passed the Apple adapter for this project's whole life while three real type errors sat in it (F18) |
 | Xcode project builds | **not here** | needs macOS + Xcode — `.github/workflows/` runs it on a macOS runner instead |
 | Actor isolation, runtime behaviour | **no** | needs Apple hardware |
@@ -122,8 +123,13 @@ Every role also has a slash command at `.claude/skills/<role>/SKILL.md` — `/ma
 `/tester`, one per agent file. Those are a **human** surface, not a second router: they carry
 `disable-model-invocation: true`, so you cannot see them and routing stays one decision in
 `orchestration`. The eleven active roles fork the agent directly; the nine gated ones answer inline
-and spawn nothing, because a mistyped `agent:` silently resolves to `general-purpose`, which has
-`Write` — and the gated roles having no `Write` *is* the gate.
+and spawn nothing, because a mistyped `agent:` silently resolves to `general-purpose` — inline is the
+option that fails *visibly*, not one that restricts tools. **The gate is instructional**, not a
+permission boundary: the definitions refuse the work, and all nine gated roles carry `Bash`, so they
+were never read-only. See F19.
+
+File ownership lives in `docs/AGENT-OWNERSHIP.md`, outside `.claude/skills/` so a forked role can
+read its own contract without reading the router.
 
 Three workflow commands are model-invocable, deliberately: `/verify` (the verification matrix),
 `/patches` (the MLX patch set) and `/findings` (append to the research log correctly).
@@ -132,5 +138,5 @@ A skill body never restates role knowledge — the agent file is the definition,
 cap in the validator is what keeps that true.
 
 ```bash
-python3 scripts/validate-agents.py   # 20 agents (9 gated), 24 skills (20 role, 3 workflow)
+python3 scripts/validate-agents.py   # 20 agents (9 gated), 24 skills (20 role, 3 workflow, 1 router)
 ```

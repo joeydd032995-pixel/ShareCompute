@@ -31,15 +31,18 @@ rounding error.
 ```
 
 ```bash
-cd Patches/mlx/tests
-g++ -std=c++17 -O1 -pthread -o /tmp/stf socket_thread_failure_test.cpp && /tmp/stf   # 16 checks
-g++ -std=c++17 -O1 -pthread -o /tmp/gft group_finalize_test.cpp        && /tmp/gft   # 31 checks
-g++ -std=c++17 -O1 -g -fsanitize=thread -pthread \
-    -o /tmp/gft_tsan group_finalize_test.cpp && /tmp/gft_tsan          # 31 checks, TSan clean
+# Subshell, so the cd does not leak into the next block — the same idiom Patches/README.md
+# uses for its sibling clones.
+( cd Patches/mlx/tests
+  g++ -std=c++17 -O1 -pthread -o /tmp/stf socket_thread_failure_test.cpp && /tmp/stf  # 16 checks
+  g++ -std=c++17 -O1 -pthread -o /tmp/gft group_finalize_test.cpp        && /tmp/gft  # 31 checks
+  g++ -std=c++17 -O1 -g -fsanitize=thread -pthread \
+      -o /tmp/gft_tsan group_finalize_test.cpp && /tmp/gft_tsan         # 31 checks, TSan clean
+)
 ```
 
 ```bash
-python3 scripts/validate-agents.py               # 20 agents (9 gated), 24 skills
+python3 scripts/validate-agents.py    # 20 agents (9 gated), 24 skills (20 role, 3 workflow, 1 router)
 ```
 
 Two things about the harnesses are easy to misread. They **mirror** the patched MLX code rather than
@@ -67,6 +70,7 @@ For the MLX patch set specifically — apply order, the compile sequence, the ne
 | A ring actually forms | no | two or more real devices |
 | Any MLX patch at runtime | no | macOS; **none of the four has ever been executed** |
 | Linux / Windows / Android | no | those SDKs, and a non-MLX runtime that does not exist yet |
+| Slash commands at **dispatch** | no | an interactive session. `validate-agents.py` checks the *files*, never the behaviour: not that a fork spawns the named agent, not that `background: false` blocks, not that this skill actually shadows the built-in |
 
 ## Report
 

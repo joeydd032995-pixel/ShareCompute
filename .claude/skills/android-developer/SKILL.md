@@ -1,6 +1,6 @@
 ---
 name: android-developer
-description: GATED — /android-developer answers inline and spawns nothing. Covers the Android foreground-service host — consent flows, NsdManager discovery and service-scoped node lifecycle, all blocked until a non-MLX execution path exists. Use it to plan, or to ask a Android question, not to write code yet.
+description: GATED — /android-developer answers inline and spawns nothing. Covers the Android foreground-service host — consent flows, NsdManager discovery and service-scoped node lifecycle, all blocked until a non-MLX execution path exists. Use it to plan, or to ask an Android question, not to write code yet.
 argument-hint: <host-process question, or what the daemon or service will need>
 disable-model-invocation: true
 ---
@@ -10,7 +10,7 @@ This command answers inline. It does **not** fork `android-developer`, for the r
 ## The gate
 
 `android-developer` is **blocked**. MLX is Apple-only, so until the specification's Phase 1a — a portable graph
-IR and a wire protocol — and a non-MLX execution path exist, a Android node has no runtime to run.
+IR and a wire protocol — and a non-MLX execution path exist, an Android node has no runtime to run.
 Adapter code written today would have nothing to execute it. Unblocking is Phase 1a, and that work
 belongs to `senior-architect`.
 
@@ -18,7 +18,7 @@ belongs to `senior-architect`.
 
 $ARGUMENTS
 
-If that asks for host-process code, say what the gate is and stop. If it asks a Android question, or asks
+If that asks for host-process code, say what the gate is and stop. If it asks an Android question, or asks
 what this role will need from the contract once it unblocks, answer it — that work is useful now, and
 `.claude/agents/android-developer.md` carries the material to answer from.
 
@@ -28,9 +28,13 @@ to outlive any screen. That pulls in `POST_NOTIFICATIONS` and battery-exemption 
 
 ## Why nothing spawns
 
-Fork resolution falls back to `general-purpose` on an agent name it cannot resolve, and
-`general-purpose` has `Write`. The nine gated roles are read-only by construction, and that toolset
-*is* the gate — so these commands answer here rather than risk handing a blocked role write access.
+Fork resolution falls back to `general-purpose` on an agent name it cannot resolve, and that
+fallback is **silent** — no error anywhere. Answering inline is not a tool restriction: this body
+runs with the caller's toolset, so it is the option that fails *visibly*, not the one that fails
+safe. The gate is instructional — `.claude/agents/` refuses the work — and the gated definitions'
+missing `Write`/`Edit` is defence in depth rather than enforcement, partial at that, since all nine
+carry `Bash`. `findings.md` F19 records this; an earlier version of this file claimed the toolset
+*was* the gate, which was wrong.
 
 ## Report
 

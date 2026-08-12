@@ -28,9 +28,13 @@ stage. Assume no GUI and no logged-in session.
 
 ## Why nothing spawns
 
-Fork resolution falls back to `general-purpose` on an agent name it cannot resolve, and
-`general-purpose` has `Write`. The nine gated roles are read-only by construction, and that toolset
-*is* the gate — so these commands answer here rather than risk handing a blocked role write access.
+Fork resolution falls back to `general-purpose` on an agent name it cannot resolve, and that
+fallback is **silent** — no error anywhere. Answering inline is not a tool restriction: this body
+runs with the caller's toolset, so it is the option that fails *visibly*, not the one that fails
+safe. The gate is instructional — `.claude/agents/` refuses the work — and the gated definitions'
+missing `Write`/`Edit` is defence in depth rather than enforcement, partial at that, since all nine
+carry `Bash`. `findings.md` F19 records this; an earlier version of this file claimed the toolset
+*was* the gate, which was wrong.
 
 ## Report
 
