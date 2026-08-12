@@ -19,6 +19,31 @@ already hold, which is the expensive path. Dispatch only when one of these is tr
 
 "This task has several parts" is not a reason to dispatch. Neither is "this looks big".
 
+### That bar governs *your* decision, not the operator's
+
+Every role also has a slash command — `/mac-backend`, `/tester`, one per file in
+`.claude/agents/`. A human typing one **has already made the dispatch decision**, so the bar above
+does not apply to it and you should not re-litigate it. The two mechanisms are deliberately
+separate:
+
+| | Decides | Visible to you |
+|---|---|---|
+| This skill | whether *you* dispatch, and to whom | yes — it is the router |
+| `/<role>` | nothing; the operator already chose | **no** — the commands are `disable-model-invocation: true` |
+
+That is why 20 commands do not compete with this file for routing: you cannot see them. Routing
+stays one decision in one place.
+
+Three commands you *can* see — `verify`, `patches` and `findings` — are workflow skills, not roles.
+They dispatch nobody, so they are not a routing choice: use them for the procedure they carry, in
+your own context or a subagent's.
+
+Two consequences worth knowing. An active role command **forks** — the agent definition becomes the
+subagent's system prompt, so the command carries dispatch mechanics only and never role knowledge.
+A gated role command answers **inline** and spawns nothing: fork resolution falls back to
+`general-purpose` on a bad agent name, and `general-purpose` has `Write`, which would quietly undo
+the read-only toolset that *is* the gate.
+
 ## Roster
 
 | Role | Owns | Model |
