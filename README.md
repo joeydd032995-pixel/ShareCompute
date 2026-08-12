@@ -103,19 +103,11 @@ Individual source files did not need adding: the project uses `objectVersion = 7
 `PBXFileSystemSynchronizedRootGroup`, so everything under `InferRing/` and `Ring/` is discovered
 from the filesystem automatically.
 
-**If Xcode rejects the package reference**, the likely cause is that the package root is an
-*ancestor* of the `.xcodeproj` rather than a sibling. This could not be verified here — no macOS.
-The mechanical fix is to move the package into its own directory and repoint the reference:
-
-```bash
-mkdir -p Packages/ShareComputeCore
-git mv Package.swift Sources Tests Packages/ShareComputeCore/
-# then in project.pbxproj: relativePath = "../../Packages/ShareComputeCore"
-```
-
-Note that this also moves the package out of the repository root, so the layout table above and the
-`swift build` / `swift test` commands below then apply from `Packages/ShareComputeCore` rather than
-from the root.
+**This is now confirmed working.** The first macOS CI build resolved the reference and produced
+`Linking ShareComputeCore.o`, with `xcodebuild -list` reporting a `ShareComputeCore` scheme beside
+`Infer Ring` and `Ring` (see `findings.md` F16). The earlier worry — that a package root which is an
+*ancestor* of the `.xcodeproj` might be rejected — did not materialise, and the fallback of moving
+the package into `Packages/ShareComputeCore` is not needed.
 
 ## What the core provides
 

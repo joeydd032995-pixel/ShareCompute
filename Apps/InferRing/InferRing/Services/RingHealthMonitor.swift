@@ -165,7 +165,20 @@ final class RingHealthMonitor {
             queue: .main
         ) { _ in
             MainActor.assumeIsolated {
-                Task { await RingHealthMonitor.announceLocalDrain() }
+                // Two things are load-bearing on this one line.
+                //
+                // Explicit generic arguments, because a bare `Task { }` is ambiguous between
+                // Task.init(priority:operation:) and Task.init(name:priority:operation:) — every
+                // leading parameter of both has a default, so a trailing closure alone picks
+                // neither. announceLocalDrain() is async and non-throwing, hence <Void, Never>.
+                //
+                // And the `_ =`, because assumeIsolated is generic over its closure's result: a
+                // single-expression closure would implicitly return the Task, inferring
+                // T == Task<Void, Never> where this context wants Void. Discarding makes the body
+                // a statement. Discarding is also correct on its own terms — the drain is
+                // deliberately fire-and-forget, since awaiting a peer during willResignActive
+                // risks suspension having told nobody.
+                _ = Task<Void, Never> { await RingHealthMonitor.announceLocalDrain() }
             }
         }
         #endif

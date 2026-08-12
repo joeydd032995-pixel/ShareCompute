@@ -1,30 +1,82 @@
 name: Xcode - Build and Analyze
 
+# Builds the Infer Ring macOS app. This is the only place the Apple-side Swift
+# gets type-checked at all: it has never been compiled, and `swiftc -parse`
+# (all it gets locally) checks syntax without resolving imports or types.
+#
+# Expect this to fail for real reasons before it goes green. The first one is
+# likely dependency resolution -- project.pbxproj asks for N1k1tung/mlx-swift at
+# `kind = branch, branch = "ios-distrib-0.3.0"`, but on that remote the name
+# exists only as a *tag*. See findings.md F13; this job is what settles it.
+
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The .xcodeproj is not at the repository root -- the root is the
+  # ShareComputeCore Swift package. The starter workflow's `xcodebuild -list`
+  # auto-detection resolved the package as a *workspace* and then failed
+  # parsing a `project` key that was not there.
+  PROJECT: "Apps/InferRing/Infer Ring.xcodeproj"
+  SCHEME: "Infer Ring"
+
 jobs:
   build:
-    name: Build and analyse default scheme using xcodebuild command
+    name: Build and analyse the Infer Ring scheme
     runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set Default Scheme
+        with:
+          persist-credentials: false
+
+      - name: Available toolchains
+        # Recorded for diagnosis: the pinned mlx-swift vendors fmt 10.2.1, which
+        # does not compile under Xcode 26's clang (findings.md F17). If the
+        # FMT_CONSTEVAL workaround below ever stops working, pinning an older
+        # Xcode here is the fallback -- this listing says which exist.
         run: |
-          scheme_list=$(xcodebuild -list -json | tr -d "\n")
-          default=$(echo $scheme_list | ruby -e "require 'json'; puts JSON.parse(STDIN.gets)['project']['targets'][0]")
-          echo $default | cat >default
-          echo Using default scheme: $default
-      - name: Build
-        env:
-          scheme: ${{ 'default' }}
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "(no versioned Xcodes)"
+          xcodebuild -version
+
+      - name: Confirm the scheme exists
+        # Fail here with a clear message rather than inside xcodebuild if the
+        # project layout or scheme name ever moves.
+        run: xcodebuild -list -project "$PROJECT"
+
+      - name: Build and analyze
+        # ARCHS=arm64 for the same reason as the iOS job: MLX is
+        # Apple-Silicon-only, and the standard macOS arch set can include
+        # x86_64. The app requires Apple Silicon anyway.
+        #
+        # The raw log is kept because xcpretty swallows compiler diagnostics.
         run: |
-          if [ $scheme = default ]; then scheme=$(cat default); fi
-          if [ "`ls -A | grep -i \\.xcworkspace\$`" ]; then filetype_parameter="workspace" && file_to_build="`ls -A | grep -i \\.xcworkspace\$`"; else filetype_parameter="project" && file_to_build="`ls -A | grep -i \\.xcodeproj\$`"; fi
-          file_to_build=`echo $file_to_build | awk '{$1=$1;print}'`
-          xcodebuild clean build analyze -scheme "$scheme" -"$filetype_parameter" "$file_to_build" | xcpretty && exit ${PIPESTATUS[0]}
+          set -o pipefail
+          xcodebuild clean build analyze \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "platform=macOS" \
+            ARCHS=arm64 \
+            OTHER_CPLUSPLUSFLAGS="-DFMT_CONSTEVAL=" \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee /tmp/xcodebuild-macos.log | xcpretty
+
+      - name: Surface compiler errors
+        if: failure()
+        run: |
+          echo "===== error: lines, with context ====="
+          grep -E -B2 -A8 "error:" /tmp/xcodebuild-macos.log | head -150 \
+            || echo "(no 'error:' lines -- the failure was not a compile error)"
+          echo "===== last 60 raw lines ====="
+          tail -60 /tmp/xcodebuild-macos.log

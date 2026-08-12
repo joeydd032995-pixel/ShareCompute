@@ -491,3 +491,241 @@ iOS, Android and Windows is unproven rather than merely untested-here.
 Also unproven: whether an iOS app may run an `rpc-server` at all given no background execution (this
 project's own F4 and §12.1 constraints); real throughput over Wi-Fi; and whether `--tensor-split`
 carries the apportionment defects `StagePlanner` fixed (F5).
+
+---
+
+## F16 — First real Xcode build: F13 resolved, and two new facts
+
+CI on macOS finally compiled this project (PR #7). Three results, all from the
+`Build for iOS Simulator` job log at commit `31f914d`.
+
+### F13 is answered: the branch-named-tag resolves cleanly
+
+F13 recorded that `project.pbxproj` declares `kind = branch, branch = "ios-distrib-0.3.0"`
+for a name that exists only as a **tag**, and flagged as unverified "whether Xcode currently
+resolves this, fails, or silently falls back."
+
+It resolves, without complaint, to exactly the commit the patches were written against:
+
+```text
+Checking out ios-distrib-0.3.0 (c53d302) of package 'mlx-swift'
+  mlx-swift:    https://github.com/N1k1tung/mlx-swift    @ ios-distrib-0.3.0 (c53d302)
+  mlx-swift-lm: https://github.com/N1k1tung/mlx-swift-lm @ ios-distrib-0.3.0 (e2b659f)
+```
+
+**So this is not a defect and Stage 3 does not need to fix it.** Repointing at the forks
+should keep the same form rather than "correcting" it to `kind = revision`. F13's
+consequence is withdrawn; its factual half — that the name is a tag — stands, and `c53d302`
+is confirmed as what actually gets built.
+
+### New: two packages claim the identity `mlx-swift`
+
+```text
+Conflicting identity for mlx-swift: dependency 'github.com/ml-explore/mlx-swift' and
+dependency 'github.com/n1k1tung/mlx-swift' both point to the same package identity
+'mlx-swift'. This will be escalated to an error in future versions of SwiftPM.
+```
+
+Something in the graph — most likely `mlx-swift-lm` or `swift-transformers` — depends on
+**upstream** `ml-explore/mlx-swift` while the app pins the `N1k1tung` fork. SwiftPM currently
+picks one and warns. Upstream says plainly that this becomes an **error** in a future SwiftPM.
+
+This is a real time bomb under the fork strategy, and it is *not* caused by anything in this
+project: it exists in the vendored app as shipped. It matters for `Patches/` because when it
+does become an error, the build stops until the graph is de-duplicated — and every patch here
+assumes the `N1k1tung` fork is what gets built. Not yet investigated: which dependency pulls
+in upstream, and whether a `.package(name:)` override or a fork of the intermediate package is
+the cheaper fix.
+
+### `ShareComputeCore`'s Xcode wiring works
+
+`README.md` warned that the `XCLocalSwiftPackageReference` with `relativePath = "../.."` might
+be rejected because the package root is an *ancestor* of the `.xcodeproj`, and gave a fallback
+procedure, noting it "could not be verified here — no macOS."
+
+The build log shows `Linking ShareComputeCore.o`, and `xcodebuild -list` reports a
+`ShareComputeCore` scheme alongside `Infer Ring` and `Ring`. **The reference resolves and the
+target builds.** The fallback is not needed.
+
+### The build failure: `fmt/src/format.cc`, cause not yet known
+
+Both Xcode jobs died in the same place, and the first diagnosis was **wrong**:
+
+| Job | Config | Arch | Result |
+|---|---|---|---|
+| iOS Simulator | Release | **x86_64** | `format.o` failed |
+| macOS | Debug | **arm64** | `format.o` failed |
+
+Seeing only the iOS log, this looked architectural — a generic simulator destination builds
+every slice including x86_64, and MLX is Apple-Silicon-only. The macOS job then failed on
+**arm64**, on the same file, in a different build configuration. So it is neither
+architecture- nor configuration-specific, and `ARCHS=arm64` is **not** the fix.
+
+`ARCHS=arm64` is kept anyway on its own merits — this app requires Apple Silicon, so an x86_64
+slice is work with no consumer — but it should not be mistaken for a repair.
+
+The actual cause is still unknown, because `xcpretty` swallowed every diagnostic: the failure
+reported *which* compile command failed and never *why*. Both jobs now tee the raw log and grep
+it for `error:` with context on failure, which is what should produce the answer. Standing
+hypothesis, untested: `macos-latest` tracks a current Xcode, and the pinned mlx-swift vendors an
+`fmt` old enough to disagree with that toolchain — the Metal sources in the same build already
+warn `constexpr if is a C++17 extension`, which hints at a standard-level mismatch somewhere in
+this vendored tree.
+
+The lesson that does hold: **a CI whose purpose is to surface compile errors must not pipe them
+through a prettifier that drops them.** One filtered log produced one confident wrong diagnosis.
+
+### Still not established
+
+Whether the Apple-side Swift **type-checks**. The failure above is in a vendored C++
+dependency, reached before any of this project's Swift was compiled. `RingHealthMonitor`,
+the `@MainActor` boundaries, and the drain path remain uncompiled.
+
+---
+
+## F17 — The pinned mlx-swift does not compile with current Xcode
+
+This is a **project-level blocker, not a CI artifact**. It will hit anyone building infer-ring
+today, on a real Mac as much as on a runner.
+
+### The error
+
+```text
+fmt/include/fmt/format-inl.h:1389:33: error: call to consteval function
+'fmt::basic_format_string<char, int>::basic_format_string<FMT_COMPILE_STRING, 0>'
+is not a constant expression
+ 1389 |       out = fmt::format_to(out, FMT_STRING("p{}"),
+5 errors generated.
+```
+
+Both Xcode jobs die here, on `arm64` and `x86_64`, in Debug and Release alike — it is neither
+architecture- nor configuration-specific (correcting the first diagnosis in F16).
+
+### The two halves
+
+| | |
+|---|---|
+| Vendored `fmt` | **10.2.1** (`FMT_VERSION 100201`, January 2024), in `mlx-swift/Source/Cmlx/fmt` |
+| Runner toolchain | **Xcode 26.6**, SDK `iPhoneSimulator26.5`, from the compile command line |
+
+Newer clang tightened how `consteval` propagates through immediate-escalating functions, and
+fmt 10.2.1 predates the fix. `FMT_STRING(...)` builds a compile-string type whose `consteval`
+constructor is no longer accepted as a constant expression.
+
+### Why the chosen workaround is legitimate rather than a hack
+
+`FMT_CONSTEVAL` is defined behind `#ifndef` (`fmt/core.h:224`), and fmt itself defines it **empty**
+for toolchains where consteval misbehaves — its own comment says *"consteval is broken in MSVC
+before VS2019 16.10 and Apple clang before 14."* A no-consteval build is therefore a **supported
+fmt configuration**, not a workaround invented here. Xcode 26.6 is simply another toolchain in
+that category for this fmt version. The cost is losing compile-time format-string validation
+inside MLX's own logging.
+
+Both Xcode jobs now pass `OTHER_CPLUSPLUSFLAGS="-DFMT_CONSTEVAL="`. `OTHER_CPLUSPLUSFLAGS` rather
+than `GCC_PREPROCESSOR_DEFINITIONS` deliberately: mlx-swift's `Package.swift` declares
+`.define("MLX_VERSION", …)` and `.define("MLX_ENABLE_NAX", "1")` for `Cmlx`, which land in
+`GCC_PREPROCESSOR_DEFINITIONS`, so overriding *that* from the command line would clobber them.
+
+### The durable fix belongs in the fork
+
+A CI build setting fixes CI. It does nothing for a developer opening the project in Xcode, who
+hits the identical error. The real repair is in `joeydd032995-pixel/mlx-swift`, and it is exactly
+the idiom `Patches/` already uses — a `Patches/mlx-swift/0002-…` alongside the existing `0001`.
+Two candidates, neither yet attempted:
+
+- **Define `FMT_CONSTEVAL` empty in `Package.swift`'s `cxxSettings`** — one line, matches what fmt
+  already does for older Apple clang, and keeps fmt 10.2.1.
+- **Bump vendored fmt to 11.x** — fixes it properly, but is a larger vendored-source change and
+  MLX may use fmt 10 APIs.
+
+### Consequences beyond the build
+
+- **Any Stage 3 work needs a toolchain decision.** "Build it on a Mac" is not sufficient
+  instruction while this stands; the Mac needs either an older Xcode or the fork patched.
+- This is the **second** upstream-toolchain problem in the same vendored tree, after the
+  conflicting `mlx-swift` package identity in F16. Both are latent in the app as shipped, and both
+  are arguments for the fork strategy rather than against it.
+
+### Not verified
+
+That `-DFMT_CONSTEVAL=` actually clears the build — it is applied but not yet observed passing.
+Whether anything downstream depends on fmt's compile-time checking is also unchecked; nothing in
+this project calls fmt directly.
+
+---
+
+## F18 — First type-check of the Apple adapter: three real defects
+
+The `FMT_CONSTEVAL` workaround (F17) cleared `fmt`, the build went the whole way through MLX, and
+**for the first time this project's own Swift reached a compiler**:
+
+```text
+CompileSwift normal arm64 (in target 'Infer Ring' from project 'Infer Ring')
+```
+
+It found three defects, all in code written by this project, none of which `swiftc -parse` could
+ever have caught. The session-long caveat — *"passes `swiftc -parse`, which is syntax only"* — was
+not a formality; it was hiding exactly this.
+
+| File | Error | Cause |
+|---|---|---|
+| `Screens/RingManagement/RingManagementView.swift:17` | `'let' binding pattern cannot appear in an expression` | missing `import ShareComputeCore` |
+| `Services/ModelManager.swift:271` | same | missing `import ShareComputeCore` |
+| `Services/RingHealthMonitor.swift:168` | `ambiguous use of 'init(name:priority:operation:)'` | bare `Task { }` |
+
+### The misleading diagnostic
+
+Both `let` errors point at column 31 — the `let` *inside* `if case .lost(let reason) = …` — and the
+pattern syntax is correct. The real cause is that `RingHealth` lives in `ShareComputeCore`, which
+neither file imports. Both reach its cases through leading-dot syntax (`.lost(…)`) without ever
+naming the type, so a search for the type name finds nothing: **the defect is invisible to grep for
+`RingHealth`.** Only two files of the seven touching ring health were missing the import, and both
+happened to be the two that never spell the type out.
+
+### A second defect at the same site, not reported
+
+`ModelManager.swift:271` had `if case .lost(let reason) = health` where
+`health` is `RingHealth?` — `MainActor.run { self?.ringHealthMonitor?.refreshHealth() }` yields an
+optional through the chaining. A bare pattern does not match an optional; it needs `.lost(let
+reason)?`. The compiler never said so because the missing import failed first. Fixed pre-emptively
+rather than waiting for a second round.
+
+### The `Task` ambiguity is real, not cascading
+
+`RingHealthMonitor.swift` *does* import `ShareComputeCore`, so this one stands alone. Swift 6.2 added
+`Task.init(name:priority:operation:)` beside `init(priority:operation:)`; every leading parameter of
+both has a default, so a bare `Task { }` with only a trailing closure does not select one. Fixed with
+explicit generic arguments — `Task<Void, Never> { … }` — since `announceLocalDrain()` is `async` and
+non-throwing.
+
+This is the concurrency-boundary code `findings.md` and every agent definition flagged as the
+least-verified thing in the repository. The first compiler contact found a defect in it.
+
+### Round two: two fixed, one replaced by a fix-induced error
+
+The next build confirmed both missing-import errors gone and the optional-pattern fix holding.
+One error remained, and it was **caused by the previous fix**:
+
+```text
+RingHealthMonitor.swift:167:23: error: conflicting arguments to generic parameter 'T'
+('Void' vs. 'Task<Void, Never>')
+```
+
+`MainActor.assumeIsolated` is generic over its closure's result. Writing `Task<Void, Never> { … }`
+as the closure's single expression makes it an implicit *return*, so `T` inferred as
+`Task<Void, Never>` where the notification handler wants `Void`. The original bare `Task { }` had
+the same shape; the ambiguity error simply fired first and masked it.
+
+Fixed with `_ = Task<Void, Never> { … }`, which makes the body a statement. The discard is also
+correct on its own terms: the drain is deliberately fire-and-forget, because awaiting a peer during
+`willResignActive` risks suspension having told nobody.
+
+Worth recording as a pattern rather than a one-off: **one compile round can only reveal the errors
+that come first.** Three rounds so far have each uncovered a defect the previous round hid — the
+architecture error masked the fmt error, fmt masked the imports, and the import fix let a
+fix-induced generic-inference error surface. Budget several rounds, not one.
+
+### Not verified
+
+That this is the last of them. The compiler still stops early, and `RingCoordinator`, `DataServer`
+and `InferringApp` all touch ring health without having been reached.
