@@ -83,5 +83,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate agent definitions
+      # Also lints .claude/skills/. The check that earns this step is `agent:`
+      # resolution: a forked skill falls back to general-purpose on a name it
+      # cannot resolve, general-purpose has Write, and the nine gated roles
+      # having no Write is the entire gate.
+      - name: Validate agent roster and skills
         run: python3 scripts/validate-agents.py
