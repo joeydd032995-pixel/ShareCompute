@@ -55,9 +55,29 @@ public final class MLXManager {
         // here would defeat it just as surely as one held by the model.
         group = nil
 
+        #if MLX_HAS_FINALIZE
         guard DistributedGroup.finalize() else {
             throw RingError.handlesOutlivedTeardown
         }
+        #else
+        throw RingError.finalizeUnavailable
+        #endif
+    }
+
+    /// Whether this build can rebuild the ring at all.
+    ///
+    /// `DistributedGroup.finalize()` comes from `Patches/mlx-swift/0001`, which the app's pinned
+    /// dependency does not carry — so against stock MLX the answer is `false` and the ring degrades
+    /// to Milestone 1: loss detected and reported, restart the only recovery.
+    ///
+    /// Exposed so callers can ask *before* attempting, rather than discovering it by catching. An
+    /// absent capability is not a failed attempt and should not consume a retry budget.
+    public static var canReform: Bool {
+        #if MLX_HAS_FINALIZE
+        return true
+        #else
+        return false
+        #endif
     }
 
     /// Tear down and re-initialise at a new epoch, in the one order that works.

@@ -194,6 +194,18 @@ public final class RingWatchdog {
         lastProgressAt = now
     }
 
+    /// The host cannot rebuild at all — the capability is absent from this build, not merely
+    /// failing. Terminal immediately.
+    ///
+    /// Distinct from `reformationFailed` because retrying is pointless: nothing about the situation
+    /// will differ on a second attempt, so burning the attempt budget on identical failures would
+    /// only delay an answer that is already known. The concrete case is an app built against an MLX
+    /// without `Patches/mlx-swift/0001`, where `DistributedGroup.finalize()` does not exist.
+    public func reformationUnavailable(_ detail: String, at now: Date) {
+        guard case let .reforming(reason, _) = phase else { return }
+        phase = .terminal(reason: reason, cause: .reformationFailed(detail))
+    }
+
     /// The host tried and failed — most often `finalize()` returning `false` because a handle
     /// outlived the teardown (F14).
     ///

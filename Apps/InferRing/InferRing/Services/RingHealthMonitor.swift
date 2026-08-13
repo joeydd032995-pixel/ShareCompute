@@ -2,6 +2,10 @@
 import Foundation
 import Observation
 import ShareComputeCore
+// For MLXManager.canReform and RingError, both in the Ring framework target. Added with the
+// re-formation gate — without it `canReform` is an unresolved name, and the compiler's message
+// points at the use site rather than the missing import (findings.md F18).
+import Ring
 #if os(iOS)
 import UIKit
 #endif
@@ -124,6 +128,17 @@ final class RingHealthMonitor {
     /// however long that took, which is the failure this project exists to remove.
     private func startReformationIfNeeded() {
         guard reformationTask == nil else { return }
+
+        // Ask before trying. Against stock MLX the teardown does not exist, and three rapid
+        // identical failures would only delay an answer already known at compile time.
+        guard MLXManager.canReform else {
+            watchdog.reformationUnavailable(
+                RingError.finalizeUnavailable.errorDescription ?? "teardown unavailable",
+                at: clock.now
+            )
+            health = watchdog.evaluate(at: clock.now)
+            return
+        }
 
         reformationTask = Task { [weak self] in
             guard let self else { return }

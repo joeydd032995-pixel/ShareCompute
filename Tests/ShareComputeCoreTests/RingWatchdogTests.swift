@@ -200,6 +200,25 @@ final class RingWatchdogTests: XCTestCase {
         )
     }
 
+    /// A build without the teardown patch cannot rebuild at all. Going terminal at once is the
+    /// honest answer — retrying an absent symbol three times would only delay it.
+    func testUnavailableReformationIsTerminalWithoutSpendingAttempts() {
+        let watchdog = makeWatchdog(graceAfterLoss: 1, maxReformationAttempts: 3)
+        watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
+        clock.advance(2)
+        watchdog.evaluate(at: clock.now)
+
+        watchdog.reformationUnavailable("built without Patches/mlx-swift/0001", at: clock.now)
+
+        XCTAssertTrue(watchdog.isTerminal)
+        XCTAssertEqual(watchdog.attemptCount, 0, "an absent capability is not a failed attempt")
+        XCTAssertEqual(
+            watchdog.failureCause,
+            .reformationFailed("built without Patches/mlx-swift/0001")
+        )
+        XCTAssertFalse(watchdog.evaluate(at: clock.now).isRecoverable)
+    }
+
     func testProgressDuringReformationDoesNotCancelIt() {
         let watchdog = makeWatchdog(graceAfterLoss: 1)
         watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
