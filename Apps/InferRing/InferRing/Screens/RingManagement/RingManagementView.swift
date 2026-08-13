@@ -15,8 +15,13 @@ struct RingManagementView: View {
                         .padding(.horizontal)
                 }
 
-                if case .lost(let reason) = ringHealth.health {
-                    RingLostBanner(reason: reason)
+                if case .reforming(let reason, _) = ringHealth.health {
+                    RingReformingBanner(reason: reason)
+                        .padding(.horizontal)
+                }
+
+                if case .lost(let reason, let cause) = ringHealth.health {
+                    RingLostBanner(reason: reason, cause: cause)
                         .padding(.horizontal)
                 }
 
