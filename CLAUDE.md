@@ -23,6 +23,7 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | Milestone 2 Stage 1 — MLX ring fails instead of hanging | patch written, syntax-checked, harness passes |
 | Milestone 2 Stage 2 — group teardown (`finalize()` across mlx, mlx-c, mlx-swift) | 3 patches written, syntax-checked, harness passes |
 | Milestone 2 Stage 3 — epoch re-formation in the app | code complete, **never run** |
+| The four patches landed on the forks, project repointed | branches pushed; **first compile pending CI** |
 | Linux / Windows / Android adapters | **blocked**, see below |
 
 Working documents: `task_plan.md` (phases, decisions, errors), `findings.md` (research log, read
@@ -54,8 +55,15 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
    `get()` produces silent data corruption instead of a hang — worse, because a hang is visible.
 5. **`Cmlx` is a source SwiftPM target**, not a prebuilt binary, which is what makes patching MLX
    tractable at all.
-6. **The app depends on forks**, not upstream: `N1k1tung/mlx-swift` and `N1k1tung/mlx-swift-lm` at
-   branch `ios-distrib-0.3.0`, pinned in `project.pbxproj` (not `Package.resolved`).
+6. **The app depends on forks**, not upstream, pinned in `project.pbxproj` (not `Package.resolved`):
+   - `joeydd032995-pixel/mlx-swift` at branch `sharecompute/free-and-finalize` — **this project's
+     patched fork**, carrying all four patches with the `mlx` and `mlx-c` submodules repointed at
+     their patched branches. This is what makes `DistributedGroup.finalize()` exist at all.
+   - `N1k1tung/mlx-swift-lm` at branch `ios-distrib-0.3.0`, unchanged.
+
+   `mlx-swift-lm` declares its own dependency on `ml-explore/mlx-swift`, so the project resolves two
+   different URLs under the single SwiftPM identity `mlx-swift` and relies on the **root** pin
+   winning. That predates this project (F16) — repointing the root only changed *which* fork wins.
 
 ## Architectural rules
 
