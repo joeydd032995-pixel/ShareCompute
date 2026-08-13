@@ -2,6 +2,10 @@
 import Foundation
 import Observation
 import ShareComputeCore
+// For MLXManager.canReform and RingError, both in the Ring framework target. Added with the
+// re-formation gate — without it `canReform` is an unresolved name, and the compiler's message
+// points at the use site rather than the missing import (findings.md F18).
+import Ring
 #if os(iOS)
 import UIKit
 #endif
@@ -104,7 +108,57 @@ final class RingHealthMonitor {
     @discardableResult
     func refreshHealth() -> RingHealth {
         health = watchdog.evaluate(at: clock.now)
+        if case .reforming = health { startReformationIfNeeded() }
         return health
+    }
+
+    // MARK: - Re-formation
+
+    @ObservationIgnored
+    private var reformationTask: Task<Void, Never>?
+
+    /// Drives one rebuild, and reports the outcome back to the watchdog.
+    ///
+    /// Guarded against re-entry: `refreshHealth()` is polled once a second during a generation, and
+    /// launching a second teardown while the first is mid-`finalize()` would race two rebuilds
+    /// against the same group.
+    ///
+    /// Every path reports. A rebuild that finishes without telling the watchdog would sit in
+    /// `.reforming` until the timeout fired — recoverable, but it would look like a hang for
+    /// however long that took, which is the failure this project exists to remove.
+    private func startReformationIfNeeded() {
+        guard reformationTask == nil else { return }
+
+        // Ask before trying. Against stock MLX the teardown does not exist, and three rapid
+        // identical failures would only delay an answer already known at compile time.
+        guard MLXManager.canReform else {
+            watchdog.reformationUnavailable(
+                RingError.finalizeUnavailable.errorDescription ?? "teardown unavailable",
+                at: clock.now
+            )
+            health = watchdog.evaluate(at: clock.now)
+            return
+        }
+
+        reformationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.coordinator?.reformRing()
+                self.watchdog.reformationSucceeded(at: self.clock.now)
+                dprint("Ring re-formed at a new epoch")
+            }
+            catch {
+                // Includes RingError.handlesOutlivedTeardown, which is the F14 failure: something
+                // still holds the group. Retrying without releasing it fails identically, so the
+                // detail matters more than the attempt count.
+                self.watchdog.reformationFailed(
+                    error.localizedDescription, at: self.clock.now
+                )
+                dprint("Ring re-formation failed: \(error.localizedDescription)")
+            }
+            self.reformationTask = nil
+            self.health = self.watchdog.evaluate(at: self.clock.now)
+        }
     }
 
     // MARK: - Peer probing

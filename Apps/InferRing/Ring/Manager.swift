@@ -35,6 +35,64 @@ public final class MLXManager {
         }
     }
 
+    /// Tears the distributed group down so a new epoch can be formed.
+    ///
+    /// **The caller must have released the loaded `ModelContext` first.** This is not a style
+    /// preference: `ModelContext → model → sharded layers → DistributedGroup` (`findings.md` F14),
+    /// so while a sharded model is loaded the layers still hold the group, `finalize()` returns
+    /// `false`, and by design nothing is torn down. `MLXManager` cannot enforce this because it does
+    /// not own the context — `ModelManager` does.
+    ///
+    /// Throws `RingError.handlesOutlivedTeardown` on a `false`. Treating that as success would be
+    /// the worst available outcome: the next `initMLX` returns the *same* cached group, so the ring
+    /// silently re-forms with the departed member still in it. Stage 2's check-before-clear is what
+    /// makes this visible rather than silent — see `Patches/mlx/0002`.
+    ///
+    /// Not verified: no part of this has run. `finalize()` has never been executed on hardware, and
+    /// whether releasing `ModelContext` actually drops every layer reference is F14's open question.
+    public func teardown() throws {
+        // Drop our own reference first. `finalize()` inspects use counts, so a handle still held
+        // here would defeat it just as surely as one held by the model.
+        group = nil
+
+        #if MLX_HAS_FINALIZE
+        guard DistributedGroup.finalize() else {
+            throw RingError.handlesOutlivedTeardown
+        }
+        #else
+        throw RingError.finalizeUnavailable
+        #endif
+    }
+
+    /// Whether this build can rebuild the ring at all.
+    ///
+    /// `DistributedGroup.finalize()` comes from `Patches/mlx-swift/0001`, which the app's pinned
+    /// dependency does not carry — so against stock MLX the answer is `false` and the ring degrades
+    /// to Milestone 1: loss detected and reported, restart the only recovery.
+    ///
+    /// Exposed so callers can ask *before* attempting, rather than discovering it by catching. An
+    /// absent capability is not a failed attempt and should not consume a retry budget.
+    public static var canReform: Bool {
+        #if MLX_HAS_FINALIZE
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// Tear down and re-initialise at a new epoch, in the one order that works.
+    ///
+    /// Exists so the sequence cannot be got wrong by assembling it at the call site: re-initialising
+    /// after a failed teardown is the specific mistake that produces a stale ring with no error, and
+    /// `teardown()` throwing before `initMLX` is ever reached is what prevents it.
+    public func reform(rank: Int, devices: [String]) throws {
+        try teardown()
+        try initMLX(rank: rank, devices: devices)
+    }
+
+    /// Whether a group is currently held. Used to tell "never initialised" from "torn down".
+    public var hasGroup: Bool { group != nil }
+
     public func synchronize() {
         guard let group else {
             print("group not initialized")

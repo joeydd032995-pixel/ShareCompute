@@ -799,3 +799,57 @@ described as preventing writes.
 
 `scripts/validate-agents.py` pins the mechanical half it *can* check: that `agent:` resolves to a
 real definition, and that gated skills never fork.
+
+---
+
+## F20 — Stage 3's adapter could not compile against the dependency the app actually resolves
+
+Stage 3 (PR #9) wrote `MLXManager.teardown()` around `DistributedGroup.finalize()`. Both Xcode jobs
+failed on the same line:
+
+```text
+Apps/InferRing/Ring/Manager.swift:58:32: error: type 'DistributedGroup' has no member 'finalize'
+```
+
+`finalize()` is added by `Patches/mlx-swift/0001-free-group-and-expose-finalize.patch`. The app does
+not build against a patched MLX:
+
+```text
+Apps/InferRing/Infer Ring.xcodeproj/project.pbxproj:680  repositoryURL = ".../N1k1tung/mlx-swift"
+Apps/InferRing/Infer Ring.xcodeproj/project.pbxproj:682  branch = "ios-distrib-0.3.0"
+```
+
+and `Patches/README.md:21-22` says the three forks "are where these patches are **meant** to land" —
+they had not landed. So the symbol existed in a patch file and nowhere a compiler could reach.
+
+**The patches being kept as files rather than applied is deliberate** (`Patches/README.md`: a patch
+that fails to apply tells you upstream moved, whereas a fork silently diverges). That decision is
+still right. What it also means, and what went unnoticed, is that **no code in this repository may
+call a patched API until the forks are patched and the project repointed** — a constraint that had
+never bitten, because until Stage 3 nothing had tried.
+
+### Why nothing local caught it
+
+`swiftc -parse` resolves no imports, so it cannot know whether a member exists — the same gap F18
+recorded, reached from the other side. F18 was three type errors hidden behind a missing import;
+this is a type error hidden behind an unbuilt dependency. Both are invisible to every check that
+runs in this container, and both surfaced on the first real compile.
+
+Worth noting the pattern rather than just the instance: this project has now been wrong twice in the
+same way, and both times the wrongness lived in the gap between "syntax-checks here" and "compiles
+there". The macOS CI job is the only thing that closes it.
+
+**Verified:** the CI failure above, at commit `4dbff7d`, on both `Build for iOS Simulator` and
+`Build and analyse the Infer Ring scheme`. The `project.pbxproj` lines were read directly. One call
+site, confirmed by `grep -rn finalize Apps/InferRing/` — every other occurrence is prose.
+
+**Not verified:** whether the three forks currently exist in a state the patches apply to. They have
+not been attached to a session or inspected; `Patches/README.md`'s claim that they exist is the only
+evidence, and it is the same sentence that says the patches have not landed.
+
+**Consequence:** the call is gated behind `#if MLX_HAS_FINALIZE`, with `MLXManager.canReform` so
+callers ask before attempting and `RingWatchdog.reformationUnavailable` so an absent capability does
+not consume the retry budget. Against stock MLX the app degrades to exactly Milestone 1, which is
+what stock MLX can actually do. Landing the patches on the forks and repointing `project.pbxproj`
+moves from "Phase 2, later" to **Phase 2's first item**, because every remaining MLX claim depends
+on it.

@@ -146,7 +146,7 @@ reproduces the *unpatched* behaviour, so the defect is pinned rather than merely
 its pinned revision — this is what the block under *Applying* above does, with `git apply` in place
 of `--check`.
 
-Separately, `swift test` at the repository root stays green (58 tests) — these patches touch no
+Separately, `swift test` at the repository root stays green (66 tests) — these patches touch no
 Swift in `ShareComputeCore`, so any change there would mean something unintended happened.
 
 **Not verified anywhere:** none of this has been built as part of MLX, linked, run on Apple hardware,
