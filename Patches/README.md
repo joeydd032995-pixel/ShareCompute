@@ -20,7 +20,29 @@ directly. There is no CMake step and no artifact to regenerate.
 ## Forks
 
 `joeydd032995-pixel/mlx`, `joeydd032995-pixel/mlx-c` and `joeydd032995-pixel/mlx-swift` exist and
-are where these patches are meant to land.
+are where these patches are meant to land. **They have not landed yet**, which is why
+`DistributedGroup.finalize()` exists in no build and Stage 3's teardown compiles only its `#else`
+branch — see `findings.md` F20.
+
+[`land-on-forks.sh`](land-on-forks.sh) does it:
+
+```bash
+bash Patches/land-on-forks.sh          # apply everything, push nothing
+bash Patches/land-on-forks.sh --push   # and push the three branches
+```
+
+Everything up to the push has been run in the Linux container; only the push needs credentials.
+Two things it handles that are easy to get wrong by hand:
+
+- **mlx before mlx-c**, because the mlx-c patch calls `mlx::core::distributed::finalize()`, which
+  `mlx/0002` declares.
+- **mlx-swift's submodules need both halves repointed** — the gitlink for *which commit*, and
+  `.gitmodules` for *which repository*. The patched commits exist only in the forks, so leaving the
+  `ml-explore` URLs in place would leave the pins unresolvable.
+
+It also fetches mlx-swift from **`N1k1tung/mlx-swift`**, not from the fork: that fork was taken from
+`ml-explore` and contains neither `c53d302` nor the `ios-distrib-0.3.0` tag. Pushing that history to
+a branch in the fork is fine — git does not require a branch to share ancestry with `main`.
 
 They are still kept here as patch files, which is deliberate: a patch that fails to apply tells you
 upstream moved, whereas a fork silently diverges. The patch files stay the source of truth, and the
