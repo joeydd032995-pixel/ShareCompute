@@ -32,10 +32,11 @@ visibility.
 Fork resolution falls back to `general-purpose` on an agent name it cannot resolve, and that
 fallback is **silent** — no error anywhere. Answering inline is not a tool restriction: this body
 runs with the caller's toolset, so it is the option that fails *visibly*, not the one that fails
-safe. The gate is instructional — `.claude/agents/` refuses the work — and the gated definitions'
-missing `Write`/`Edit` is defence in depth rather than enforcement, partial at that, since all nine
-carry `Bash`. `findings.md` F19 records this; an earlier version of this file claimed the toolset
-*was* the gate, which was wrong.
+safe. On this path the gated definition's `tools:` list is **not consulted at all** — the agent is
+never spawned — so its missing `Write`/`Edit` restrains nothing here. (It does apply when the role is
+forked through the `Agent` tool, though `Bash` still writes even then.) The gate is instructional:
+`.claude/agents/` states the block and refuses the work. `findings.md` F19 records this; an earlier
+version of this file claimed the toolset *was* the gate, which was wrong.
 
 ## Report
 

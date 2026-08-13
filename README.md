@@ -174,10 +174,11 @@ removes them from the model's listing entirely: they cost nothing per turn and c
   `agent:`-resolution check is the highest-value line in it.
 
   Inline is **not** a tool restriction, and an earlier version of this section said otherwise. The
-  skill body runs with the caller's toolset, and the gated agents' own toolsets never apply to this
+  skill body runs with the caller's toolset, and the gated agents' own toolsets never apply on this
   path at all — nor are those agents read-only: all nine carry `Bash`. The gate is **instructional**,
-  enforced by the definitions refusing the work, with the absent `Write`/`Edit` as defence in depth.
-  `findings.md` F19 records the correction.
+  enforced by the definitions refusing the work. (A role *forked* through the `Agent` tool does get
+  its narrower toolset, so that path is a real if partial narrowing — but not the command path, and
+  `Bash` writes regardless.) `findings.md` F19 records the correction.
 
 Three workflow commands are model-invocable, deliberately — they are not routing decisions:
 `/verify` (the verification matrix and, as importantly, what it does *not* cover), `/patches` (apply
