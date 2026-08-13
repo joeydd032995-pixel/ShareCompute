@@ -946,3 +946,80 @@ A too-narrow window produced a confident wrong answer, which is what one filtere
 did earlier in this project and what `swiftc -parse` did twice (F18, F20). The correction is the
 same each time: widen to the whole unit before believing a negative result, especially a convenient
 one — "upstream already fixed it" would have quietly removed Phase 4.2 from the plan.
+
+---
+
+## F22 — mlx-swift vendors its own copies of the mlx-c headers, so patching the submodule declares nothing
+
+Found by the first CI run that resolved the patched fork (PR #11). Both Xcode jobs failed with two
+errors and no others:
+
+```text
+SourcePackages/checkouts/mlx-swift/Source/MLX/DistributedGroup.swift:22:9:
+    error: cannot find 'mlx_distributed_group_free' in scope
+SourcePackages/checkouts/mlx-swift/Source/MLX/DistributedGroup.swift:69:9:
+    error: cannot find 'mlx_distributed_finalize' in scope
+```
+
+Both are the symbols `Patches/mlx-c/0001` exports, called from `Patches/mlx-swift/0001`.
+
+### Why the submodule patch was not enough
+
+mlx-swift does not compile against the mlx-c submodule's headers. It keeps **its own copies**:
+
+```text
+Source/Cmlx/include/mlx/c/distributed_group.h          991 bytes, a regular file, not a symlink
+Source/Cmlx/include-framework/mlx-c-distributed_group.h  996 bytes, same but flat-named
+Source/Cmlx/mlx-c/mlx/c/distributed_group.h            the submodule -- patched, and unread
+```
+
+The `Cmlx` module map exposes exactly one header:
+
+```text
+Source/Cmlx/include/module.modulemap:  module Cmlx { header "mlx.h" }
+Source/Cmlx/include/mlx.h           -> "mlx/c/linalg.h" -> "mlx/c/distributed_group.h"   (the copy)
+```
+
+So Swift's entire view of the C API comes from `include/`. `mlx-c/mlx/c/distributed_group.cpp` *is*
+compiled from the submodule, so the **definitions** were present and would have linked — only the
+**declarations** were missing. The two copies are otherwise byte-identical to the submodule header,
+differing only in `include-framework`'s `#include <Cmlx/mlx-c-stream.h>`.
+
+`include-framework` is excluded from the SwiftPM target on Linux only (`Package.swift:7-11`), so on
+Apple platforms it is part of the target. Both copies are patched, to avoid leaving a divergent one
+as the next trap.
+
+### Why every earlier check passed
+
+This is the sharp part, and it generalises beyond this bug.
+
+- `g++ -fsyntax-only` on `mlx-c/mlx/c/distributed_group.cpp` compiles the **submodule** header
+  directly. It proves the definitions exist. It says nothing about what mlx-swift exposes.
+- The negative control in `Patches/README.md` step 2 tests mlx-c against an unpatched *mlx* header.
+  Correct, and orthogonal.
+- `swiftc -parse` resolves no imports (F18).
+- Verifying the fork resolves — full clone, `fsck`, submodule checkout, patched symbols present —
+  confirmed the submodule header had them. It checked the wrong file.
+
+Every layer tested a real thing, and the union still had a hole exactly where two file trees are
+supposed to mirror each other and one is silently authoritative. **A vendored copy of a dependency's
+header is a fork of that dependency**, whatever the directory is called.
+
+### The check that closes it
+
+`Patches/README.md` verification step 6: a C translation unit that reaches both symbols through
+`mlx.h`, exactly as Swift does, compiled with `-Werror=implicit-function-declaration`. It passes
+with `0002` and fails without. The `-Werror=` is load-bearing — plain C accepts both as implicit
+declarations and *passes*, reproducing the same false green in the harness that the harness exists
+to prevent.
+
+### What this does not undermine
+
+The macOS job got much further than any before it. `Cmlx` builds before `MLX`, and the log shows
+Swift `MLX` compilation well underway, so the patched MLX C++ — `ring.cpp`, `distributed.cpp` and
+`distributed_group.cpp`, all four patches' C and C++ — **compiled for arm64-apple under a real Apple
+toolchain**, for the first time in this project's life. SwiftPM also resolved the patched fork past
+the `mlx-swift` identity conflict F16 recorded, which had been the other candidate failure. The
+remaining defect is two missing declarations, not the patch set.
+
+Still unrun: nothing here has executed. Linking, runtime behaviour and a real ring remain untested.

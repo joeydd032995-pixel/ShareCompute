@@ -75,8 +75,8 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 | # | Stage | Status |
 |---|---|---|
 | 1 | `ring.cpp` fail-instead-of-hang | **complete** — `Patches/mlx/0001`, 16 harness checks pass |
-| 2 | Make the group rebuildable (`distributed.cpp` `finalize()`, mlx-c free/finalize, mlx-swift) | **complete** — 3 patches, 31 harness checks pass, TSan-clean |
-| 3 | Epoch re-formation in infer-ring (`MLXManager.teardown()`, non-terminal `RingWatchdog`) | **code complete** — 66 core tests; adapter type-checked in CI only, never run |
+| 2 | Make the group rebuildable (`distributed.cpp` `finalize()`, mlx-c free/finalize, mlx-swift) | **complete** — 4 patches, 31 harness checks pass, TSan-clean; C++ now compiles on Apple |
+| 3 | Epoch re-formation in infer-ring (`MLXManager.teardown()`, non-terminal `RingWatchdog`) | **code complete** — 67 core tests; Apple build blocked on F22 until `mlx-swift/0002` is pushed |
 
 **Stage 1 outcome.** The design changed materially during implementation. Two findings (F10, F11 in
 `findings.md`) ruled out the obvious approach: `CommandEncoder::dispatch` has no `try`/`catch`, so
@@ -110,14 +110,24 @@ Two things changed during implementation, both worth carrying forward:
 
 > **Done since this list was written:** Stage 3 (item 1) landed in PR #9, gated behind
 > `MLX_HAS_FINALIZE` because the patches had never reached the dependency (F20). Item 4 — the
-> repoint — is done: `Patches/land-on-forks.sh` put all four patches on
-> `joeydd032995-pixel/{mlx, mlx-c, mlx-swift}`, and `project.pbxproj` now **points at** the patched
+> repoint — is done: `Patches/land-on-forks.sh` put the patches on
+> `joeydd032995-pixel/{mlx, mlx-c, mlx-swift}`, and `project.pbxproj` points at the patched
 > `mlx-swift` at `sharecompute/free-and-finalize`, with the flag on.
 >
-> Pointing at it is not the same as resolving it. **SwiftPM resolution and the first compile of a
-> patched MLX are both still pending CI** — nothing in this repository can establish either, and the
-> two Xcode jobs are the only things that will. Item 2's Swift lifecycle test becomes possible once
-> they pass; item 3 still needs Apple hardware and two devices.
+> **CI then answered two open questions and opened one.** SwiftPM *resolved* the patched fork — the
+> `mlx-swift` identity conflict F16 recorded did not bite — and the patched MLX **C++ compiled for
+> arm64-apple under a real Apple toolchain**, the first time any of these patches has been compiled
+> by anything but `g++ -fsyntax-only` on Linux. Both jobs then failed on two errors and no others:
+> `cannot find 'mlx_distributed_group_free' / 'mlx_distributed_finalize' in scope`.
+>
+> The cause is F22: mlx-swift vendors its own copies of the mlx-c headers under `Source/Cmlx/`, and
+> the module map exposes only those, so patching the submodule compiled the definitions without
+> declaring them. `Patches/mlx-swift/0002` adds both declarations to both copies.
+> **It needs pushing to the fork** — `bash Patches/land-mlx-swift-0002.sh --push` — after which CI
+> re-runs against it with no ShareCompute change needed.
+>
+> Item 2's Swift lifecycle test becomes possible once the jobs are green; item 3 still needs Apple
+> hardware and two devices.
 
 1. **Stage 3** — epoch re-formation in the app. Now unblocked: `finalize()` is the operation Spike A
    recorded as unavailable. `RingWatchdog`'s loss becomes non-terminal.

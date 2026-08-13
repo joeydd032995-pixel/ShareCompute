@@ -269,3 +269,94 @@ three unlabelled fenced blocks.
 yields a new group. It is the right test and it cannot run here — no macOS, no Xcode, and the Swift
 half has never been type-checked. Committing an unrunnable test file would assert coverage this
 container cannot back. It is instead written up as a required hardware test in `task_plan.md`.
+
+## Session 5 — Stage 3, and the patches reach a build
+
+Milestone 2's last stage, plus the step that had been sitting in `task_plan.md`'s next-actions since
+Stage 2: getting the patches somewhere the app can actually resolve them.
+
+### Stage 3 — epoch re-formation
+
+`RingWatchdog` no longer ends at `.lost`. `RingHealth` gained `.reforming(RingLossReason, since:)`,
+`.lost` gained a `RingFailureCause?`, and the host reports outcomes back through
+`reformationSucceeded/Failed/Unavailable(at:)`. Failure detection stays a pure function of injected
+time — the watchdog still owns no timer and performs no I/O.
+
+The adapter follows F14's required order: release `ModelContext`, release `MLXManager.group`,
+`finalize()`, check the `Bool`, re-`init()` **only on `true`**. `ModelManager` gained
+`releaseModelForReformation()` and `reloadAfterReformation()`, which re-plans through the existing
+`assignShardMetadata` rather than constructing shard metadata itself.
+
+Core tests 58 → 67, green on Linux.
+
+### The gate — F20
+
+Both Xcode jobs failed on `Manager.swift:58: type 'DistributedGroup' has no member 'finalize'`.
+The patches had never been applied to anything the build resolves: `project.pbxproj` pointed at
+unpatched `N1k1tung/mlx-swift`, and `Patches/README.md` said the forks were where the patches were
+"meant to land". Stage 3 had been written against an API that existed only as a patch file, and
+`swiftc -parse` could not have caught it — it resolves no imports.
+
+Fixed by gating on `MLX_HAS_FINALIZE`, with `RingError.finalizeUnavailable` distinct from
+`handlesOutlivedTeardown` (one means the operation does not exist in this build, the other means a
+handle survived — different diagnoses) and a terminal `reformationUnavailable`, since retrying
+cannot conjure a missing symbol. On unpatched MLX the app degrades to exactly Milestone 1, which is
+all unpatched MLX can do.
+
+A second CI round caught `RingManagementView.swift` — the `.lost` arity change. Services had been
+audited, views had not.
+
+### The forks
+
+`Patches/land-on-forks.sh` applies all four patches in dependency order (mlx before mlx-c, because
+the mlx-c patch calls `mlx::core::distributed::finalize()`), repoints mlx-swift's two submodules —
+both the gitlink and `.gitmodules`, since the patched commits exist only in the forks — and refuses
+to overwrite an existing remote branch. Run with `--push`:
+
+| Fork | Branch | Tip |
+|---|---|---|
+| `mlx` | `sharecompute/stage1-2` | `18e53a6f9b88` |
+| `mlx-c` | `sharecompute/export-finalize` | `55a61ffbe301` |
+| `mlx-swift` | `sharecompute/free-and-finalize` | `01b72119cc77` |
+
+`project.pbxproj` then repointed at the mlx-swift branch with `MLX_HAS_FINALIZE` defined at project
+level for both Debug and Release. Setting it in CI alone would have left local Xcode builds
+compiling the `#else` while CI compiled the `#if` — a divergence worse than the gate it replaces.
+Three lines changed; brace and paren counts and `objectVersion` verified identical against a
+pre-edit baseline.
+
+### Verified this session
+
+- `swift test` — 67 core tests green on Linux.
+- The four patched translation units compile (`g++ -fsyntax-only -std=c++17`) **from the tree
+  SwiftPM checks out**, not from a local patch application, with the negative control still firing.
+- The fork chain resolves the way SwiftPM resolves it: full clone of the mlx-swift branch (422
+  commits, `c53d302` as parent, `fsck` clean), then `git submodule update --init` checking out both
+  fork tips. Full clone rather than shallow on purpose — `land-on-forks.sh` pushes a `--depth=1`
+  fetch into a fork whose network is `ml-explore/mlx-swift`, so a truncated base history would pass
+  a shallow fetch and fail only later inside SwiftPM. It did not.
+- `DistributedGroup.finalize()` in the resolved tree is `public static func finalize() -> Bool`,
+  matching the call at `Manager.swift:58`.
+
+### Not verified
+
+**The macOS jobs for the repoint had not finished when this was written.** Nothing in this
+repository can establish either half of what they test: that SwiftPM resolves the patched fork past
+the `mlx-swift` identity conflict F16 recorded, and that a patched MLX compiles under a real Apple
+toolchain. `g++ -fsyntax-only` on Linux is not `clang` targeting arm64-apple.
+
+Beyond that, unchanged and still the larger half: no ring has ever formed, no re-formation has been
+observed, and none of the four patches has been *run*. Re-formation needs two Apple devices.
+
+### Errors encountered (session 5)
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| Stage 3 written against `DistributedGroup.finalize()`, which no build had | 1 | Gated behind `MLX_HAS_FINALIZE`; recorded as F20. The root fix was landing the patches |
+| `.lost` arity change missed in `RingManagementView.swift` | 2 | Audited services but not views; fixed and swept the whole app for both cases |
+| `RingHealthMonitor` used `Ring` symbols without `import Ring` | 1 | Found by auditing imports against symbol usage — F18's exact failure mode |
+| Fabricated a `ShardMetadata` initialiser that does not exist | 1 | Checked the real signature instead of trusting `swiftc -parse`; moved the reload into `ModelManager`, which owns the planning |
+| `reformRing` marked `@MainActor` on a nonisolated class | 1 | Would force cross-domain access to a non-`Sendable` `ModelManager`; attribute removed |
+| `git checkout -- .claude/skills/` destroyed uncommitted work | 1 | Harmless only because the files were untracked. Reapplied, and switched to per-file backups |
+| Concluded from a `grep -A6` window that upstream had removed `ggml_abort`'s `abort()` | 1 | Read the whole function: the `abort()` sits past a callback block. F15 stands, and Phase 4.2 would have been deleted on the strength of a six-line window |
+| Nearly agreed that `ios-distrib-0.3.0` does not exist, on `git ls-remote --heads` returning empty | 1 | It is a **tag**. Same trap as F13, twice in one session — `--heads` filters tags out |
