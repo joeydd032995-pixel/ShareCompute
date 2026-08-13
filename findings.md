@@ -922,3 +922,27 @@ drain-on-background already models exactly that departure.
 time.** The gate does not fail, so Phases 4–5 stand as planned. What it adds is one cheap CI job —
 build ggml for iOS with `GGML_RPC=ON` on a macOS runner — which should land before any iOS node work
 begins, on the same logic that made both MLX spikes worth running first.
+
+### F15's technical claims re-verified at `d86c7d6`
+
+Since F15's *CI* claim went stale, its load-bearing ones were re-read at the same commit rather than
+trusted. **All four still hold**, so Phase 4's scope is confirmed rather than reduced:
+
+| F15 claim | At `d86c7d6` |
+|---|---|
+| 19 `RPC_STATUS_ASSERT` sites, each a `GGML_ABORT` | still 19 |
+| `ggml_abort` cannot be intercepted | holds — a `g_abort_callback` runs first, then `abort()` unconditionally |
+| no `SO_RCVTIMEO` / `SO_SNDTIMEO` in `ggml/src/ggml-rpc/` | still absent |
+| `add_server`'s `reg_map` is an owning static, no removal path | `ggml-rpc.cpp:2014`, and no `remove_server` in the header |
+| 16-device ceiling | `GGML_SCHED_MAX_BACKENDS` 16 (`ggml-backend.cpp:753`), `llama_max_devices()` 16 (`src/llama.cpp:85`) |
+
+One near-miss worth recording, because it is the third instance of the same failure mode. The first
+pass checked `ggml_abort` with `grep -A6` and concluded the unconditional `abort()` was **gone** — it
+is simply further down than six lines, past the callback block added since F15. Reading the whole
+function showed F15 was right all along, and had already described the callback-then-abort ordering
+exactly.
+
+A too-narrow window produced a confident wrong answer, which is what one filtered `xcodebuild` log
+did earlier in this project and what `swiftc -parse` did twice (F18, F20). The correction is the
+same each time: widen to the whole unit before believing a negative result, especially a convenient
+one — "upstream already fixed it" would have quietly removed Phase 4.2 from the plan.
