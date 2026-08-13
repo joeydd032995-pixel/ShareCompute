@@ -155,6 +155,46 @@ Nothing is spawned by default. Dispatch a role when the work needs knowledge you
 build from scratch, when two tasks touch disjoint paths, or when you want the work isolated in a
 worktree — not merely because a task has several parts.
 
+### Slash commands
+
+Every role also has a command — `/mac-backend`, `/tester`, one per file in `.claude/agents/`, defined
+under `.claude/skills/`. Typing one **is** the dispatch decision, so it skips the bar above.
+
+These are a human surface, not a second router. All 20 carry `disable-model-invocation: true`, which
+removes them from the model's listing entirely: they cost nothing per turn and cannot compete with
+`orchestration` for routing. Two behaviours differ by kind:
+
+- **The eleven active roles fork.** The agent definition becomes the subagent's system prompt, so the
+  command carries dispatch mechanics only — arguments, the ownership pre-flight, the report contract
+  — and never role knowledge. A 40-line body cap in the validator is what actually enforces that;
+  pointing at the agent file would not.
+- **The nine gated roles answer inline and spawn nothing.** Fork resolution falls back to
+  `general-purpose` on an agent name it cannot resolve, and that fallback is **silent** — one typo in
+  `agent:` produces no error anywhere. Inline is the option that fails *visibly*. The validator's
+  `agent:`-resolution check is the highest-value line in it.
+
+  Inline is **not** a tool restriction, and an earlier version of this section said otherwise. The
+  skill body runs with the caller's toolset, and the gated agents' own toolsets never apply on this
+  path at all — nor are those agents read-only: all nine carry `Bash`. The gate is **instructional**,
+  enforced by the definitions refusing the work. (A role *forked* through the `Agent` tool does get
+  its narrower toolset, so that path is a real if partial narrowing — but not the command path, and
+  `Bash` writes regardless.) `findings.md` F19 records the correction.
+
+Three workflow commands are model-invocable, deliberately — they are not routing decisions:
+`/verify` (the verification matrix and, as importantly, what it does *not* cover), `/patches` (apply
+order, the `finalize()` precondition, the negative control) and `/findings` (append-only, next
+F-number, evidence with `file:line`, mandatory unverified section).
+
+`/verify` knowingly shadows a same-named built-in skill. That is normally a reason never to create
+one, and is the documented exception: how a project verifies is project-specific, and here it has to
+name the large half that this container cannot check at all.
+
+**That shadow is a design intent, not an observed behaviour.** It rests on reading the shipped CLI
+bundle, where a project skill displaces a same-named bundled one; nothing here has confirmed it at
+runtime. Typing `/verify` in an interactive session and seeing *this* file's content — the five
+commands and the container's limits — rather than the generic built-in is the check that would
+settle it, and it has not been run.
+
 Three things worth knowing before dispatching:
 
 - **Nine roles are gated.** `linux-*`, `windows-*` and `android-*` have no runtime to target: MLX is
@@ -168,7 +208,7 @@ Three things worth knowing before dispatching:
   verified.
 
 ```bash
-python3 scripts/validate-agents.py    # lint the roster
+python3 scripts/validate-agents.py    # 20 agents (9 gated), 24 skills (20 role, 3 workflow)
 ```
 
 ## Building

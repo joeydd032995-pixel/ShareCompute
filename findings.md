@@ -729,3 +729,73 @@ fix-induced generic-inference error surface. Budget several rounds, not one.
 
 That this is the last of them. The compiler still stops early, and `RingCoordinator`, `DataServer`
 and `InferringApp` all touch ring health without having been reached.
+
+---
+
+## F19 — The gated roles are not read-only, and inline dispatch does not restrict tools either
+
+PR #8 justified answering the nine gated commands (`/linux-*`, `/windows-*`, `/android-*`) inline
+rather than forking, with this rationale, repeated in **13 places**:
+
+> The nine gated roles are read-only by construction, and that toolset *is* the gate.
+
+Both halves are false.
+
+**They are not read-only.** Every gated definition lists `Bash`:
+
+```text
+.claude/agents/linux-backend.md:4     tools: Read, Grep, Glob, Bash, TaskCreate, TaskUpdate
+.claude/agents/linux-designer.md:4    tools: Read, Grep, Glob, Bash
+.claude/agents/windows-designer.md:4  tools: Read, Grep, Glob, Bash
+…all nine, same shape
+```
+
+`Bash` writes files. "No `Write`, no `Edit`" narrows the write surface; it does not close it.
+
+**And the toolset never applies anyway.** A gated command runs **inline** — the body executes in the
+caller's context, with the caller's tools. The gated agent is never spawned, so its `tools:` list is
+not consulted on this path at all. The rationale appealed to a restriction that the chosen mechanism
+does not invoke, to justify choosing that mechanism.
+
+The design survives; the reason changes. Inline is not the safe option, it is the **visible** one: it
+fails where an operator can see it, whereas forking on a *wrong* name lands on `general-purpose`
+(which has `Write`) with no error anywhere.
+
+The two dispatch paths have genuinely different properties, and conflating them is what produced the
+original error:
+
+| Path | Is the definition's `tools:` consulted? | What restrains it |
+|---|---|---|
+| `/linux-backend` — **inline** | **no.** The agent is never spawned; the body runs with the caller's tools | the instruction alone |
+| `Agent(subagent_type: "linux-backend")` — **forked** | **yes** — no `Write`, no `Edit` | a real narrowing, but `Bash` still writes, so it is partial |
+
+So the absent `Write`/`Edit` is defence in depth **on the forked path only**. On the inline path it
+contributes nothing at all — there is no second layer there, and calling it one would repeat the
+same mistake in weaker language. The gate that covers both paths is instructional: the definitions
+state the block and refuse the work.
+
+Surfaced by CodeRabbit on PR #8, though filed as "use `allowed-tools` to enforce it", which would
+have made things worse: `allowed-tools` pre-approves tools for an invocation, it does not deny
+others, so a read-only-looking list would have read as enforcement while enforcing nothing.
+
+**Verified:** `grep -m1 '^tools:' .claude/agents/{linux,windows,android}-*.md` — nine files, all
+carrying `Bash`. The `agentType === "general-purpose") ?? m[0]` fallback was read out of the shipped
+CLI bundle at `/opt/claude-code/bin/claude`.
+
+**Not verified:** no slash command has ever been typed in this repository. That a fork spawns the
+named agent, that a gated command spawns nothing, that `background: false` blocks rather than
+detaching, and that inline bodies really do inherit the caller's toolset are all read from the bundle
+and from documentation, never observed at dispatch. Confirming them needs an interactive session.
+
+**Consequence:** the claim is withdrawn from all 13 sites. Gated roles keep `Bash` — a blocked role
+still needs to explore the repository to answer the platform questions it exists for.
+
+Scope the conclusion to what the evidence supports. **The gate is not a permission boundary**: it is
+instructional on the forked path and instructional-only on the inline one. That is narrower than
+"nothing in the roster restricts anything" — a forked role's `tools:` list *is* consulted and does
+narrow it, which is why `senior-architect` alone holds `Skill` and why the read-only roles cannot
+`Edit`. What that narrowing does not do is stop a determined `Bash` call, so it should never be
+described as preventing writes.
+
+`scripts/validate-agents.py` pins the mechanical half it *can* check: that `agent:` resolves to a
+real definition, and that gated skills never fork.

@@ -90,15 +90,18 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | `ShareComputeCore` | **yes** | `/opt/swift/usr/bin/swift test` (Swift 6.1.2) |
 | MLX C++ patch compiles | **yes** | `g++ -fsyntax-only -std=c++17` with mlx-swift's vendored `json`/`fmt` headers |
 | MLX failure semantics | **yes** | `Patches/mlx/tests/socket_thread_failure_test.cpp` against real `socketpair` |
-| Swift syntax of Apple code | partial | `swiftc -parse` — syntax only, no type checking |
-| Xcode project builds | **no** | needs macOS + Xcode |
+| Agent/skill files — *static* metadata | **yes** | `python3 scripts/validate-agents.py` — parses front matter and checks the mappings |
+| Slash commands at **dispatch** | **no** | needs an interactive session: that a fork spawns the named agent, that `background: false` blocks, that a gated command spawns nothing, that `/verify` displaces the built-in |
+| Swift syntax of Apple code | partial | `swiftc -parse` — syntax only. It passed the Apple adapter for this project's whole life while three real type errors sat in it (F18) |
+| Xcode project builds | **not here** | needs macOS + Xcode — `.github/workflows/` runs it on a macOS runner instead |
 | Actor isolation, runtime behaviour | **no** | needs Apple hardware |
 | Android / Windows | **no** | needs those SDKs |
 | Multi-device ring | **no** | needs two or more real devices |
 
 **State what you verified and what you did not.** Silence about the unverified half is treated as a
-defect here, not an omission. The Apple-side Swift in this repo has never been type-checked; saying
-so every time is correct, not excessive hedging.
+defect here, not an omission. The Apple-side Swift now type-checks in CI on macOS — but nothing in
+this repository has ever *run* on a device, no ring has ever formed, and none of the four MLX
+patches has been executed. Saying so every time is correct, not excessive hedging.
 
 ## Working agreements
 
@@ -115,3 +118,25 @@ so every time is correct, not excessive hedging.
 
 Role definitions live in `.claude/agents/`. Routing, file ownership and escalation rules are in
 `.claude/skills/orchestration/SKILL.md`. Read that before dispatching work to anyone.
+
+Every role also has a slash command at `.claude/skills/<role>/SKILL.md` — `/mac-backend`,
+`/tester`, one per agent file. Those are a **human** surface, not a second router: they carry
+`disable-model-invocation: true`, so you cannot see them and routing stays one decision in
+`orchestration`. The eleven active roles fork the agent directly; the nine gated ones answer inline
+and spawn nothing, because a mistyped `agent:` silently resolves to `general-purpose` — inline is the
+option that fails *visibly*, not one that restricts tools. **The gate is instructional**, not a
+permission boundary: the definitions refuse the work, and all nine gated roles carry `Bash`, so they
+were never read-only. See F19.
+
+File ownership lives in `docs/AGENT-OWNERSHIP.md`, outside `.claude/skills/` so a forked role can
+read its own contract without reading the router.
+
+Three workflow commands are model-invocable, deliberately: `/verify` (the verification matrix),
+`/patches` (the MLX patch set) and `/findings` (append to the research log correctly).
+
+A skill body never restates role knowledge — the agent file is the definition, and a 40-line body
+cap in the validator is what keeps that true.
+
+```bash
+python3 scripts/validate-agents.py   # 20 agents (9 gated), 24 skills (20 role, 3 workflow, 1 router)
+```
