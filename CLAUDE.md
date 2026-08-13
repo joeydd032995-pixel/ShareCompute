@@ -17,12 +17,12 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 
 | Piece | Status |
 |---|---|
-| `ShareComputeCore` — epochs, leases, node state machine, stage planner, watchdog | merged, 58 tests passing |
+| `ShareComputeCore` — epochs, leases, node state machine, stage planner, watchdog | merged, 66 tests passing |
 | Apple adapter — drain-on-background, heartbeats, generation watchdog | written, **never compiled** |
 | Xcode wiring of `ShareComputeCore` as a local package | written, **never opened in Xcode** |
 | Milestone 2 Stage 1 — MLX ring fails instead of hanging | patch written, syntax-checked, harness passes |
 | Milestone 2 Stage 2 — group teardown (`finalize()` across mlx, mlx-c, mlx-swift) | 3 patches written, syntax-checked, harness passes |
-| Milestone 2 Stage 3 — epoch re-formation in the app | not started |
+| Milestone 2 Stage 3 — epoch re-formation in the app | code complete, **never run** |
 | Linux / Windows / Android adapters | **blocked**, see below |
 
 Working documents: `task_plan.md` (phases, decisions, errors), `findings.md` (research log, read

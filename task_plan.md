@@ -76,7 +76,7 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 |---|---|---|
 | 1 | `ring.cpp` fail-instead-of-hang | **complete** — `Patches/mlx/0001`, 16 harness checks pass |
 | 2 | Make the group rebuildable (`distributed.cpp` `finalize()`, mlx-c free/finalize, mlx-swift) | **complete** — 3 patches, 31 harness checks pass, TSan-clean |
-| 3 | Epoch re-formation in infer-ring (`MLXManager.teardown()`, non-terminal `RingWatchdog`) | not started |
+| 3 | Epoch re-formation in infer-ring (`MLXManager.teardown()`, non-terminal `RingWatchdog`) | **code complete** — 66 core tests; adapter type-checked in CI only, never run |
 
 **Stage 1 outcome.** The design changed materially during implementation. Two findings (F10, F11 in
 `findings.md`) ruled out the obvious approach: `CommandEncoder::dispatch` has no `try`/`catch`, so

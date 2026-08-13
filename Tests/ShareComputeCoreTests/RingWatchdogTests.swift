@@ -7,12 +7,17 @@ final class RingWatchdogTests: XCTestCase {
 
     func makeWatchdog(
         stallThreshold: TimeInterval = 10,
-        graceAfterLoss: TimeInterval = 2
+        graceAfterLoss: TimeInterval = 2,
+        reformationTimeout: TimeInterval = 30,
+        maxReformationAttempts: Int = 3
     ) -> RingWatchdog {
         clock = TestClock()
         return RingWatchdog(
             config: RingWatchdogConfig(
-                stallThreshold: stallThreshold, graceAfterLoss: graceAfterLoss
+                stallThreshold: stallThreshold,
+                graceAfterLoss: graceAfterLoss,
+                reformationTimeout: reformationTimeout,
+                maxReformationAttempts: maxReformationAttempts
             ),
             startedAt: clock.now
         )
@@ -33,6 +38,7 @@ final class RingWatchdogTests: XCTestCase {
             return XCTFail("expected .stalled, got \(watchdog.evaluate(at: clock.now))")
         }
         XCTAssertFalse(watchdog.isTerminal, "a stall alone must never be terminal")
+        XCTAssertFalse(watchdog.isReforming, "a stall alone must not trigger a rebuild")
     }
 
     func testProgressKeepsTheRingHealthy() {
@@ -44,22 +50,24 @@ final class RingWatchdogTests: XCTestCase {
         }
     }
 
-    // MARK: - Loss
+    // MARK: - Confirmed loss now starts a rebuild, rather than ending the ring
 
-    func testDepartureFollowedBySilenceIsDeclaredLost() {
+    func testDepartureFollowedBySilenceStartsReformation() {
         let watchdog = makeWatchdog(graceAfterLoss: 2)
         watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
 
         clock.advance(1)
         guard case .stalled = watchdog.evaluate(at: clock.now) else {
-            return XCTFail("must not declare loss inside the grace window")
+            return XCTFail("must not confirm loss inside the grace window")
         }
 
         clock.advance(2)
-        XCTAssertEqual(
-            watchdog.evaluate(at: clock.now), .lost(.memberDeparted(NodeID("phone")))
-        )
-        XCTAssertTrue(watchdog.isTerminal)
+        guard case let .reforming(reason, _) = watchdog.evaluate(at: clock.now) else {
+            return XCTFail("expected .reforming, got \(watchdog.evaluate(at: clock.now))")
+        }
+        XCTAssertEqual(reason, .memberDeparted(NodeID("phone")))
+        XCTAssertTrue(watchdog.isReforming)
+        XCTAssertFalse(watchdog.isTerminal, "Stage 2's finalize() makes this recoverable")
     }
 
     /// Tokens already in flight when the departure notice arrives must be allowed to land.
@@ -76,9 +84,9 @@ final class RingWatchdogTests: XCTestCase {
         }
 
         clock.advance(3)
-        XCTAssertEqual(
-            watchdog.evaluate(at: clock.now), .lost(.memberUnreachable(NodeID("phone")))
-        )
+        watchdog.evaluate(at: clock.now)
+        XCTAssertTrue(watchdog.isReforming)
+        XCTAssertEqual(watchdog.lossReason, .memberUnreachable(NodeID("phone")))
     }
 
     /// The first diagnosis names the node that actually broke the ring; later cascading failures
@@ -89,39 +97,162 @@ final class RingWatchdogTests: XCTestCase {
         watchdog.recordLoss(.memberUnreachable(NodeID("ipad")), at: clock.now)
 
         clock.advance(2)
-        XCTAssertEqual(watchdog.evaluate(at: clock.now), .lost(.memberDeparted(NodeID("phone"))))
+        watchdog.evaluate(at: clock.now)
+        XCTAssertEqual(watchdog.lossReason, .memberDeparted(NodeID("phone")))
     }
 
-    // MARK: - Terminal behaviour
+    // MARK: - Re-formation outcomes, reported by the host
 
-    /// The MLX group cannot be rebuilt in-process, so a lost ring stays lost. Anything else would
-    /// promise a recovery that cannot happen.
-    func testLossIsTerminalAndSurvivesLaterProgress() {
+    func testSuccessfulReformationReturnsTheRingToHealthy() {
         let watchdog = makeWatchdog(graceAfterLoss: 1)
         watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
         clock.advance(2)
-        // Confirmation happens on evaluation; `isTerminal` reports confirmed loss only.
-        XCTAssertEqual(watchdog.evaluate(at: clock.now), .lost(.memberDeparted(NodeID("phone"))))
+        watchdog.evaluate(at: clock.now)
+        XCTAssertTrue(watchdog.isReforming)
+
+        clock.advance(3)
+        watchdog.reformationSucceeded(at: clock.now)
+
+        XCTAssertEqual(watchdog.evaluate(at: clock.now), .healthy)
+        XCTAssertFalse(watchdog.isTerminal)
+        XCTAssertNil(watchdog.lossReason, "a rebuilt ring carries no loss")
+        XCTAssertTrue(
+            watchdog.beginGeneration(at: clock.now),
+            "the new epoch is a working ring and must admit work"
+        )
+    }
+
+    /// A failure below the attempt limit leaves the host free to try again.
+    func testFailedReformationBelowTheLimitStaysRecoverable() {
+        let watchdog = makeWatchdog(graceAfterLoss: 1, maxReformationAttempts: 3)
+        watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
+        clock.advance(2)
+        watchdog.evaluate(at: clock.now)
+
+        watchdog.reformationFailed("finalize() returned false", at: clock.now)
+        XCTAssertTrue(watchdog.isReforming)
+        XCTAssertFalse(watchdog.isTerminal)
+        XCTAssertEqual(watchdog.attemptCount, 1)
+    }
+
+    /// Retrying forever is the original hang under another name, so the attempts are bounded — and
+    /// the last error is carried out, because the count alone does not say which handle survived.
+    func testReformationIsExhaustedAfterTheAttemptLimit() {
+        let watchdog = makeWatchdog(graceAfterLoss: 1, maxReformationAttempts: 2)
+        watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
+        clock.advance(2)
+        watchdog.evaluate(at: clock.now)
+
+        watchdog.reformationFailed("finalize() returned false", at: clock.now)
+        XCTAssertFalse(watchdog.isTerminal)
+
+        watchdog.reformationFailed("ModelContext still held", at: clock.now)
+        XCTAssertTrue(watchdog.isTerminal)
+        XCTAssertEqual(
+            watchdog.failureCause,
+            .reformationExhausted(attempts: 2, lastError: "ModelContext still held")
+        )
+        XCTAssertEqual(
+            watchdog.evaluate(at: clock.now),
+            .lost(.memberDeparted(NodeID("phone")),
+                  .reformationExhausted(attempts: 2, lastError: "ModelContext still held"))
+        )
+    }
+
+    /// A host that never reports back must not leave the ring waiting indefinitely — that is the
+    /// exact failure this project exists to remove, and a "recovering" label does not excuse it.
+    func testReformationThatNeverReportsTimesOut() {
+        let watchdog = makeWatchdog(graceAfterLoss: 1, reformationTimeout: 30)
+        watchdog.recordLoss(.memberUnreachable(NodeID("phone")), at: clock.now)
+        clock.advance(2)
+        watchdog.evaluate(at: clock.now)
+        XCTAssertTrue(watchdog.isReforming)
+
+        clock.advance(29)
+        watchdog.evaluate(at: clock.now)
+        XCTAssertTrue(watchdog.isReforming, "still inside the window")
+
+        clock.advance(2)
+        XCTAssertEqual(
+            watchdog.evaluate(at: clock.now),
+            .lost(.memberUnreachable(NodeID("phone")), .reformationTimedOut)
+        )
+        XCTAssertTrue(watchdog.isTerminal)
+    }
+
+    /// Each retry gets its own budget, or a slow second attempt would be killed by the first
+    /// attempt's elapsed time.
+    func testRetryRestartsTheReformationClock() {
+        let watchdog = makeWatchdog(
+            graceAfterLoss: 1, reformationTimeout: 30, maxReformationAttempts: 3
+        )
+        watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
+        clock.advance(2)
+        watchdog.evaluate(at: clock.now)
+
+        clock.advance(25)
+        watchdog.reformationFailed("first attempt failed", at: clock.now)
+
+        clock.advance(20)
+        XCTAssertTrue(
+            watchdog.isReforming,
+            "45s total but only 20s into this attempt — the retry must not inherit the first's clock"
+        )
+    }
+
+    func testProgressDuringReformationDoesNotCancelIt() {
+        let watchdog = makeWatchdog(graceAfterLoss: 1)
+        watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
+        clock.advance(2)
+        watchdog.evaluate(at: clock.now)
+        XCTAssertTrue(watchdog.isReforming)
+
+        // A late token from the old group must not be read as the ring having healed itself.
+        clock.advance(1)
+        watchdog.recordProgress(at: clock.now)
+        watchdog.evaluate(at: clock.now)
+        XCTAssertTrue(watchdog.isReforming)
+        XCTAssertEqual(watchdog.lossReason, .memberDeparted(NodeID("phone")))
+    }
+
+    func testTerminalLossSurvivesLaterProgress() {
+        let watchdog = makeWatchdog(graceAfterLoss: 1, maxReformationAttempts: 1)
+        watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
+        clock.advance(2)
+        watchdog.evaluate(at: clock.now)
+        watchdog.reformationFailed("finalize() returned false", at: clock.now)
         XCTAssertTrue(watchdog.isTerminal)
 
         clock.advance(1)
         watchdog.recordProgress(at: clock.now)
-        XCTAssertEqual(watchdog.evaluate(at: clock.now), .lost(.memberDeparted(NodeID("phone"))))
+        watchdog.reformationSucceeded(at: clock.now)
+        XCTAssertTrue(watchdog.isTerminal, "nothing resurrects a ring that gave up")
     }
 
-    func testNewGenerationIsRefusedOnceTheRingIsLost() {
+    // MARK: - Admission
+
+    func testNewGenerationIsRefusedWhileReforming() {
         let watchdog = makeWatchdog(graceAfterLoss: 1)
         XCTAssertTrue(watchdog.beginGeneration(at: clock.now))
 
         watchdog.recordLoss(.memberUnreachable(NodeID("phone")), at: clock.now)
         clock.advance(2)
-        watchdog.evaluate(at: clock.now)
 
-        clock.advance(10)
         XCTAssertFalse(
             watchdog.beginGeneration(at: clock.now),
-            "issuing new work into a dead group could only hang"
+            "issuing work into a group being torn down could only hang"
         )
+    }
+
+    func testNewGenerationIsRefusedOnceTheRingIsLost() {
+        let watchdog = makeWatchdog(graceAfterLoss: 1, maxReformationAttempts: 1)
+        watchdog.recordLoss(.memberUnreachable(NodeID("phone")), at: clock.now)
+        clock.advance(2)
+        watchdog.evaluate(at: clock.now)
+        watchdog.reformationFailed("finalize() returned false", at: clock.now)
+
+        clock.advance(10)
+        XCTAssertFalse(watchdog.beginGeneration(at: clock.now))
     }
 
     func testBeginGenerationClearsAStaleUnconfirmedLoss() {
@@ -148,7 +279,8 @@ final class RingWatchdogTests: XCTestCase {
             at: clock.now
         )
         clock.advance(2)
-        XCTAssertEqual(watchdog.evaluate(at: clock.now), .lost(.memberUnreachable(NodeID("phone"))))
+        watchdog.evaluate(at: clock.now)
+        XCTAssertEqual(watchdog.lossReason, .memberUnreachable(NodeID("phone")))
     }
 
     func testJoinsAndEpochChangesDoNotTriggerLoss() {
@@ -163,11 +295,12 @@ final class RingWatchdogTests: XCTestCase {
         )
         clock.advance(30)
         XCTAssertFalse(watchdog.isTerminal)
+        XCTAssertFalse(watchdog.isReforming)
     }
 
     /// End to end against the real membership service: an iPhone announces it is backgrounding,
-    /// and the generation is reported as failed instead of hanging.
-    func testBackgroundedPhoneEndsTheGenerationWithANamedReason() {
+    /// the ring rebuilds without it, and generation becomes possible again.
+    func testBackgroundedPhoneTriggersARebuildRatherThanEndingTheRing() {
         let clock = TestClock()
         let membership = MembershipService(localNodeID: NodeID("mac"), clock: clock)
         let watchdog = RingWatchdog(
@@ -187,15 +320,39 @@ final class RingWatchdogTests: XCTestCase {
         // Phone goes to the background mid-generation.
         watchdog.consume(membership.nodeAnnouncedDrain(NodeID("phone")), at: clock.now)
 
-        // MLX is now wedged: no further tokens will ever arrive.
         clock.advance(3)
         let health = watchdog.evaluate(at: clock.now)
-
-        XCTAssertEqual(health, .lost(.memberDeparted(NodeID("phone"))))
-        let message = try? XCTUnwrap(health.userFacingMessage)
+        guard case .reforming = health else {
+            return XCTFail("expected .reforming, got \(health)")
+        }
         XCTAssertEqual(
-            message,
-            "phone left the ring. This ring can't be rebuilt without restarting the app."
+            health.userFacingMessage,
+            "phone left the ring. Rebuilding the ring without it…"
+        )
+        XCTAssertTrue(health.isRecoverable)
+
+        // The host tears down and re-initialises at the new epoch.
+        clock.advance(4)
+        watchdog.reformationSucceeded(at: clock.now)
+        XCTAssertEqual(watchdog.evaluate(at: clock.now), .healthy)
+        XCTAssertTrue(watchdog.beginGeneration(at: clock.now))
+    }
+
+    /// The old message promised a restart was the only option. That is now only true when
+    /// re-formation actually failed — and it must still say so then.
+    func testTerminalMessageNamesWhyTheRebuildFailed() {
+        let watchdog = makeWatchdog(graceAfterLoss: 1, maxReformationAttempts: 1)
+        watchdog.recordLoss(.memberDeparted(NodeID("phone")), at: clock.now)
+        clock.advance(2)
+        watchdog.evaluate(at: clock.now)
+        watchdog.reformationFailed("ModelContext still held", at: clock.now)
+
+        let health = watchdog.evaluate(at: clock.now)
+        XCTAssertFalse(health.isRecoverable)
+        XCTAssertEqual(
+            health.userFacingMessage,
+            "phone left the ring — rebuilding the ring failed 1 times — ModelContext still held. "
+                + "Restart the app to try again."
         )
     }
 

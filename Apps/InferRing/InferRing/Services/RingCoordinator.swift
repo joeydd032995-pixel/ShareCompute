@@ -14,6 +14,12 @@ final class RingCoordinator {
     @Inject
     private var ringHealthMonitor: RingHealthMonitor?
 
+    /// Needed for re-formation only: the loaded model holds the distributed group (F14), so the
+    /// teardown cannot succeed without asking this to let go first.
+    @ObservationIgnored
+    @Inject
+    private var modelManager: ModelManager?
+
     // MARK: - State
     private var peers: [DiscoveredDevice] = []
     private var allDevices: [DiscoveredDevice] = [] // discovered devices including self, sorted by id
@@ -188,6 +194,56 @@ final class RingCoordinator {
                 }
             }
         }
+    }
+
+    // MARK: - Epoch re-formation (Milestone 2 Stage 3)
+
+    /// Rebuilds the MLX ring without a departed member, at a new epoch.
+    ///
+    /// Possible only because of `Patches/mlx/0002`: before `finalize()` existed, `distributed::init`
+    /// returned its cached group forever and this method could not have been written — that is
+    /// exactly what Spike A found and why Milestone 1 shipped detection alone.
+    ///
+    /// The order is the whole of the correctness here, and it comes from `findings.md` F14:
+    ///
+    /// 1. recompute the topology, so the new group excludes whoever left;
+    /// 2. **release the loaded model first** — its sharded layers each hold the group, so skipping
+    ///    this makes `finalize()` return `false` and change nothing;
+    /// 3. `teardown()` then `initMLX`, which `MLXManager.reform` keeps inseparable;
+    /// 4. reload the model onto the new group.
+    ///
+    /// Throws rather than returning a flag, because every failure here is one that must not be
+    /// mistaken for success: re-initialising after a failed teardown yields the *stale* group with
+    /// the departed member still in it, silently.
+    ///
+    /// Deliberately *not* `@MainActor`, matching `mlxInitTask` above: MLX init and teardown are
+    /// blocking work that has never run on the main actor here, and isolating it there would also
+    /// force a cross-domain access to the non-`Sendable` `ModelManager`.
+    ///
+    /// Not verified: none of this has run. `finalize()` has never executed on hardware, and whether
+    /// step 2 truly releases every layer reference is F14's open question.
+    func reformRing() async throws {
+        // The surviving membership, not the one that included the departed node.
+        buildRing()
+        let devices = ringDevices.map { $0.device.host }
+        let rank = myRank
+
+        guard !devices.isEmpty else {
+            throw RingError.failed("cannot re-form an empty ring")
+        }
+
+        // Step 2 before step 3. Reversing these is the F14 mistake, and it fails quietly.
+        modelManager?.releaseModelForReformation()
+
+        try mlxManager.reform(rank: rank, devices: devices)
+
+        // Prove the new group actually talks before declaring success. An `initialize` that returned
+        // a group is not yet evidence that the ring works.
+        mlxManager.synchronize()
+
+        // Shard re-planning belongs to ModelManager, which owns `assignShardMetadata` and the
+        // apportionment fixes behind it. The ring is smaller now, so the old assignment is wrong.
+        _ = try await modelManager?.reloadAfterReformation()
     }
 
     private func buildRing() {

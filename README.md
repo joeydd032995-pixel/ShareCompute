@@ -15,7 +15,7 @@ This repository adds the membership layer that makes departure a planned event.
 | Path | What it is |
 |---|---|
 | `Sources/ShareComputeCore/` | Platform-neutral membership core. **Zero dependencies** — not MLX, not UIKit, not NIO. |
-| `Tests/ShareComputeCoreTests/` | 58 tests, no network and no sleeping. |
+| `Tests/ShareComputeCoreTests/` | 66 tests, no network and no sleeping. |
 | `Apps/InferRing/` | The vendored infer-ring app, unmodified. The first adapter. |
 | `Patches/` | Patches to MLX, mlx-c and mlx-swift. Start at [`Patches/README.md`](Patches/README.md). |
 | `findings.md` | Research log, including both spike results. Read this first. |
@@ -24,18 +24,18 @@ This repository adds the membership layer that makes departure a planned event.
 
 ## Status
 
-**Detection ships. The MLX patches that make re-formation possible are written; wiring them into
-the app is not done.**
+**Detection ships. Re-formation is written but has never run.**
 
 | Milestone | State |
 |---|---|
 | M1 — detection without re-formation | merged |
 | M2 Stage 1 — a departing peer fails instead of hanging | patch written, 16 harness checks |
 | M2 Stage 2 — the group can be torn down and rebuilt | patches written, 27 harness checks |
-| M2 Stage 3 — epoch re-formation in the app | **not started** |
+| M2 Stage 3 — epoch re-formation in the app | code complete, **never run** |
 
-None of the patches has been built as part of MLX or run on Apple hardware. See
-[`Patches/README.md`](Patches/README.md).
+None of the patches has been built as part of MLX or run on Apple hardware, and no ring has ever
+re-formed. Stage 3's core half is covered by tests; its adapter half type-checks in CI and nothing
+more. See [`Patches/README.md`](Patches/README.md).
 
 ### How this got here
 
@@ -58,10 +58,15 @@ MLX; that boundary is what contained the failure. Milestone 1 shipped detection 
 2 went after the constraint itself: `Patches/mlx/0002` supplies the `finalize()` that Spike A found
 missing, so the operation now exists and Stage 3 can be written against it.
 
-### What is implemented: detection without re-formation
+### What is implemented
 
-The ring cannot be rebuilt, so the achievable goal is to **turn an indefinite silent hang into a
-reported failure**. That is what ships here:
+Milestone 1's achievable goal was to **turn an indefinite silent hang into a reported failure**,
+because the ring could not then be rebuilt. Stage 2 removed that constraint and Stage 3 uses it: a
+confirmed loss now moves the ring to `reforming`, the host tears the group down and re-initialises at
+a new epoch, and only a *failed* rebuild is terminal. Re-formation is bounded by both a timeout and
+an attempt limit — an unbounded retry would be the original hang under a friendlier name.
+
+The detection layer underneath is unchanged and still does the work:
 
 - **iOS announces departure before the OS suspends it.** `willResignActive` fires a fire-and-forget
   `/drain` to every peer with a 2s timeout. Telling some peers and being suspended beats waiting on
@@ -76,8 +81,9 @@ reported failure**. That is what ships here:
   On loss the continuation finishes with `ModelManagerError.ringLost`, naming the device.
 - **New requests fail fast** once the ring is dead, instead of hanging too.
 
-The wedged MLX thread stays wedged until the process exits — nothing here changes that, and the UI
-says so rather than offering a reconnect button that could not work.
+A rank wedged *before* Stage 1's patch stays wedged until the process exits. `Patches/mlx/0001`
+converts that into a thrown error instead, and Stage 3 rebuilds around it — but neither patch has
+been executed, so on an unpatched MLX the old behaviour is still what you get.
 
 A stall alone is **never** treated as loss. Only a stall *plus* known membership loss is. A large
 prefill on a phone legitimately produces nothing for many seconds, and aborting that would be a

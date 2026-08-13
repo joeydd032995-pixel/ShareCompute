@@ -52,6 +52,61 @@ final class ModelManager {
         await chatHistoryStore.snapshot()
     }
 
+    // MARK: - Ring re-formation
+
+    /// Releases every reference this object holds to the loaded model, so the distributed group can
+    /// actually be torn down.
+    ///
+    /// This exists because of `findings.md` F14. The retain chain is
+    /// `ModelContext → model → sharded layers → DistributedGroup`, so while a sharded model is
+    /// loaded the layers hold the group, `DistributedGroup.finalize()` returns `false`, and the
+    /// teardown correctly does nothing. `MLXManager.teardown()` cannot fix this itself — it does not
+    /// own the context, this object does.
+    ///
+    /// Setting `currentModel = nil` also clears `chatSession` through the `didSet`, which matters:
+    /// the session holds the same model and would keep the group alive on its own.
+    ///
+    /// Not verified: whether dropping these references actually releases every layer is exactly
+    /// F14's open question. MLX modules can retain children in ways that are not obvious from the
+    /// declaration site, and only hardware can settle it. If `finalize()` still returns `false`
+    /// after this, something else is holding the group and that is the thing to find.
+    /// Remembers what to reload, so a re-formation is invisible to the user when it works.
+    @ObservationIgnored
+    private var cardPendingReload: ModelCard?
+
+    func releaseModelForReformation() {
+        cardPendingReload = currentModelCard
+        currentModel = nil
+        currentToolSignature = nil
+    }
+
+    /// Reloads onto the new epoch's group, re-planning the shards for the surviving membership.
+    ///
+    /// Re-planning is not optional. The ring is smaller, so the old assignment would leave layers
+    /// unowned or over-assign the survivors — `assignShardMetadata` recomputes against the current
+    /// device set, including the largest-remainder apportionment and per-device feasibility checks
+    /// that `StagePlanner` exists to get right.
+    ///
+    /// Returns `false` when nothing was loaded, which is not an error: a ring may be rebuilt idle.
+    @discardableResult
+    func reloadAfterReformation() async throws -> Bool {
+        guard let card = cardPendingReload else { return false }
+        guard let coordinator else { throw ModelManagerError.notInitialized }
+
+        let metas = try assignShardMetadata(modelCard: card)
+        let rank = coordinator.myRank
+        guard rank < metas.count else {
+            throw ModelManagerError.invalidRequest(
+                "rank \(rank) has no shard in a ring of \(metas.count) after re-formation"
+            )
+        }
+
+        _ = try await loadModelLocally(card, shardMeta: metas[rank]) { _ in }
+        currentModelCard = card
+        cardPendingReload = nil
+        return true
+    }
+
     // MARK: - Public API
 
     private func checkIfCanLoad(_ modelCard: ModelCard) throws {
@@ -202,8 +257,9 @@ final class ModelManager {
         tools: [OpenAPITool]? = nil,
         distributeToPeers: Bool = true
     ) async -> AsyncThrowingStream<ModelResponseChunk, any Error> {
-        // Fail fast rather than issue work into a group that can only hang. Once a rank has left,
-        // the MLX group cannot be rebuilt in-process, so every later request is doomed too.
+        // Fail fast rather than issue work into a group that cannot serve it. Refused while the
+        // ring is mid-rebuild as well as when it is terminally lost — in the first case the group
+        // is about to be destroyed, in the second there is nothing to send work to.
         let ringUsable = await MainActor.run { ringHealthMonitor?.beginGeneration() ?? true }
         if !ringUsable {
             let message = await MainActor.run {
@@ -262,8 +318,9 @@ final class ModelManager {
         // fulfilled and never broken — no exception is raised, so `for try await` below simply
         // never resumes. This task is the only thing that can end that wait.
         //
-        // It does not unblock MLX; that thread stays wedged until the process exits. What it does
-        // is stop the UI waiting forever and tell the user which device left.
+        // Since Stage 3 there are two ways this ends, and they are not the same to a user. A
+        // rebuild is survivable and the request can be resent; a terminal loss is not. Reporting
+        // both as "restart the app" would be the old, now-wrong answer.
         let ringWatchTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -272,13 +329,25 @@ final class ModelManager {
                 // optional-chained call yields `RingHealth?`. The trailing `?` matches through it —
                 // a bare `.lost` pattern does not match an optional.
                 let health = await MainActor.run { self?.ringHealthMonitor?.refreshHealth() }
-                if case .lost(let reason)? = health {
+                switch health {
+                case .lost?:
                     continuation.finish(
                         throwing: ModelManagerError.ringLost(
-                            "\(reason.description). This ring can't be rebuilt without restarting the app."
+                            health?.userFacingMessage ?? "The ring is no longer available."
                         )
                     )
                     return
+                case .reforming?:
+                    // This generation cannot survive the teardown — the group it is running on is
+                    // about to be destroyed. End it now, and say it is coming back.
+                    continuation.finish(
+                        throwing: ModelManagerError.ringReforming(
+                            health?.userFacingMessage ?? "Rebuilding the ring…"
+                        )
+                    )
+                    return
+                case .healthy?, .stalled?, nil:
+                    continue
                 }
             }
         }
@@ -791,6 +860,10 @@ enum ModelManagerError: LocalizedError {
     case distributedVisionNotSupported
     case invalidRequest(String)
     case ringLost(String)
+    /// The ring is being rebuilt at a new epoch. Distinct from `.ringLost` because it is
+    /// **retryable** — the group is coming back, so the UI should offer to resend rather than
+    /// telling the user to restart the app.
+    case ringReforming(String)
 
     var errorDescription: String? {
         switch self {
@@ -810,6 +883,14 @@ enum ModelManagerError: LocalizedError {
             return message
         case .ringLost(let message):
             return message
+        case .ringReforming(let message):
+            return message
         }
+    }
+
+    /// Whether resending the same request could succeed once the ring settles.
+    var isRetryable: Bool {
+        if case .ringReforming = self { return true }
+        return false
     }
 }

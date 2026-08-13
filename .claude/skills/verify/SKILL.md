@@ -27,7 +27,7 @@ Run from the repository root. Expected results are exact; a different number is 
 rounding error.
 
 ```bash
-/opt/swift/usr/bin/swift test                    # 58 tests, 0 failures
+/opt/swift/usr/bin/swift test                    # 66 tests, 0 failures
 ```
 
 ```bash
