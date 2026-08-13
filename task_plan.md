@@ -111,10 +111,13 @@ Two things changed during implementation, both worth carrying forward:
 > **Done since this list was written:** Stage 3 (item 1) landed in PR #9, gated behind
 > `MLX_HAS_FINALIZE` because the patches had never reached the dependency (F20). Item 4 — the
 > repoint — is done: `Patches/land-on-forks.sh` put all four patches on
-> `joeydd032995-pixel/{mlx, mlx-c, mlx-swift}` and `project.pbxproj` now resolves the patched
-> `mlx-swift` at `sharecompute/free-and-finalize`, with the flag on. **The first compile of a
-> patched MLX is pending CI.** Item 2's Swift lifecycle test is the next thing that becomes
-> possible; item 3 still needs Apple hardware and two devices.
+> `joeydd032995-pixel/{mlx, mlx-c, mlx-swift}`, and `project.pbxproj` now **points at** the patched
+> `mlx-swift` at `sharecompute/free-and-finalize`, with the flag on.
+>
+> Pointing at it is not the same as resolving it. **SwiftPM resolution and the first compile of a
+> patched MLX are both still pending CI** — nothing in this repository can establish either, and the
+> two Xcode jobs are the only things that will. Item 2's Swift lifecycle test becomes possible once
+> they pass; item 3 still needs Apple hardware and two devices.
 
 1. **Stage 3** — epoch re-formation in the app. Now unblocked: `finalize()` is the operation Spike A
    recorded as unavailable. `RingWatchdog`'s loss becomes non-terminal.
