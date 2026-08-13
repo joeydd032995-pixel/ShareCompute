@@ -853,3 +853,96 @@ not consume the retry budget. Against stock MLX the app degrades to exactly Mile
 what stock MLX can actually do. Landing the patches on the forks and repointing `project.pbxproj`
 moves from "Phase 2, later" to **Phase 2's first item**, because every remaining MLX claim depends
 on it.
+
+---
+
+## F21 — iOS can host a llama.cpp RPC server in principle, and F15 understated upstream's RPC coverage
+
+The Phase 5 gate, answered ahead of Phases 4–5 so a failure would re-plan them rather than surface
+last. Read against `ggml-org/llama.cpp` at `d86c7d6`; F15 read `9afff1b`, and upstream has moved.
+
+### The enabling fact
+
+`ggml_backend_rpc_start_server` is a **public library API**, not merely the `rpc-server` binary:
+
+```text
+ggml/include/ggml-rpc.h:27  GGML_BACKEND_API void ggml_backend_rpc_start_server(
+                                const char * endpoint, const char * cache_dir,
+                                size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices);
+```
+
+This is what makes iOS hosting conceivable at all. iOS forbids shipping a *separate executable*, so
+a standalone `rpc-server` process is out — but linking the server into the app and calling it on a
+background thread is ordinary. The constraint was never "iOS cannot serve", it was "iOS cannot spawn
+a second binary", and this API sidesteps that.
+
+Nothing in the RPC sources is iOS-hostile in the usual ways: `grep -rnE '\bfork\(|posix_spawn|daemon\(|execv'`
+over `ggml/src/ggml-rpc/` returns **nothing**. The server does not fork per connection, which would
+have been fatal — iOS kills forked children.
+
+### F15 was wrong about upstream CI, in llama.cpp's favour
+
+F15 said: *"The only RPC-specific job is `ubuntu-24-rpc` … so RPC is not gating upstream CI on any
+platform."* At `d86c7d6` that is **false**. `-DGGML_RPC=ON` appears in:
+
+| Workflow | Platform | Gating? |
+|---|---|---|
+| `build-apple.yml:65` | macOS arm64 | yes |
+| `build-apple.yml:102` | macOS x64 | yes |
+| `build-android.yml:148` | Android arm64-v8a | yes |
+| `build-cpu.yml`, `build-cuda-windows.yml` | Windows (llvm, CUDA) | yes |
+| `build-ibm.yml:80` | s390x etc. | yes |
+| `build-rpc.yml` — `ubuntu-24-rpc` | Ubuntu arm64 | **no** — still `continue-on-error: true` |
+
+So F15's *specific* claim about `build-rpc.yml` survives, and its *general* conclusion does not:
+RPC is built and gating on four of this project's five target platforms. The portability caveat F15
+called "the weakest link and should not be leaned on" is considerably stronger than recorded.
+
+### Except on the one platform Phase 5 needs
+
+The iOS job (`build-apple.yml:112`, `macos-latest-ios-xcode`) sets `-DCMAKE_SYSTEM_NAME=iOS` but
+**does not pass `-DGGML_RPC=ON`** — it builds with tools, server, tests and examples all off. So iOS
+is the single target platform where an RPC build is genuinely unproven upstream, and it is the one
+this project chose for its first ring.
+
+Nothing suggests it *cannot* build. `GGML_RPC` is a ggml backend rather than a tool, so the iOS
+job's `LLAMA_BUILD_TOOLS=OFF` does not exclude it, and `ggml/src/CMakeLists.txt` gates `GGML_RPC` on
+no platform condition at all. It simply has not been switched on there.
+
+**Verified:** the header signature, the absent `fork`/`exec`/`daemon`, and every workflow line
+above, read at `d86c7d6`.
+
+**Not verified:** that `GGML_RPC=ON` actually *compiles* for iOS — this container has no Xcode or
+iOS SDK, so only a macOS runner can answer it. Also unproven: throughput over Wi-Fi, and behaviour
+under Jetsam. And the app suspends when backgrounded (F4 — no `UIBackgroundModes`), so a hosted
+server dies with it; that is a product constraint rather than a build one, and Milestone 1's
+drain-on-background already models exactly that departure.
+
+**Consequence: Phase 5 is not resting on a false premise, but its iOS half is unproven at build
+time.** The gate does not fail, so Phases 4–5 stand as planned. What it adds is one cheap CI job —
+build ggml for iOS with `GGML_RPC=ON` on a macOS runner — which should land before any iOS node work
+begins, on the same logic that made both MLX spikes worth running first.
+
+### F15's technical claims re-verified at `d86c7d6`
+
+Since F15's *CI* claim went stale, its load-bearing ones were re-read at the same commit rather than
+trusted. **All four still hold**, so Phase 4's scope is confirmed rather than reduced:
+
+| F15 claim | At `d86c7d6` |
+|---|---|
+| 19 `RPC_STATUS_ASSERT` sites, each a `GGML_ABORT` | still 19 |
+| `ggml_abort` cannot be intercepted | holds — a `g_abort_callback` runs first, then `abort()` unconditionally |
+| no `SO_RCVTIMEO` / `SO_SNDTIMEO` in `ggml/src/ggml-rpc/` | still absent |
+| `add_server`'s `reg_map` is an owning static, no removal path | `ggml-rpc.cpp:2014`, and no `remove_server` in the header |
+| 16-device ceiling | `GGML_SCHED_MAX_BACKENDS` 16 (`ggml-backend.cpp:753`), `llama_max_devices()` 16 (`src/llama.cpp:85`) |
+
+One near-miss worth recording, because it is the third instance of the same failure mode. The first
+pass checked `ggml_abort` with `grep -A6` and concluded the unconditional `abort()` was **gone** — it
+is simply further down than six lines, past the callback block added since F15. Reading the whole
+function showed F15 was right all along, and had already described the callback-then-abort ordering
+exactly.
+
+A too-narrow window produced a confident wrong answer, which is what one filtered `xcodebuild` log
+did earlier in this project and what `swiftc -parse` did twice (F18, F20). The correction is the
+same each time: widen to the whole unit before believing a negative result, especially a convenient
+one — "upstream already fixed it" would have quietly removed Phase 4.2 from the plan.
