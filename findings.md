@@ -1101,3 +1101,67 @@ the hardware list with the rest, not in a single-runner test dressed up as cover
 This is a reading of the sources, not a run. Nothing here has been executed on Apple hardware, and
 the claim that two local processes *would* form a ring is inference from the connect/accept ordering
 — plausible, and untested.
+
+---
+
+## F24 — F17's fmt workaround is confirmed, and now needed in a third place
+
+Two things F17 left open are now settled, and a third has emerged. Evidence is the
+`DistributedGroup lifecycle on macOS` job at `88494c1`, plus the two Xcode jobs' history since
+`143665d`.
+
+### F17's untested workaround is verified
+
+F17 recorded, under *Not verified*: "That `-DFMT_CONSTEVAL=` actually clears the build — it is
+applied but not yet observed passing." It has now passed on both Xcode jobs across many runs,
+including the green end-to-end build of the patched MLX. **The workaround works.**
+
+### The diagnosis reproduces exactly, under a different build system
+
+The new SwiftPM job carried no such flag, and failed with F17's error verbatim:
+
+```text
+fmt/include/fmt/format-inl.h:1389:33: error: call to consteval function
+'fmt::basic_format_string<char, int>::basic_format_string<FMT_COMPILE_STRING, 0>'
+is not a constant expression
+ 1389 |       out = fmt::format_to(out, FMT_STRING("p{}"),
+5 errors generated.
+```
+
+Same file, same line, same five errors. So it is not an Xcode-specific quirk: it is the vendored
+fmt against a current clang, whatever drives the compiler.
+
+**SwiftPM spells the flag differently.** `swift test -Xcxx -DFMT_CONSTEVAL=`, against the Xcode
+jobs' `OTHER_CPLUSPLUSFLAGS="-DFMT_CONSTEVAL="`. Anyone adding a fourth consumer needs to know that
+the setting does not carry across build systems by name.
+
+### Incidentally: the patched files compile before fmt fails
+
+The failing log reaches `[207/218] Compiling distributed_group.cpp` and
+`[208/218] Compiling distributed.cpp` before dying in `format.cc`. The Stage 1 and Stage 2 sources
+are not implicated — useful to know, because "the MLX build failed" invites the assumption that the
+patches did it.
+
+### The new fact: three consumers now carry the same flag
+
+`ios.yml`, `objective-c-xcode.yml` and now `mlx-lifecycle.yml`, each with its own spelling of the
+same define — **and a developer opening the project in Xcode carries none of them and hits the
+error**. That is exactly the situation F17 predicted when it said a CI build setting fixes CI and
+nothing else.
+
+F17's recommended durable fix therefore stands, and is now better justified than when written:
+define `FMT_CONSTEVAL` empty in the fork's `Package.swift` `cxxSettings` for `Cmlx`, as
+`Patches/mlx-swift/0003`, then delete the flag from all three jobs. One line, in the one place every
+consumer already resolves.
+
+It is **not** done here. Doing it means another push to the fork and a full CI cycle, and folding
+it into the PR that introduces the lifecycle test would mix two unrelated changes — and leave an
+unlanded patch file sitting in `Patches/`, which is the state that produced F20.
+
+### Not verified
+
+That `0003` would work. Nothing has tried defining `FMT_CONSTEVAL` through `cxxSettings` rather than
+on the command line, and `Package.swift` already sets `MLX_VERSION` and `MLX_ENABLE_NAX` for `Cmlx`
+— F17 notes that clobbering those was the reason the Xcode jobs use `OTHER_CPLUSPLUSFLAGS` rather
+than `GCC_PREPROCESSOR_DEFINITIONS`. A `cxxSettings` `.define` appends rather than replaces, so this
+should be safe, but "should be" is not a build.
