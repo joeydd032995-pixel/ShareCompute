@@ -1023,3 +1023,81 @@ the `mlx-swift` identity conflict F16 recorded, which had been the other candida
 remaining defect is two missing declarations, not the patch set.
 
 Still unrun: nothing here has executed. Linking, runtime behaviour and a real ring remain untested.
+
+---
+
+## F23 — A single machine cannot exercise the memoisation that Stage 2 exists to defeat
+
+Established while scoping Phase 2.2's Swift lifecycle test, by reading the patched sources at fork
+`6c15a2e`. It changes what that test can honestly assert, so it is worth recording before the test
+is written rather than after it passes for the wrong reason.
+
+### `ring::init` needs two environment variables, or it declines
+
+```text
+mlx/distributed/ring/ring.cpp:  const char* hostfile = std::getenv("MLX_HOSTFILE");
+                                const char* rank_str = std::getenv("MLX_RANK");
+                                if (!hostfile || !rank_str) { ... return nullptr; }
+```
+
+`strict=false` returns `nullptr` rather than throwing. A CI runner has neither variable set, so ring
+declines, and mpi and jaccl decline too.
+
+### The no-backend path does not cache under `"any"` — and that is the whole problem
+
+`distributed::init` ends:
+
+```cpp
+if (group == nullptr) {
+  group = std::make_shared<detail::EmptyGroup>();
+} else {
+  cache.insert({"any", group});      // only on the real-backend path
+}
+cache.insert({std::move(bk_), group});
+```
+
+With `bk == "any"` and every backend declining, `bk_` has been reassigned down the chain and ends as
+`"jaccl"`. So the `EmptyGroup` is cached under `"jaccl"` only. A second `init(false, "any")` misses
+the cache — `find("any")` was never populated — walks the chain again and builds a **fresh
+`EmptyGroup`**.
+
+**Consequence: on a bare runner, "a re-`init()` returns a genuinely new group" is true whether or not
+`finalize()` was ever called.** That assertion is the one which pins the defect this whole milestone
+exists to fix, and on a single machine it would pass vacuously. Writing it there would produce a
+green check that proves nothing — the precise failure mode this project has already been caught by
+three times (F18, F20, F22).
+
+### A one-rank ring is not a workaround
+
+Setting `MLX_HOSTFILE` to a single-entry file and `MLX_RANK=0` does not give a real backend:
+
+```text
+mlx/distributed/ring/ring.cpp:441   int connect_to = (rank_ + 1) % size_;   // (0+1) % 1 == 0
+```
+
+Rank 0's peer is itself, and `rank_ < connect_to` is false, so it takes the else branch and calls
+`make_connections` **before** `accept_connections` creates the listener. It connects to an address
+nothing is listening on. It fails rather than hangs — `TCPSocket::connect` is bounded at
+`CONN_ATTEMPTS = 5` with `CONN_WAIT = 1000` ms — so the cost is a ~5 s stall and a throw, not a
+wedged runner. But it is not a ring.
+
+A real ring on one machine needs **two processes** on `127.0.0.1` at different ports, with
+`MLX_RANK` 0 and 1. That is constructible, and it is what a genuine single-host test of the
+memoisation would require.
+
+### What a single-process test can therefore honestly assert
+
+- Both C symbols **link** — although the macOS build already proves this, so a test adds little.
+- ARC calls `mlx_distributed_group_free` when the last `DistributedGroup` reference drops.
+- `finalize()` returns `false` while a handle is held and `true` once every one is released. This
+  works against the cached `EmptyGroup` and is a real test of the use-count check that review missed
+  and the C++ harness caught.
+
+What it **cannot** assert without a second process is the memoisation defeat itself. That belongs on
+the hardware list with the rest, not in a single-runner test dressed up as covering it.
+
+### Not verified
+
+This is a reading of the sources, not a run. Nothing here has been executed on Apple hardware, and
+the claim that two local processes *would* form a ring is inference from the connect/accept ordering
+— plausible, and untested.

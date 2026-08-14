@@ -147,14 +147,32 @@ Two things changed during implementation, both worth carrying forward:
    this repository covers the Swift half; `group_finalize_test.cpp` mirrors the C++ cache only, and
    `swiftc -parse` does not even resolve `import Cmlx`. It must assert:
 
-   - both C symbols import and link (`mlx_distributed_group_free`, `mlx_distributed_finalize`);
    - ARC actually calls `mlx_distributed_group_free` when the last `DistributedGroup` reference goes;
-   - `finalize()` returns `false` while a handle is held, and `true` once every one is released;
-   - a re-`init()` after a successful `finalize()` returns a **genuinely new** group, not the
-     memoised one.
+   - `finalize()` returns `false` while a handle is held, and `true` once every one is released.
 
-   Deliberately not committed here as an unrunnable file: this container has no macOS or Xcode, so
-   adding it would assert coverage that nothing can back.
+   **Two items are struck from the original list, for different reasons — see F23.**
+
+   *Symbol linkage* is already proven: both Apple jobs build and link the app against the patched
+   MLX on every run. A test asserting it would restate a check that is strictly stronger.
+
+   *"A re-`init()` returns a genuinely new group"* **cannot be asserted on a single machine, and
+   writing it there would be worse than omitting it.** `ring::init` declines without `MLX_HOSTFILE`
+   and `MLX_RANK`, so a bare runner gets an `EmptyGroup` — and the no-backend path caches it under
+   the last-tried backend key, never under `"any"`. A second `init("any")` therefore always builds a
+   fresh group, `finalize()` or not. The assertion would pass **vacuously**, producing a green check
+   for the defect this whole milestone exists to fix while proving nothing about it. A one-rank ring
+   is not a way out either: rank 0's peer is itself, and it connects before it listens, so it throws
+   after ~5 s.
+
+   A genuine single-host test of the memoisation needs **two processes** on `127.0.0.1` at different
+   ports with `MLX_RANK` 0 and 1. Until that exists, the memoisation defeat stays on the hardware
+   list rather than being dressed up as covered.
+
+   This also needs a **new macOS CI job**: `ios.yml` and `objective-c-xcode.yml` both run
+   `xcodebuild clean build [analyze]`, and neither runs tests.
+
+   Still deliberately not committed as an unrunnable file — this container has no macOS or Xcode —
+   but it is now runnable on a runner, which it was not before.
 
 3. On a Mac: **run** the hardware tests. Building is done — CI compiles all five patches as part of
    the app on macOS and iOS. What remains is execution. For
