@@ -1,6 +1,6 @@
 ---
 name: patches
-description: Work with ShareCompute's MLX patch set — the four patches across mlx, mlx-c and mlx-swift that let a departing rank fail instead of hang and let the distributed group be torn down and rebuilt.
+description: Work with ShareCompute's MLX patch set — the five patches across mlx, mlx-c and mlx-swift that let a departing rank fail instead of hang and let the distributed group be torn down and rebuilt.
 argument-hint: <optional — a patch to check or extend, otherwise reports the set's state>
 ---
 
@@ -12,7 +12,7 @@ memory.
 
 ## $ARGUMENTS
 
-If empty, report the state of the four patches, whether each still applies to its pin, and what
+If empty, report the state of the five patches, whether each still applies to its pin, and what
 Stage 3 still needs. If it names a patch, work on that one and keep the constraints below.
 
 ## What the set is for
@@ -68,7 +68,14 @@ is not started.
 
 ## Report
 
-**State what you verified and what you did not.** None of these four patches has ever been built as
-part of MLX, linked, or run on Apple hardware, and no multi-device ring has ever exercised them — say
-so every time. The Swift half has only been through `swiftc -parse`, which does not even resolve
-`import Cmlx`.
+**State what you verified and what you did not**, and keep the line where it actually sits now.
+
+**CI-backed:** all five patches build as part of MLX under a real Apple toolchain, for
+`arm64-apple-macos` and iOS Simulator; `mlx_distributed_group_free` and `mlx_distributed_finalize`
+link across all three repositories; `DistributedGroup.swift` type-checks with `import Cmlx` genuinely
+resolved. Do not hedge these — they are checked on every run.
+
+**Still unverified, and it is the whole of what matters behaviourally:** none of these patches has
+ever been *run*. No ring has formed, `finalize()` has never been called, `~RingGroup()` and
+`~SocketThread()` have never executed against a departed peer, and the fail-instead-of-hang path has
+never fired on a real socket. Say so every time. It needs two Apple devices.

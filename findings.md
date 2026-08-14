@@ -946,3 +946,158 @@ A too-narrow window produced a confident wrong answer, which is what one filtere
 did earlier in this project and what `swiftc -parse` did twice (F18, F20). The correction is the
 same each time: widen to the whole unit before believing a negative result, especially a convenient
 one — "upstream already fixed it" would have quietly removed Phase 4.2 from the plan.
+
+---
+
+## F22 — mlx-swift vendors its own copies of the mlx-c headers, so patching the submodule declares nothing
+
+Found by the first CI run that resolved the patched fork (PR #11). Both Xcode jobs failed with two
+errors and no others:
+
+```text
+SourcePackages/checkouts/mlx-swift/Source/MLX/DistributedGroup.swift:22:9:
+    error: cannot find 'mlx_distributed_group_free' in scope
+SourcePackages/checkouts/mlx-swift/Source/MLX/DistributedGroup.swift:69:9:
+    error: cannot find 'mlx_distributed_finalize' in scope
+```
+
+Both are the symbols `Patches/mlx-c/0001` exports, called from `Patches/mlx-swift/0001`.
+
+### Why the submodule patch was not enough
+
+mlx-swift does not compile against the mlx-c submodule's headers. It keeps **its own copies**:
+
+```text
+Source/Cmlx/include/mlx/c/distributed_group.h          991 bytes, a regular file, not a symlink
+Source/Cmlx/include-framework/mlx-c-distributed_group.h  996 bytes, same but flat-named
+Source/Cmlx/mlx-c/mlx/c/distributed_group.h            the submodule -- patched, and unread
+```
+
+The `Cmlx` module map exposes exactly one header:
+
+```text
+Source/Cmlx/include/module.modulemap:  module Cmlx { header "mlx.h" }
+Source/Cmlx/include/mlx.h           -> "mlx/c/linalg.h" -> "mlx/c/distributed_group.h"   (the copy)
+```
+
+So Swift's entire view of the C API comes from `include/`. `mlx-c/mlx/c/distributed_group.cpp` *is*
+compiled from the submodule, so the **definitions** were present and would have linked — only the
+**declarations** were missing. The two copies are otherwise byte-identical to the submodule header,
+differing only in `include-framework`'s `#include <Cmlx/mlx-c-stream.h>`.
+
+`include-framework` is excluded from the SwiftPM target on Linux only (`Package.swift:7-11`), so on
+Apple platforms it is part of the target. Both copies are patched, to avoid leaving a divergent one
+as the next trap.
+
+### Why every earlier check passed
+
+This is the sharp part, and it generalises beyond this bug.
+
+- `g++ -fsyntax-only` on `mlx-c/mlx/c/distributed_group.cpp` compiles the **submodule** header
+  directly. It proves the definitions exist. It says nothing about what mlx-swift exposes.
+- The negative control in `Patches/README.md` step 2 tests mlx-c against an unpatched *mlx* header.
+  Correct, and orthogonal.
+- `swiftc -parse` resolves no imports (F18).
+- Verifying the fork resolves — full clone, `fsck`, submodule checkout, patched symbols present —
+  confirmed the submodule header had them. It checked the wrong file.
+
+Every layer tested a real thing, and the union still had a hole exactly where two file trees are
+supposed to mirror each other and one is silently authoritative. **A vendored copy of a dependency's
+header is a fork of that dependency**, whatever the directory is called.
+
+### The check that closes it
+
+`Patches/README.md` verification step 6: a C translation unit that reaches both symbols through
+`mlx.h`, exactly as Swift does, compiled with `-Werror=implicit-function-declaration`. It passes
+with `0002` and fails without. The `-Werror=` is load-bearing — plain C accepts both as implicit
+declarations and *passes*, reproducing the same false green in the harness that the harness exists
+to prevent.
+
+### What this does not undermine
+
+The macOS job got much further than any before it. `Cmlx` builds before `MLX`, and the log shows
+Swift `MLX` compilation well underway, so the patched MLX C++ — `ring.cpp`, `distributed.cpp` and
+`distributed_group.cpp`, all four patches' C and C++ — **compiled for arm64-apple under a real Apple
+toolchain**, for the first time in this project's life. SwiftPM also resolved the patched fork past
+the `mlx-swift` identity conflict F16 recorded, which had been the other candidate failure. The
+remaining defect is two missing declarations, not the patch set.
+
+Still unrun: nothing here has executed. Linking, runtime behaviour and a real ring remain untested.
+
+---
+
+## F23 — A single machine cannot exercise the memoisation that Stage 2 exists to defeat
+
+Established while scoping Phase 2.2's Swift lifecycle test, by reading the patched sources at fork
+`6c15a2e`. It changes what that test can honestly assert, so it is worth recording before the test
+is written rather than after it passes for the wrong reason.
+
+### `ring::init` needs two environment variables, or it declines
+
+```text
+mlx/distributed/ring/ring.cpp:  const char* hostfile = std::getenv("MLX_HOSTFILE");
+                                const char* rank_str = std::getenv("MLX_RANK");
+                                if (!hostfile || !rank_str) { ... return nullptr; }
+```
+
+`strict=false` returns `nullptr` rather than throwing. A CI runner has neither variable set, so ring
+declines, and mpi and jaccl decline too.
+
+### The no-backend path does not cache under `"any"` — and that is the whole problem
+
+`distributed::init` ends:
+
+```cpp
+if (group == nullptr) {
+  group = std::make_shared<detail::EmptyGroup>();
+} else {
+  cache.insert({"any", group});      // only on the real-backend path
+}
+cache.insert({std::move(bk_), group});
+```
+
+With `bk == "any"` and every backend declining, `bk_` has been reassigned down the chain and ends as
+`"jaccl"`. So the `EmptyGroup` is cached under `"jaccl"` only. A second `init(false, "any")` misses
+the cache — `find("any")` was never populated — walks the chain again and builds a **fresh
+`EmptyGroup`**.
+
+**Consequence: on a bare runner, "a re-`init()` returns a genuinely new group" is true whether or not
+`finalize()` was ever called.** That assertion is the one which pins the defect this whole milestone
+exists to fix, and on a single machine it would pass vacuously. Writing it there would produce a
+green check that proves nothing — the precise failure mode this project has already been caught by
+three times (F18, F20, F22).
+
+### A one-rank ring is not a workaround
+
+Setting `MLX_HOSTFILE` to a single-entry file and `MLX_RANK=0` does not give a real backend:
+
+```text
+mlx/distributed/ring/ring.cpp:441   int connect_to = (rank_ + 1) % size_;   // (0+1) % 1 == 0
+```
+
+Rank 0's peer is itself, and `rank_ < connect_to` is false, so it takes the else branch and calls
+`make_connections` **before** `accept_connections` creates the listener. It connects to an address
+nothing is listening on. It fails rather than hangs — `TCPSocket::connect` is bounded at
+`CONN_ATTEMPTS = 5` with `CONN_WAIT = 1000` ms — so the cost is a ~5 s stall and a throw, not a
+wedged runner. But it is not a ring.
+
+A real ring on one machine needs **two processes** on `127.0.0.1` at different ports, with
+`MLX_RANK` 0 and 1. That is constructible, and it is what a genuine single-host test of the
+memoisation would require.
+
+### What a single-process test can therefore honestly assert
+
+- Both C symbols **link** — although the macOS build already proves this, so a test adds little.
+- ARC calls `mlx_distributed_group_free` when the last `DistributedGroup` reference drops.
+- `finalize()` returns `false` while a handle is held and `true` once every one is released. This
+  works against the cached `EmptyGroup` and is a real test of the use-count check that review missed
+  and the C++ harness caught.
+
+What it **cannot** assert without a second process is the memoisation defeat itself. That belongs on
+the hardware list with the rest, not in a single-runner test dressed up as covering it.
+
+### Not verified
+
+This is a reading of the sources, not a run. Nothing here has been executed on Apple hardware, and
+the claim that two local processes *would* form a ring is inference from the connect/accept ordering
+— plausible, and untested.

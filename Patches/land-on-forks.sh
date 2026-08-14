@@ -76,6 +76,10 @@ MLXC_SHA=$(git rev-parse HEAD)
 say "mlx-swift  @ ${SWIFT_PIN:0:7} (from N1k1tung)  ->  $SWIFT_BRANCH"
 prepare mlx-swift "$UPSTREAM_SWIFT" "$SWIFT_PIN" "$SWIFT_BRANCH"
 apply_patch "$PATCHES/mlx-swift/0001-free-group-and-expose-finalize.patch"
+# 0002 is not optional: mlx-swift vendors its own copies of the mlx-c headers under Source/Cmlx/
+# and the module map exposes only those, so patching the mlx-c submodule alone leaves the two new
+# symbols undeclared and 0001's Swift fails with "cannot find ... in scope". See findings.md F22.
+apply_patch "$PATCHES/mlx-swift/0002-declare-cmlx-symbols-in-vendored-headers.patch"
 
 # Repoint the vendored submodules at the patched commits. Both halves are needed: the gitlink says
 # *which commit*, .gitmodules says *which repository* -- and the patched commits exist only in the

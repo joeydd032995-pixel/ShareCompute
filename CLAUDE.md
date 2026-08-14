@@ -17,13 +17,18 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 
 | Piece | Status |
 |---|---|
-| `ShareComputeCore` — epochs, leases, node state machine, stage planner, watchdog | merged, 66 tests passing |
-| Apple adapter — drain-on-background, heartbeats, generation watchdog | written, **never compiled** |
-| Xcode wiring of `ShareComputeCore` as a local package | written, **never opened in Xcode** |
-| Milestone 2 Stage 1 — MLX ring fails instead of hanging | patch written, syntax-checked, harness passes |
-| Milestone 2 Stage 2 — group teardown (`finalize()` across mlx, mlx-c, mlx-swift) | 3 patches written, syntax-checked, harness passes |
-| Milestone 2 Stage 3 — epoch re-formation in the app | code complete, **never run** |
+| `ShareComputeCore` — epochs, leases, node state machine, stage planner, watchdog | merged, 67 tests passing |
+| Apple adapter — drain-on-background, heartbeats, generation watchdog | compiles in macOS + iOS CI, **never run** |
+| Xcode wiring of `ShareComputeCore` as a local package | builds in CI |
+| Milestone 2 Stage 1 — MLX ring fails instead of hanging | patch compiles as part of MLX on Apple; harness passes; **never executed** |
+| Milestone 2 Stage 2 — group teardown (`finalize()` across mlx, mlx-c, mlx-swift) | 4 patches, compile and **link** on Apple; harness passes; **never executed** |
+| Milestone 2 Stage 3 — epoch re-formation in the app | code complete, compiles behind `MLX_HAS_FINALIZE`, **never run** |
+| The five patches landed on the forks, project repointed | **both Xcode jobs green** — the patched MLX builds end to end |
 | Linux / Windows / Android adapters | **blocked**, see below |
+
+Milestone 2 is code-complete and building. The gap is no longer "uncompiled" — it is **"unrun"**:
+no ring has ever formed, `finalize()` has never been called, and no patch has executed against a
+real peer. That needs two Apple devices.
 
 Working documents: `task_plan.md` (phases, decisions, errors), `findings.md` (research log, read
 this one), `progress.md` (session log, test results).
@@ -54,8 +59,25 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
    `get()` produces silent data corruption instead of a hang — worse, because a hang is visible.
 5. **`Cmlx` is a source SwiftPM target**, not a prebuilt binary, which is what makes patching MLX
    tractable at all.
-6. **The app depends on forks**, not upstream: `N1k1tung/mlx-swift` and `N1k1tung/mlx-swift-lm` at
-   branch `ios-distrib-0.3.0`, pinned in `project.pbxproj` (not `Package.resolved`).
+6. **mlx-swift vendors its own copies of the mlx-c headers, and those are the only ones Swift
+   sees.** The `Cmlx` module map exposes exactly one header, `Source/Cmlx/include/mlx.h`, whose
+   include chain reaches `include/mlx/c/distributed_group.h` — a *copy* checked into mlx-swift, not
+   the submodule's. Patching the mlx-c submodule compiles the definitions without declaring them.
+   Any new C symbol therefore needs a matching declaration in **both** `include/` and
+   `include-framework/` (the latter is excluded on Linux only, so it is live on Apple). This cost a
+   full CI round to find — see F22.
+7. **The app depends on forks**, not upstream, pinned in `project.pbxproj` (not `Package.resolved`):
+   - `joeydd032995-pixel/mlx-swift` at branch `sharecompute/free-and-finalize` — **this project's
+     patched fork**, carrying all five patches with the `mlx` and `mlx-c` submodules repointed at
+     their patched branches. This is what makes `DistributedGroup.finalize()` exist at all.
+   - `N1k1tung/mlx-swift-lm` at branch `ios-distrib-0.3.0`, unchanged. That ref is a **tag**, not a
+     branch, and SwiftPM resolves it fine — do not "fix" it, and do not conclude it is missing from
+     a `git ls-remote --heads` that filters tags out. This has now misled two separate reviews.
+
+   `mlx-swift-lm` declares its own dependency on `ml-explore/mlx-swift`, so the project resolves two
+   different URLs under the single SwiftPM identity `mlx-swift` and relies on the **root** pin
+   winning. That predates this project (F16) — repointing the root only changed *which* fork wins,
+   and CI confirms it resolves.
 
 ## Architectural rules
 
@@ -88,20 +110,25 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | Work | Verifiable here | How |
 |---|---|---|
 | `ShareComputeCore` | **yes** | `/opt/swift/usr/bin/swift test` (Swift 6.1.2) |
-| MLX C++ patch compiles | **yes** | `g++ -fsyntax-only -std=c++17` with mlx-swift's vendored `json`/`fmt` headers |
+| MLX C++ patch compiles | **yes** | `g++ -fsyntax-only -std=c++17` with mlx-swift's vendored `json`/`fmt` headers. Proves the submodule TU compiles; says nothing about what mlx-swift *exposes* (F22) |
+| New C symbols reachable from Swift | **yes** | a C file including `Source/Cmlx/include/mlx.h`, under `-Werror=implicit-function-declaration` — the flag is load-bearing, plain C passes on an implicit declaration |
 | MLX failure semantics | **yes** | `Patches/mlx/tests/socket_thread_failure_test.cpp` against real `socketpair` |
 | Agent/skill files — *static* metadata | **yes** | `python3 scripts/validate-agents.py` — parses front matter and checks the mappings |
 | Slash commands at **dispatch** | **no** | needs an interactive session: that a fork spawns the named agent, that `background: false` blocks, that a gated command spawns nothing, that `/verify` displaces the built-in |
 | Swift syntax of Apple code | partial | `swiftc -parse` — syntax only. It passed the Apple adapter for this project's whole life while three real type errors sat in it (F18) |
-| Xcode project builds | **not here** | needs macOS + Xcode — `.github/workflows/` runs it on a macOS runner instead |
+| Xcode project builds, patched MLX and all | **not here — but yes in CI** | `.github/workflows/` on a macOS runner. Both jobs green: the patched MLX compiles for `arm64-apple-macos` and iOS Simulator, and the new C symbols link |
 | Actor isolation, runtime behaviour | **no** | needs Apple hardware |
 | Android / Windows | **no** | needs those SDKs |
 | Multi-device ring | **no** | needs two or more real devices |
 
 **State what you verified and what you did not.** Silence about the unverified half is treated as a
-defect here, not an omission. The Apple-side Swift now type-checks in CI on macOS — but nothing in
-this repository has ever *run* on a device, no ring has ever formed, and none of the four MLX
-patches has been executed. Saying so every time is correct, not excessive hedging.
+defect here, not an omission.
+
+The line has moved, so state it accurately rather than out of habit. The patched MLX now **compiles
+and links** as part of the app under a real Apple toolchain, on both macOS and iOS — that claim is
+CI-backed and no longer needs hedging. What is still true is that **nothing has been run**: no ring
+has ever formed, `finalize()` has never been called, and no MLX patch has executed against a real
+peer. Overstating that gap is now as wrong as understating it was.
 
 ## Working agreements
 
