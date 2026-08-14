@@ -360,3 +360,71 @@ observed, and none of the four patches has been *run*. Re-formation needs two Ap
 | `git checkout -- .claude/skills/` destroyed uncommitted work | 1 | Harmless only because the files were untracked. Reapplied, and switched to per-file backups |
 | Concluded from a `grep -A6` window that upstream had removed `ggml_abort`'s `abort()` | 1 | Read the whole function: the `abort()` sits past a callback block. F15 stands, and Phase 4.2 would have been deleted on the strength of a six-line window |
 | Nearly agreed that `ios-distrib-0.3.0` does not exist, on `git ls-remote --heads` returning empty | 1 | It is a **tag**. Same trap as F13, twice in one session — `--heads` filters tags out |
+
+## Session 6 — the patched MLX builds
+
+Short session, one result: **all five patches compile as part of MLX under a real Apple toolchain,
+and the new C symbols link.** That retires a caveat this project has carried since Stage 1.
+
+### Two CI rounds
+
+**Round one** (fork at `01b7211`) failed with two errors and no others:
+
+```
+DistributedGroup.swift:22:9: cannot find 'mlx_distributed_group_free' in scope
+DistributedGroup.swift:69:9: cannot find 'mlx_distributed_finalize' in scope
+```
+
+It settled two open questions on the way down, both worth separating from the failure. SwiftPM
+**resolved** the patched fork — the `mlx-swift` package-identity conflict F16 recorded did not bite,
+so the recorded fallback of forking `mlx-swift-lm` too is unnecessary. And `Cmlx` builds before
+`MLX`, so the fact that both jobs reached Swift `MLX` compilation means the patched C++ —
+`ring.cpp`, `distributed.cpp`, `distributed_group.cpp` — had already compiled for arm64-apple.
+
+The cause was F22, recorded in full there: mlx-swift vendors its own copies of the mlx-c headers and
+the module map exposes only those, so patching the submodule compiled the definitions without
+declaring them. `Patches/mlx-swift/0002` adds both declarations to both copies.
+
+**Round two** (fork at `6c15a2e`), all five checks green:
+
+| Check | Result |
+|---|---|
+| Build and analyse the Infer Ring scheme — macOS | ✅ `▸ Analyze Succeeded`, 15m47s |
+| Build for iOS Simulator | ✅ 11m24s |
+| swift test on Linux | ✅ 67 tests |
+| MLX patch harnesses | ✅ 47 checks |
+| Agent roster lint | ✅ |
+
+Read from the log rather than the conclusion field, because this project has been caught by a false
+green twice.
+
+### Verified this session
+
+- All five patches **compile as part of MLX** for `arm64-apple-macos` and arm64 iOS Simulator.
+- `mlx_distributed_group_free` and `mlx_distributed_finalize` **link**, the latter reaching
+  `mlx::core::distributed::finalize()` — the whole three-repository chain resolves.
+- `DistributedGroup.swift` type-checks with `import Cmlx` genuinely resolved, which `swiftc -parse`
+  never did.
+- Stage 3's teardown compiled its `#if MLX_HAS_FINALIZE` branch. F20's `#else` is no longer what
+  builds.
+- Before re-triggering: the fork commit is a fast-forward on `01b7211`, both vendored headers carry
+  both declarations, submodule pins unchanged at `18e53a6` / `55a61ff`.
+
+**Milestone 2 is code-complete and building.**
+
+### Not verified — and this is now the entire remaining gap
+
+**Nothing has been run.** No ring has formed, `finalize()` has never been called, `~RingGroup()` and
+`~SocketThread()` have never executed against a peer that already left, and the fail-instead-of-hang
+path has never fired on a real socket. A build is not a behaviour.
+
+The wording matters in both directions now. Under-claiming is as wrong as over-claiming was: the
+compile-and-link claims are CI-backed on every run and should not be hedged. What stays hedged is
+execution, and that needs two Apple devices.
+
+### Errors encountered (session 6)
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| Read `swift test` as "0 tests passed" | 1 | `tail -4` had cut off the XCTest summary; the trailing line is the swift-testing runner, which finds none. 67 tests did run. Widened the filter instead of trusting the tail |
+| `Patches/mlx-c/README.md` predicted this failure and reassured past it | — | It flagged that symbol visibility was unproven, guessed export maps, and said "no known reason it would not be". The mechanism was wrong; the instinct to withhold the claim was right. Kept in the file as a note rather than quietly rewritten |

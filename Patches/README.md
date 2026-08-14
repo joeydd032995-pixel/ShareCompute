@@ -26,24 +26,20 @@ these patches land. **They have landed:**
 |---|---|---|
 | `mlx` | `sharecompute/stage1-2` | `18e53a6f9b88` |
 | `mlx-c` | `sharecompute/export-finalize` | `55a61ffbe301` |
-| `mlx-swift` | `sharecompute/free-and-finalize` | `01b72119cc77` — **`0002` not yet pushed** |
+| `mlx-swift` | `sharecompute/free-and-finalize` | `6c15a2e53385` |
 
 `project.pbxproj` points at the mlx-swift branch and defines `MLX_HAS_FINALIZE`, so Stage 3's
-teardown compiles its `#if` branch rather than the `#else` that F20 forced.
+teardown compiles its `#if` branch rather than the `#else` that F20 forced. **Both Xcode jobs build
+green against these branches** — see verification step 7.
 
-**The mlx-swift branch is one commit short.** It carries `0001` but not `0002`, so the build fails
-in `DistributedGroup.swift` with `cannot find 'mlx_distributed_group_free' in scope` (F22).
-[`land-mlx-swift-0002.sh`](land-mlx-swift-0002.sh) adds it as a fast-forward on top of what is
-already published — it never force-pushes, and re-running after a successful push reports "already
-applied" rather than doing damage:
+[`land-mlx-swift-0002.sh`](land-mlx-swift-0002.sh) is what added `0002` to the already-published
+mlx-swift branch, as a fast-forward. It never force-pushes and reports "already applied" on a
+re-run, so it is safe to invoke again:
 
 ```bash
 bash Patches/land-mlx-swift-0002.sh          # apply, show the diff, push nothing
 bash Patches/land-mlx-swift-0002.sh --push   # and push
 ```
-
-Nothing in ShareCompute changes with it: `project.pbxproj` already points at that branch, so the
-next CI run picks the commit up. `mlx` and `mlx-c` are unaffected.
 
 [`land-on-forks.sh`](land-on-forks.sh) is what put the branches there, and now applies both
 mlx-swift patches on a fresh run:
@@ -142,8 +138,15 @@ handle → `finalize()` → only on `true`, re-`init()`.
 ## Verification
 
 MLX is Apple-only and cannot be built on the Linux container this was written in, so verification is
-in four layers. Everything below was run against a fresh checkout produced by the block above, from
-the directory holding the three sibling clones.
+in seven layers — steps 1–6 run here, step 7 is the macOS CI that finally builds the real thing.
+Steps 1–6 were run against a fresh checkout produced by the block above, from the directory holding
+the three sibling clones.
+
+Steps 1–6 are kept rather than deleted now that step 7 exists. A green Xcode build says the whole
+set works; it does not say *which* patch broke when one does, and it takes fifteen minutes on a
+runner instead of seconds here. The negative controls in steps 2 and 6 also assert things a passing
+build cannot: that the halves are genuinely coupled, and that a check would fail if the fix were
+absent.
 
 **1. Every patched translation unit compiles.**
 
@@ -195,7 +198,7 @@ Each harness **mirrors** the patched code rather than including it, because MLX 
 here — so both must be updated in step if the patched files change. Each ends with a case that
 reproduces the *unpatched* behaviour, so the defect is pinned rather than merely described.
 
-**4. Patches apply to pristine checkouts.** `git apply --check` for each of the four patches against
+**4. Patches apply to pristine checkouts.** `git apply --check` for each of the five patches against
 its pinned revision — this is what the block under *Applying* above does, with `git apply` in place
 of `--check`.
 
@@ -241,8 +244,24 @@ false green that let the gap through.
 Separately, `swift test` at the repository root stays green (67 tests) — these patches touch no
 Swift in `ShareComputeCore`, so any change there would mean something unintended happened.
 
-**Not verified anywhere:** none of this has been compiled by a real Apple toolchain as part of an
-MLX build, linked, run on Apple hardware, or exercised against a real multi-device ring. `g++
--fsyntax-only` on Linux is not `clang` building for arm64-apple, and neither is a substitute for
-running. The Swift half in `mlx-swift/0001` has only been through `swiftc -parse`, which is syntax
-alone and does not resolve `import Cmlx`. That needs macOS and at least two devices.
+**7. The whole set builds as part of MLX, under a real Apple toolchain.** This is CI, not a local
+check, and it is what the layers above could never establish. With the project pointed at the
+patched fork and `MLX_HAS_FINALIZE` defined, both Xcode jobs pass:
+
+| Job | Result |
+|---|---|
+| Build and analyse the Infer Ring scheme — `arm64-apple-macos` | `▸ Analyze Succeeded` |
+| Build for iOS Simulator — `arm64` | succeeded |
+
+That covers three things the Linux layers cannot: the patched C++ compiles under `clang` for Apple
+targets rather than `g++` for x86_64 Linux; `mlx_distributed_group_free` and
+`mlx_distributed_finalize` **link**, with the latter reaching `mlx::core::distributed::finalize()`
+across all three repositories; and `DistributedGroup.swift` type-checks with `import Cmlx` genuinely
+resolved, which `swiftc -parse` never did.
+
+**Not verified anywhere: none of this has been _run_.** Building is not behaving. No ring has
+formed, `finalize()` has never been called, `~RingGroup()` and `~SocketThread()` have never executed
+against a peer that has already gone, and the Stage 1 fail-instead-of-hang path has never fired on a
+real socket. The harnesses mirror that behaviour against real primitives, which is why they exist,
+but a mirror is not the thing. That needs macOS and at least two devices — see *What to run on
+hardware* in `task_plan.md`.

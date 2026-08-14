@@ -16,7 +16,7 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 | 2 | Core value types: `CapabilityProfile`, `Lease`, `NodeState` | complete |
 | 3 | `StagePlanner` — fixes the three F5 defects | complete |
 | 4 | `MembershipService` — epochs, leases, failure detection | complete |
-| 5 | Apple adapter wiring — **option 3 scope only** (detection, no re-formation) | code complete; **compiles unverified** |
+| 5 | Apple adapter wiring — **option 3 scope only** (detection, no re-formation) | code complete; compiles in macOS + iOS CI; **never run** |
 | 6 | Chaos tests via the F6 hooks | not started — needs a Mac |
 | 7 | README + docs | complete for what landed |
 
@@ -30,8 +30,9 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 > Nothing in milestone 1 rebuilds the ring; it converts a hang into a reported failure.
 > *(Superseded by Stage 2, which adds the `finalize()` this needed — see the milestone 2 section.)*
 >
-> The adapter code passes `swiftc -parse` but has **never been type-checked or built**: this
-> container has no macOS, no Xcode and no MLX. Treat it as unverified until it builds on a Mac.
+> *(Superseded: the adapter now type-checks and builds in macOS and iOS CI, against the patched MLX.
+> It has still never been run — this container has no macOS, no Xcode and no MLX, and a build is not
+> a behaviour.)*
 
 > **Phase 1 outcome.** Both spikes were answerable by reading the pinned MLX sources, so neither
 > needed hardware. Both failed. `MLXManager.teardown()` cannot be written: there is no free API
@@ -76,7 +77,7 @@ Full plan and rationale: `/root/.claude/plans/noble-gathering-parnas.md`.
 |---|---|---|
 | 1 | `ring.cpp` fail-instead-of-hang | **complete** — `Patches/mlx/0001`, 16 harness checks pass |
 | 2 | Make the group rebuildable (`distributed.cpp` `finalize()`, mlx-c free/finalize, mlx-swift) | **complete** — 4 patches, 31 harness checks pass, TSan-clean; C++ now compiles on Apple |
-| 3 | Epoch re-formation in infer-ring (`MLXManager.teardown()`, non-terminal `RingWatchdog`) | **code complete** — 67 core tests; Apple build blocked on F22 until `mlx-swift/0002` is pushed |
+| 3 | Epoch re-formation in infer-ring (`MLXManager.teardown()`, non-terminal `RingWatchdog`) | **complete and building** — 67 core tests; compiles on macOS and iOS behind `MLX_HAS_FINALIZE`; **never run** |
 
 **Stage 1 outcome.** The design changed materially during implementation. Two findings (F10, F11 in
 `findings.md`) ruled out the obvious approach: `CommandEncoder::dispatch` has no `try`/`catch`, so
@@ -114,20 +115,20 @@ Two things changed during implementation, both worth carrying forward:
 > `joeydd032995-pixel/{mlx, mlx-c, mlx-swift}`, and `project.pbxproj` points at the patched
 > `mlx-swift` at `sharecompute/free-and-finalize`, with the flag on.
 >
-> **CI then answered two open questions and opened one.** SwiftPM *resolved* the patched fork — the
-> `mlx-swift` identity conflict F16 recorded did not bite — and the patched MLX **C++ compiled for
-> arm64-apple under a real Apple toolchain**, the first time any of these patches has been compiled
-> by anything but `g++ -fsyntax-only` on Linux. Both jobs then failed on two errors and no others:
-> `cannot find 'mlx_distributed_group_free' / 'mlx_distributed_finalize' in scope`.
+> **CI took two rounds and both are now settled.** Round one: SwiftPM *resolved* the patched fork
+> (the `mlx-swift` identity conflict F16 recorded did not bite) and the patched MLX C++ compiled for
+> arm64-apple, but both jobs failed on `cannot find 'mlx_distributed_group_free' /
+> 'mlx_distributed_finalize' in scope` — F22, because mlx-swift vendors its own copies of the mlx-c
+> headers and the module map exposes only those, so patching the submodule compiled the definitions
+> without declaring them. `Patches/mlx-swift/0002` fixed it.
 >
-> The cause is F22: mlx-swift vendors its own copies of the mlx-c headers under `Source/Cmlx/`, and
-> the module map exposes only those, so patching the submodule compiled the definitions without
-> declaring them. `Patches/mlx-swift/0002` adds both declarations to both copies.
-> **It needs pushing to the fork** — `bash Patches/land-mlx-swift-0002.sh --push` — after which CI
-> re-runs against it with no ShareCompute change needed.
+> Round two, against fork `6c15a2e`: **all five checks green.** The patched MLX builds end to end
+> for `arm64-apple-macos` and iOS Simulator; both new C symbols link across all three repositories;
+> and Stage 3's teardown compiled its `#if MLX_HAS_FINALIZE` branch. **Milestone 2 is code-complete
+> and building.**
 >
-> Item 2's Swift lifecycle test becomes possible once the jobs are green; item 3 still needs Apple
-> hardware and two devices.
+> Item 2's Swift lifecycle test is now possible. Item 3 still needs Apple hardware and two devices,
+> and remains the whole of what is unverified — a build is not a behaviour.
 
 1. **Stage 3** — epoch re-formation in the app. Now unblocked: `finalize()` is the operation Spike A
    recorded as unavailable. `RingWatchdog`'s loss becomes non-terminal.
@@ -155,7 +156,8 @@ Two things changed during implementation, both worth carrying forward:
    Deliberately not committed here as an unrunnable file: this container has no macOS or Xcode, so
    adding it would assert coverage that nothing can back.
 
-3. On a Mac: apply all four patches, build MLX as part of the app, and run the hardware tests. For
+3. On a Mac: **run** the hardware tests. Building is done — CI compiles all five patches as part of
+   the app on macOS and iOS. What remains is execution. For
    Stage 1, hard-kill a peer mid-generation and confirm a **thrown Swift error within about one
    token**, neither a hang nor a crash — test both `SIGKILL` and cable-pull, which take different
    `errno` paths. For Stage 2, confirm `~RingGroup()` and `~SocketThread()` complete promptly and

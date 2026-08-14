@@ -110,6 +110,9 @@ released first.
 This is the ordering trap the doc comment warns about, and it is not hypothetical: it is the default
 state of the app whenever a model is loaded.
 
-**Not verified:** never type-checked, never compiled, never linked, never run. The C symbols have
-not been shown to resolve from Swift once `Cmlx` builds the patched mlx-c — that needs macOS. The
-audit above is a reading of the Swift sources, not a run.
+**Verified in CI:** type-checks, compiles and links, on `arm64-apple-macos` and iOS Simulator, with
+`import Cmlx` genuinely resolved — which `swiftc -parse` never did. Both C symbols resolve from
+Swift, but only once `0002` declares them in the vendored headers; `0001` alone does not build (F22).
+
+**Not verified:** never *run*. Nothing has called `finalize()` or let ARC fire the patched `deinit`.
+The audit above is a reading of the Swift sources, not a run.

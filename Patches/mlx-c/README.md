@@ -74,8 +74,15 @@ smaller and more verifiable change.
    consistent.
 3. **Application.** `git apply --check` against a pristine checkout of the pinned revision.
 
-**Not verified:** never built as part of mlx-swift, never linked, never run. In particular nothing
-here proves the symbol is actually *visible* to Swift once `Cmlx` compiles it — that needs macOS.
-`Cmlx` builds these sources directly with no export map or symbol visibility list to update, and
-`mlx_distributed_group_free` sits beside functions Swift already calls, so there is no known reason
-it would not be; but "no known reason" is not a build.
+**Verified in CI:** builds as part of mlx-swift's `Cmlx` target and **links** — Swift calls both
+`mlx_distributed_group_free` and `mlx_distributed_finalize` on macOS and iOS.
+
+**The caution in the previous version of this paragraph was right, for a reason it did not guess.**
+It worried the symbols might not be *visible* to Swift, reasoned there was "no known reason it would
+not be", and concluded that "no known reason" is not a build. The build then failed exactly there —
+but not because of export maps or visibility. mlx-swift vendors its own copies of these headers and
+the module map exposes only those, so the definitions compiled while the declarations were missing
+(F22). Worth keeping as a reminder that the instinct to withhold the claim was correct even though
+the mechanism guessed was not.
+
+**Not verified:** never *run*. Linking is not calling.

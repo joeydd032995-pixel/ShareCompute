@@ -83,8 +83,12 @@ was done two ways:
 The test mirrors the patch rather than including it — MLX cannot be compiled here — so it must be
 updated in step if `ring.cpp` changes.
 
-**Not verified:** the patch has never been built as part of MLX, nor run on Apple hardware, nor
-exercised against a real multi-device ring. Stage 1 of the plan describes the hardware tests.
+**Verified in CI:** compiles as part of MLX for `arm64-apple-macos` and iOS Simulator.
+
+**Not verified:** never *run* — not on Apple hardware, and never exercised against a real
+multi-device ring. Stage 1 of the plan describes the hardware tests. Nothing here has shown a
+departing peer actually surfacing as a thrown Swift error rather than a hang; that is the claim the
+patch exists to make, and it is still untested.
 
 ---
 
@@ -196,7 +200,10 @@ g++ -std=c++17 -O1 -o /tmp/gft tests/group_finalize_test.cpp && /tmp/gft
 The test mirrors the patch rather than including it — MLX cannot be compiled here — so it must be
 updated in step if `distributed.cpp` changes.
 
-**Not verified:** never built as part of MLX, never run on Apple hardware, never exercised against a
-real ring. In particular, nothing here proves that `~RingGroup()` and `~SocketThread()` complete
-promptly and without deadlock when the sockets are real and a peer has already gone — the stub impl
-has a trivial destructor. That is the first thing to check on hardware.
+**Verified in CI:** compiles as part of MLX for `arm64-apple-macos` and iOS Simulator, and
+`mlx::core::distributed::finalize()` links through mlx-c to Swift.
+
+**Not verified:** never run on Apple hardware, never exercised against a real ring. In particular,
+nothing here proves that `~RingGroup()` and `~SocketThread()` complete promptly and without deadlock
+when the sockets are real and a peer has already gone — the stub impl has a trivial destructor. That
+is the first thing to check on hardware.
