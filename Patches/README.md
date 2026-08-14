@@ -138,7 +138,7 @@ handle → `finalize()` → only on `true`, re-`init()`.
 ## Verification
 
 MLX is Apple-only and cannot be built on the Linux container this was written in, so verification is
-in seven layers — steps 1–6 run here, step 7 is the macOS CI that finally builds the real thing.
+in eight layers — steps 1–6 run here, steps 7 and 8 are macOS CI, which builds and (8) runs it.
 Steps 1–6 were run against a fresh checkout produced by the block above, from the directory holding
 the three sibling clones.
 
@@ -259,9 +259,21 @@ targets rather than `g++` for x86_64 Linux; `mlx_distributed_group_free` and
 across all three repositories; and `DistributedGroup.swift` type-checks with `import Cmlx` genuinely
 resolved, which `swiftc -parse` never did.
 
-**Not verified anywhere: none of this has been _run_.** Building is not behaving. No ring has
-formed, `finalize()` has never been called, `~RingGroup()` and `~SocketThread()` have never executed
-against a peer that has already gone, and the Stage 1 fail-instead-of-hang path has never fired on a
-real socket. The harnesses mirror that behaviour against real primitives, which is why they exist,
-but a mirror is not the thing. That needs macOS and at least two devices — see *What to run on
-hardware* in `task_plan.md`.
+**8. ARC's release is observed by the C++ use count.** [`mlx-swift/tests/`](mlx-swift/tests/) — a
+standalone SwiftPM package, run by the `MLX lifecycle` CI job on macOS. The first check to execute
+the real patched code rather than a mirror of it, crossing all three repositories in one assertion:
+Swift `deinit` → `mlx_distributed_group_free` → `mlx::core::distributed::finalize()`.
+
+It checks the precondition every caller of `finalize()` depends on, and which `MLXManager.teardown()`
+is built on. It **cannot** check that a re-`init()` returns a genuinely new group — that needs two
+processes, see `findings.md` F23 and the note in the test file.
+
+*Status: written, and it has never run.* The job is new; treat this row as unproven until it is
+green.
+
+**Not verified anywhere: essentially none of this has been _run_.** Building is not behaving. No
+ring has formed, `~RingGroup()` and `~SocketThread()` have never executed against a peer that has
+already gone, and the Stage 1 fail-instead-of-hang path has never fired on a real socket. The
+harnesses mirror that behaviour against real primitives, which is why they exist, but a mirror is
+not the thing. That needs macOS and at least two devices — see *What to run on hardware* in
+`task_plan.md`.

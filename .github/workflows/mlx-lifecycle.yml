@@ -1,0 +1,49 @@
+name: MLX lifecycle
+
+# The runtime half of Stage 2. The two Xcode jobs prove the patched MLX *compiles and links*; this
+# is the only job that *runs* any of it.
+#
+# It builds MLX from source a second time, independently of the app's copy, so expect it to be slow.
+# That independence is the point: it resolves the fork branch directly, so a regression pushed to
+# the fork surfaces here rather than waiting for someone to rebuild the app.
+#
+# It cannot form a ring -- that needs two devices -- so it checks the one behavioural property a
+# single process can: that ARC releasing a DistributedGroup is observed by the C++ use count.
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    name: DistributedGroup lifecycle on macOS
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Versions
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Test
+        working-directory: Patches/mlx-swift/tests
+        # No `swift build` first: `swift test` builds what it needs, and building twice would double
+        # an already-slow MLX compile.
+        #
+        # Not `--verbose`: it prints every compile command, and against a from-source MLX build that
+        # buries the three assertions this job exists for under megabytes of clang invocations.
+        run: swift test
