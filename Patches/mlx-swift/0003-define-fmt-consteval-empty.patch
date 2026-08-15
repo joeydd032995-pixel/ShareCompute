@@ -1,0 +1,29 @@
+diff --git a/Package.swift b/Package.swift
+index 2c99921..a61a8dd 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -210,6 +210,24 @@ let cmlx = Target.target(
+         .headerSearchPath("fmt/include"),
+         .define("MLX_VERSION", to: "\"0.24.2\""),
+         .define("MLX_ENABLE_NAX", to: "1"),
++
++        // The vendored fmt is 10.2.1 (January 2024). Clang has since tightened how consteval
++        // propagates through immediate-escalating functions, so FMT_STRING(...) builds a
++        // compile-string whose consteval constructor is no longer accepted as a constant
++        // expression -- five errors in fmt/src/format.cc, and the build stops there.
++        //
++        // Defining FMT_CONSTEVAL empty is a configuration fmt supports rather than a workaround:
++        // fmt/core.h guards it behind #ifndef and defines it empty itself for toolchains where
++        // "consteval is broken", naming MSVC before VS2019 16.10 and Apple clang before 14.
++        // Current clang is another such toolchain for this fmt version. The cost is losing
++        // compile-time format-string checking inside MLX's own logging; nothing outside MLX
++        // calls fmt.
++        //
++        // It belongs here rather than in each consumer's build settings. Before this, three CI
++        // jobs each carried their own spelling of the same define -- OTHER_CPLUSPLUSFLAGS twice,
++        // -Xcxx once -- and anyone opening the project in Xcode carried none of them and hit the
++        // error. See ShareCompute findings.md F17 and F24.
++        .define("FMT_CONSTEVAL", to: ""),
+     ],
+     linkerSettings: linkerSettings
+ )

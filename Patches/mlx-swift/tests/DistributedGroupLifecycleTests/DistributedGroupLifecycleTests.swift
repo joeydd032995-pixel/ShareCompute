@@ -19,9 +19,13 @@ import XCTest
 final class DistributedGroupLifecycleTests: XCTestCase {
 
     func testFinalizeTracksHandleLifetimeAcrossTheSwiftCAndCxxBoundaries() {
-        // Useful in the log when something here goes wrong, but deliberately not asserted on: a CI
-        // runner has no MLX_HOSTFILE, so no real backend initialises and this is expected to be
-        // false. The cache semantics under test do not depend on it.
+        // Logged, never asserted on -- and it is worth knowing why, because the obvious reading of
+        // this value is wrong. It prints `true` on a bare CI runner with no MLX_HOSTFILE, because
+        // `ring::is_available()` is `return true;` unconditionally. It reports that the ring backend
+        // was *compiled in*, not that a ring can be formed, so on any Apple build it is a constant.
+        //
+        // Do not reach for `isAvailable` as a readiness check anywhere: it cannot answer "can this
+        // node join a ring". Nothing in the app calls it today, which is the correct number.
         print("MLX distributed available: \(DistributedGroup.isAvailable)")
 
         // 1. Nothing has been initialised, so there is nothing to tear down. A `false` here would

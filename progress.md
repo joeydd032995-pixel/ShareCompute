@@ -428,3 +428,55 @@ execution, and that needs two Apple devices.
 |---|---|---|
 | Read `swift test` as "0 tests passed" | 1 | `tail -4` had cut off the XCTest summary; the trailing line is the swift-testing runner, which finds none. 67 tests did run. Widened the filter instead of trusting the tail |
 | `Patches/mlx-c/README.md` predicted this failure and reassured past it | — | It flagged that symbol visibility was unproven, guessed export maps, and said "no known reason it would not be". The mechanism was wrong; the instinct to withhold the claim was right. Kept in the file as a note rather than quietly rewritten |
+
+## Session 7 — closing Milestone 2, and two corrections
+
+Milestone 2 is **complete**. PR #11 merged the repoint and the gate; PR #12 merged the lifecycle
+test, six-for-six green, with the macOS job showing `Build complete! (169.73s)` and then
+`Executed 1 test, with 0 failures`. Patched MLX code has now *executed* — ARC's `deinit` reaches
+`mlx_distributed_group_free` and the C++ use count observes it.
+
+### Verified this session
+
+- **`.define("FMT_CONSTEVAL", to: "")` emits exactly `-DFMT_CONSTEVAL=`**, and `MLX_VERSION` and
+  `MLX_ENABLE_NAX` survive alongside it. Checked by building a throwaway SwiftPM package with all
+  three defines and grepping `swift build -v` for the emitted flags. This closes the "not verified"
+  F24 left open — the risk it named was that a `cxxSettings` define might clobber the existing two.
+  It cannot: `cxxSettings: cxxSettings + [...]` is an array append, not a dictionary.
+- `Patches/mlx-swift/0003` applies cleanly to the live fork tip `6c15a2e`, verified by the landing
+  script cloning the actual remote rather than a local copy.
+
+### Two corrections, both mine
+
+**`isAvailable` does not mean what the lifecycle test's comment said.** The comment predicted it
+would print `false` on a bare runner. It printed `true`. `ring::is_available()` is `return true;`
+unconditionally — it reports that the ring backend was *compiled in*, not that a ring can be formed,
+so on any Apple build it is a constant. F23's analysis is unaffected (an `EmptyGroup` was still what
+got built), but the stated reasoning was wrong. Comment rewritten to say so, and to warn against
+reaching for it as a readiness check. The app calls it nowhere, which is the correct number.
+
+**infer-ring is not this project's app.** `CLAUDE.md` said "infer-ring is a shipping App Store app
+(`id6757767558`)" without saying *whose*, and that phrasing was then read as though the App Store
+presence belonged to this project — leading to a plan built on the premise that an Apple Developer
+account and signing identity already existed. The project's own files say otherwise:
+
+```text
+PRODUCT_BUNDLE_IDENTIFIER = com.n1k1tung.InferRingApp   ·   com.n1k1tung.Ring
+DEVELOPMENT_TEAM          = 669J55BPZE                  ·   TP4SYTX9NF
+```
+
+It is N1k1tung's app, vendored here; the claim traces to *their* README. Vendoring open-source code
+conveys the code and nothing else — no account, no bundle IDs, no signing identity. `CLAUDE.md` now
+says so explicitly, including the warning not to infer an account from the listing.
+
+The consequence is real rather than cosmetic: **nothing can be put on an iPhone until this project
+has its own Apple Developer account and bundle IDs**, and whether one exists is currently unknown.
+That gates the whole iOS half of the next milestone.
+
+### Errors encountered (session 7)
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| New macOS job failed on fmt/consteval | 1 | F17 had already diagnosed it; the job simply carried no `-DFMT_CONSTEVAL=`. Added as `-Xcxx`, which is SwiftPM's spelling — the setting does not carry across build systems by name. Recorded as F24 |
+| Asserted the operator ships infer-ring on the App Store | 1 | Inferred from `CLAUDE.md`'s unattributed phrasing; the bundle IDs and team IDs are N1k1tung's. Caught by the operator, not by me. `CLAUDE.md` corrected at the source so the next reader cannot repeat it |
+| Test comment predicted `isAvailable == false`; it printed `true` | 1 | Read `ring::is_available()` rather than re-guessing: it returns `true` unconditionally. Comment rewritten around what the value actually reports |
