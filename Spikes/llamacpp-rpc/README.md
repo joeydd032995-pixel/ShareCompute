@@ -1,0 +1,82 @@
+# T1 — llama.cpp RPC, actually run
+
+The first execution-layer check in this project that **runs** rather than mirrors. MLX is Apple-only,
+so `Patches/mlx/tests/` reproduces the patched logic against real primitives without ever compiling
+MLX. llama.cpp builds on x86_64 Linux, so this drives the real binaries.
+
+`bash Spikes/llamacpp-rpc/run.sh`
+
+## What it establishes
+
+**A. RPC genuinely splits a model across processes.** Two `ggml-rpc-server` processes, one
+`llama-cli` client, layers distributed between them — 26 to `RPC0` and 24 to `RPC1` for
+Qwen2.5-0.5B-Instruct. Generation completes and exits cleanly. The topology this project needs is
+real, not aspirational.
+
+**B. Killing one peer mid-generation aborts the client, in about 350 ms.** Not a hang. Reproducible
+3/3:
+
+```text
+ggml-rpc.cpp:509: Remote RPC server crashed or returned malformed response
+E send failed (bytes_sent=0, size_to_send=8)
+```
+
+`:509` and `:519` both appear, depending on whether `set_tensor` or `get_tensor` was in flight.
+Both are `RPC_STATUS_ASSERT`, which is one line:
+
+```c
+ggml-rpc.cpp:30:  #define RPC_STATUS_ASSERT(x) if (!(x)) GGML_ABORT("Remote RPC server crashed or returned malformed response")
+```
+
+18 call sites across 16 functions. Full analysis in `findings.md` **F25**.
+
+## Why the abort matters more than the hang
+
+`abort()` cannot be caught. A host application gets no exception, no error return, no chance to
+re-form the ring — the process is simply gone, along with every other node's session state held in
+it. Detection is not the problem here; llama.cpp detects a dead peer promptly and correctly. What it
+does next is unrecoverable by construction.
+
+That inverts the Phase 4 ordering. F15 listed bounded waits (4.1) before error returns (4.2) on the
+assumption that hanging was the primary failure. On this evidence 4.2 comes first: a hang is at least
+survivable by a supervisor, whereas an abort takes the whole process down before any supervisor can
+act.
+
+## Two ways to get a false reading
+
+Both were hit before the numbers above were trusted, and the script guards against both:
+
+- **`-st` and closed stdin.** Without them `llama-cli` enters conversation mode and waits at a `>`
+  prompt after generating. The bounded run then times out and looks *exactly* like a hang — case A
+  was initially read as "RPC hangs" when it had in fact generated correctly and was waiting for
+  input.
+- **`--ignore-eos` and a long `-n`.** A small model reaches end-of-text in about a second, so the
+  kill lands after the run is already finished and reports a meaningless "clean exit". The script
+  waits for real output before killing, and reports "window too short" rather than a verdict when
+  the client finishes first.
+
+## Setup
+
+```bash
+git clone --depth=1 https://github.com/ggml-org/llama.cpp /home/user/llama.cpp
+cd /home/user/llama.cpp
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_RPC=ON -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF
+ninja -C build ggml-rpc-server llama-cli
+
+mkdir -p /home/user/models && cd /home/user/models
+curl -sSLO https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
+```
+
+The server target is **`ggml-rpc-server`**, under `tools/rpc/`. F15 and F21 call it `rpc-server`
+under `examples/rpc/`; it has been renamed and moved since. Override `BIN`, `MODEL`, `OUT` and
+`REPEATS` by environment.
+
+Read at llama.cpp `9d57ce4`.
+
+## Not established
+
+No cross-machine hop — both peers are loopback, so nothing here exercises real network latency,
+MTU, or a firewall. No iOS. No re-formation after the abort, because there is nothing left to
+re-form from. And the abort is observed only for a *hard* kill; a peer that goes away gracefully, or
+a network that drops without closing the socket, are separate cases and are exactly where the
+missing `SO_RCVTIMEO`/`SO_SNDTIMEO` (still zero occurrences at HEAD) would bite instead.
