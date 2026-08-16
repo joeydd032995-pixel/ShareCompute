@@ -1271,7 +1271,12 @@ This corrects the *shape* of the plan's Phase 4.2, not just its arithmetic. F25 
 count from 19 to 18; the larger problem is that "replace the aborts with error returns" is not
 available for most of them.
 
-### 10 of the 18 sites have nowhere to put an error
+### 13 of the 18 sites have no status return; 12 genuinely need the flag
+
+> **Corrected.** This section first said "10", which matches neither the table below nor the
+> arithmetic — 5 + 7 + 6 = 18, so 13 lack a status return. Caught in review on PR #14. The
+> correction *understated* the scope of Phase 4.2, so it mattered. One of the 13 (`alloc_buffer`)
+> does have a usable channel — see the note after the tables — leaving 12 that need the sticky flag.
 
 **Can return one today — 5 sites, genuinely easy:**
 
@@ -1300,6 +1305,17 @@ non-error), `get_alignment` / `get_max_size` / `..._buffer_type_get_alloc_size` 
 
 **The site F25 measured 3/3 — `ggml-rpc.cpp:509` — is one of the `void` ones.** So the plan's
 version of 4.2 would not have addressed the failure that actually fires.
+
+**One of the six sentinel sites is not as bad as the rest.** `..._buffer_type_alloc_buffer` returns
+`ggml_backend_buffer_t`, and NULL is a genuine failure signal that ggml's allocator already checks —
+`ggml_backend_buft_alloc_buffer` (`ggml-backend.cpp:38`) passes it straight through to callers that
+test it. So that site can report failure today without any new machinery. The other five cannot:
+`get_base` returns `void *` that callers do not check, `get_alignment` / `get_max_size` /
+`get_alloc_size` return `size_t` with no reserved value, and `get_device_count` returns `uint32_t`
+where 0 already means "no devices".
+
+**Final arithmetic: 5 already return a status, 1 more can signal via NULL, and 12 need the sticky
+flag.**
 
 These signatures belong to `ggml_backend_buffer_i` and `ggml_backend_i`, implemented by CPU, CUDA,
 Metal, Vulkan, SYCL and every other backend. Turning `void set_tensor` into `bool set_tensor` is a
@@ -1380,13 +1396,20 @@ configuration upstream warns against, and it had never been measured on any link
 
 ### Result
 
-| configuration | PP t/s | TG t/s | wall ms |
-|---|---|---|---|
-| local, no RPC | **202.6** | 24.6 | 6353 |
-| 1 peer, loopback | 109.9 | 27.5 | 8266 |
-| 2 peers, loopback | 111.4 | 27.3 | 8268 |
+> **Corrected — the first published table's two-peer row measured one peer.** The second
+> `ggml-rpc-server` failed to bind (`Failed to create server socket`) and *stayed alive*, so a PID
+> check saw a healthy process while llama.cpp silently registered a single device and put all 50
+> tensors on it. The harness then reported it as a two-peer result. Numbers below are the re-run with
+> a verified `2/2` split; the correction and its cause are written up at the end of this finding.
 
-Per-run spread, which is what makes the deltas trustworthy rather than a median artifact:
+| configuration | PP t/s | TG t/s | wall ms | peers |
+|---|---|---|---|---|
+| local, no RPC | **217.3** | 24.9 | 6239 | — |
+| 1 peer, loopback | 112.5 | 27.6 | 7148 | 1/1 |
+| 2 peers, loopback | 117.7 | 27.4 | 7453 | **2/2** (26 + 24 layers) |
+
+Per-run spread from the original run, which is what makes the deltas trustworthy rather than a
+median artifact (the `local` and `1 peer` rows were always genuine; only the two-peer row was not):
 
 ```text
 local     PP 205.9 / 202.6 / 200.1     TG 25.1 / 24.5 / 24.6
@@ -1425,15 +1448,37 @@ model — the absolute numbers transfer to nothing. What transfers is the *shape
 transport-sensitive metric and is therefore the leading indicator for T2, and per-peer scaling is
 cheap. No Wi-Fi, no cross-machine hop, and no iOS has been measured.
 
-### A defect in the first version of this harness, and the fix
+### Three defects in this harness, each of which produced a believable wrong number
 
-The first run omitted `-v`, so its logs carried no `assigned to device RPC0` lines and **could not
-distinguish a genuine RPC run from a silent fallback to local compute** — which would have produced
-an entirely believable table measuring nothing. That is the same false-green shape as F18, F20, F22
-and F23. A separate `-v` run was needed to establish the offload was real.
+All three are the same species — **a check that passes while measuring the wrong thing** — and they
+were found in sequence, each by fixing the one before it. Two came out of code review on PR #14.
 
-The harness now carries `-v` permanently, counts the offloaded tensors, prints the count beside each
-row, and fails loudly when a row that requested `--rpc` offloaded zero. Re-running with the
-assertion in place reproduces the table — PP 197.0 / 109.3 / 109.8, TG 25.2 / 27.1 / 26.8, with
-`50 tensors on RPC` confirmed on both RPC rows — so the numbers above stand and are now
-self-evidencing rather than taken on trust.
+**1. No `-v`, so nothing proved the RPC devices were used.** The first run's logs carried no
+`assigned to device RPC0` lines at all, so a silent fallback to local compute would have been
+indistinguishable from a good result. Fixed by making `-v` permanent and counting offloaded tensors.
+
+**2. A failed repetition scored as zero and was folded into the median.** `run_one` returned
+`pp=tg=0` on a non-zero exit and `measure` averaged it in; with `REPEATS=2` a single failure would
+have halved the reported throughput while looking entirely plausible. Now any failed repetition
+invalidates the whole row.
+
+Testing that fix produced a **worse** finding than the one it fixed: with an unreachable endpoint,
+`llama-cli` **does not fail at all**. It exits 0, computes locally, and reports 199 t/s — a number
+indistinguishable from success. The dangerous case was never the non-zero exit; it was the zero one.
+
+**3. A tensor total cannot tell a split ring from a single node — and this one had already
+corrupted a published result.** With two endpoints and one dead, every tensor lands on the survivor
+and the total still reads 50. The harness now counts *distinct* RPC devices and requires one per
+endpoint (`2/2`), which is what exposed the two-peer row as a one-peer measurement.
+
+The root cause was `sleep 2` and a PID check. `ggml-rpc-server` prints `Failed to create server
+socket` and **keeps running**, so the process exists, the PID is valid, and only the absence of a
+listener gives it away. Ports were also fixed constants, so a socket still in `TIME_WAIT` from an
+earlier run was enough to cause it. `serve` now derives ports from the PID and polls `/dev/tcp`
+until the port genuinely accepts a connection, aborting the run if it never does.
+
+**What the correction changes, and what it does not.** The re-run with a verified `2/2` split gives
+PP 117.7 against 112.5 for one peer, so *"a second peer is free" survives as a conclusion* — but it
+was **not supported by evidence when first published**, and that distinction is the point. The
+`−46% PP` result is unaffected: the `local` and `1 peer` rows were always genuine, and the corrected
+run reproduces the gap (217.3 → 112.5).

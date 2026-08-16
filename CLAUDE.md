@@ -90,7 +90,7 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
    performance decline", and below it recommends a USB3.2 cable. An iPhone and a Windows PC have no
    such cable between them. Do not quote the −12%/+11% figures as though they apply to a Wi-Fi ring.
 9. **On the portable path the transport halves prompt processing with no network at all.** F27:
-   202.6 t/s local versus 109.9 t/s across loopback RPC, per-run bands non-overlapping. Opposite
+   217.3 t/s local versus 112.5 t/s across loopback RPC, per-run bands non-overlapping. Opposite
    sign to MLX's +11%, so whatever makes MLX's prefill faster across devices is absent here. A
    second peer is free — the cost is the first hop, not the number of hops. PP is therefore the
    leading indicator for any cross-machine measurement. The TG column in that table is *not* a

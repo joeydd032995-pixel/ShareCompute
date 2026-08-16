@@ -50,18 +50,24 @@ T1 answered *does it work* and *how does it fail*. Neither answers *is it fast e
 question the product rests on. Qwen2.5-0.5B-Instruct Q4_K_M, 128 tokens, 3 repeats, median, on a
 4-core Xeon with **no GPU**:
 
-| configuration | PP t/s | TG t/s | wall ms |
-|---|---|---|---|
-| local, no RPC | **202.6** | 24.6 | 6353 |
-| 1 peer, loopback | 109.9 | 27.5 | 8266 |
-| 2 peers, loopback | 111.4 | 27.3 | 8268 |
+| configuration | PP t/s | TG t/s | wall ms | peers |
+|---|---|---|---|---|
+| local, no RPC | **217.3** | 24.9 | 6239 | — |
+| 1 peer, loopback | 112.5 | 27.6 | 7148 | 1/1 |
+| 2 peers, loopback | 117.7 | 27.4 | 7453 | **2/2** (26 + 24 layers) |
 
-**Prompt processing halves (−46%) with no network involved at all.** That is pure transport and
+The `peers` column is not decoration. An earlier version of this table reported a two-peer row that
+was really **one** peer: the second server failed to bind and stayed alive, so llama.cpp registered a
+single device and put all 50 tensors on it. The harness now counts distinct devices and refuses the
+row unless every endpoint is used. See F27.
+
+**Prompt processing halves (−48%) with no network involved at all.** That is pure transport and
 serialisation cost — and it is the metric where `Apps/InferRing/README.md` measures the MLX path
 *gaining* 11% on Mac + iPhone. Opposite sign, which is the interesting part.
 
-**A second peer is free.** 1 peer and 2 peers are indistinguishable everywhere. The cost is the
-first hop, not the number of hops.
+**A second peer is free.** 112.5 → 117.7 t/s going from one peer to a genuine 26 + 24 split. The cost
+is the first hop, not the number of hops. (This conclusion happens to survive the correction above,
+but it had no supporting evidence until the split was actually verified.)
 
 **Do not read the TG column as a transport win.** Generation is *higher* under RPC (26.6–28.0 vs
 24.5–25.1) because both processes share one 4-core box: with `-ngl 99` every layer moves to the RPC
@@ -72,18 +78,55 @@ is negative.
 ## What T2 has to measure
 
 T2 — the Windows PC as a second node — was scoped to prove discovery, firewall traversal and a real
-network hop. That is necessary and **not sufficient**. The same table, over Wi-Fi:
+network hop. That is necessary and **not sufficient**.
 
-```bash
-# On the Windows PC (or any second machine):
-ggml-rpc-server -H 0.0.0.0 -p 50052
+### Read this before starting a server on your network
 
-# Here:
-RPC_ENDPOINTS=<peer-ip>:50052 bash Spikes/llamacpp-rpc/throughput.sh
+**`ggml-rpc-server` has no authentication, no token and no TLS** — F15 recorded it, and upstream's
+own documentation warns never to expose it on an open network. It accepts tensor data and buffer
+allocations from anyone who can reach the port. Binding it to `0.0.0.0` publishes that to every
+device on your LAN, guest Wi-Fi and all.
+
+So bind it to **one specific interface** and firewall it to **one specific client**:
+
+```powershell
+# Windows PC. Substitute the real addresses -- do not use 0.0.0.0.
+#   <pc-ip>     this machine's LAN address
+#   <client-ip> the machine running the benchmark, and nothing else
+New-NetFirewallRule -DisplayName "ggml-rpc T2" -Direction Inbound -Protocol TCP `
+  -LocalPort 50052 -RemoteAddress <client-ip> -Action Allow
+
+ggml-rpc-server -H <pc-ip> -p 50052
 ```
 
-The script still measures the local no-RPC row as a control, so the comparison is self-contained on
-whatever hardware runs it.
+```bash
+# Benchmark client
+RPC_ENDPOINTS=<pc-ip>:50052 bash Spikes/llamacpp-rpc/throughput.sh
+```
+
+**Stop the server and remove the rule when the run finishes** — this is a measurement, not a
+service:
+
+```powershell
+Remove-NetFirewallRule -DisplayName "ggml-rpc T2"
+```
+
+Treat the link as trusted-network-only until Phase 3.2 adds the shared-secret HMAC the control plane
+still lacks. That item is already on the plan for exactly this reason.
+
+### What the run produces
+
+Three rows, and the third is the one that answers T2:
+
+| row | what it measures |
+|---|---|
+| `local, no RPC` | control, on whatever hardware runs the script |
+| `remote only` | **not** pooling — `-ngl 99` puts every layer on the sole remote device, so this is ordinary remote inference and conflates the peer's CPU speed with network cost |
+| `split: local + remote` | the actual topology — a local worker *and* the remote peer, so the scheduler divides layers between them and per-token traffic genuinely crosses the link |
+
+The script starts the local worker itself, bound to `127.0.0.1`, so nothing extra is exposed. The
+`remote only` row is kept because the two together let you separate the peer's compute speed from
+the transport cost, which a single number cannot.
 
 **PP is the leading indicator.** It is already the transport-sensitive metric on loopback, so it is
 where a real link will hurt first and hardest. Watch wall clock too — it carries the model upload,

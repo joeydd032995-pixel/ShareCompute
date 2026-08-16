@@ -147,7 +147,7 @@ Two things changed during implementation, both worth carrying forward:
 > now than after three phases are built on the assumption. Same reasoning F25 used to reorder 4.1
 > and 4.2.
 >
-> **F26 also reshaped Phase 4.2 before any of it was written:** 10 of the 18 `GGML_ABORT` sites have
+> **F26 also reshaped Phase 4.2 before any of it was written:** 13 of the 18 `GGML_ABORT` sites have
 > no error channel, because their signatures come from ggml's shared backend vtable. It becomes a
 > sticky-flag record-and-convert, with an open decision about `get_tensor` and silent corruption.
 
