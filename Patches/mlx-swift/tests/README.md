@@ -61,6 +61,51 @@ ports. Until then the property stays on the two-device hardware list.
 The reasoning is repeated in a comment in the test file, because that is where someone will be
 standing when they think of adding it.
 
+**That "until then" is now being tested — see below.** The condition this section named has been
+built rather than waited for.
+
+## `ring-formation.sh` — two processes, one machine, a real ring
+
+`bash ring-formation.sh` on macOS. CI runs it as
+[`mlx-ring.yml`](../../../.github/workflows/mlx-ring.yml).
+
+This section of the README already identified the missing piece: *"a real single-host test needs two
+processes on `127.0.0.1` at different ports."* `RingFormationProbe` is one such process and
+`ring-formation.sh` launches one per rank, so the answer stops being deferred.
+
+The reading behind it, from `mlx/distributed/ring/ring.cpp`:
+
+- `initialize(strict:)` → `mlx_distributed_init(strict, nil)` → `distributed::init(strict, "any")`.
+- `"any"` on Apple finds nccl unavailable and falls through to `ring::init(false)`.
+- `ring::init` needs exactly `MLX_HOSTFILE` and `MLX_RANK` (`ring.cpp:944`). The hostfile is a JSON
+  array of `"ip:port"`, one entry per rank; rank N listens on its own address and connects to rank
+  (N+1) % size (`ring.cpp:441-454`), in an order that avoids deadlock.
+
+Nothing there is device-specific, which is why **`CLAUDE.md`'s "needs two or more real devices" may
+be conflating two *ranks* with two *machines*.** That is still a reading, and reading has been wrong
+three times here (F18, F20, F22), each time in the reassuring direction — so the job decides it, not
+the argument.
+
+The probe asserts three things in order, and each is a first for this project if it passes:
+
+1. **A group of the requested size and rank forms.** Size 1 means `ring::init` declined and an
+   `EmptyGroup` was built — a clean, distinguishable negative rather than a crash, which is why the
+   probe uses `strict: false`.
+2. **`allGather` returns every rank's contribution.** A group that constructs but cannot exchange
+   data is not a ring. This is also the exact operation the product depends on — `PipelineLastLayer`
+   runs it on every forward pass, so every generated token is an all-ranks barrier (load-bearing
+   fact #2).
+3. **`finalize()` refuses while a handle is held, then succeeds once released** — against a *real*
+   ring rather than the `EmptyGroup` the single-process test can reach. F23 is exactly why this
+   matters: the assertion above is vacuous without a hostfile, and meaningful with one.
+
+Exit codes are the interface, so a failure says which of the three it was, and `timeout` turns a
+ring that never closes into a reported `HANG` rather than a job that runs to its limit.
+
+The CI job carries `continue-on-error: true` **deliberately and temporarily**. Until the experiment
+has returned once, red would mean "the hypothesis was wrong", not "the branch is broken". Remove it
+once the answer is recorded — either way it then becomes a real regression gate.
+
 ## Not verified
 
 The ring itself. This forms no ring, sends no collective, and exercises neither the Stage 1

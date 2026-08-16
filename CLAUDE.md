@@ -138,7 +138,19 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | Xcode project builds, patched MLX and all | **not here — but yes in CI** | `.github/workflows/` on a macOS runner. Both jobs green: the patched MLX compiles for `arm64-apple-macos` and iOS Simulator, and the new C symbols link |
 | Actor isolation, runtime behaviour | **no** | needs Apple hardware |
 | Android / Windows | **no** | needs those SDKs |
-| Multi-device ring | **no** | needs two or more real devices |
+| Multi-device ring | **no** | needs two or more real devices — **but this is now under test**, see below |
+
+**Open experiment: is "two devices" actually "two ranks"?** The MLX ring is plain TCP driven by
+`MLX_HOSTFILE` and `MLX_RANK` — rank N listens on its own address and connects to rank (N+1) % size
+(`ring.cpp:441-454`), and `ring::init` requires nothing but those two variables (`ring.cpp:944`).
+Nothing on that path is device-specific, so **two processes on one machine at different loopback
+ports may form a real ring.** If they do, the whole "unrun" half of Milestone 2 — Stage 1's
+fail-instead-of-hang, Stage 2's `finalize()` against a group that genuinely exists, and the
+per-token `allGather` barrier — becomes testable on a free CI runner.
+
+`Patches/mlx-swift/tests/ring-formation.sh` and the `mlx-ring.yml` job decide it. **Do not restate
+the row above as settled either way until that job has returned** — it is a reading, and reading has
+been wrong three times here (F18, F20, F22), each time in the reassuring direction.
 
 **State what you verified and what you did not.** Silence about the unverified half is treated as a
 defect here, not an omission.

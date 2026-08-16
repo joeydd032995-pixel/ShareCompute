@@ -29,7 +29,18 @@ let package = Package(
             branch: "sharecompute/free-and-finalize"
         )
     ],
+    products: [
+        // Declared so `swift build --product` can name it. The launcher needs a built binary path,
+        // not a test bundle, because a ring needs two *processes* -- one per rank -- and XCTest
+        // gives one process.
+        .executable(name: "RingFormationProbe", targets: ["RingFormationProbe"])
+    ],
     targets: [
+        .executableTarget(
+            name: "RingFormationProbe",
+            dependencies: [.product(name: "MLX", package: "mlx-swift")],
+            path: "RingFormationProbe"
+        ),
         .testTarget(
             name: "DistributedGroupLifecycleTests",
             dependencies: [.product(name: "MLX", package: "mlx-swift")],
