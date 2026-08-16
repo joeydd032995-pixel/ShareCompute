@@ -29,6 +29,7 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | Milestone 2 Stage 2 — group teardown (`finalize()` across mlx, mlx-c, mlx-swift) | 4 patches, compile and **link** on Apple; harness passes; **never executed** |
 | Milestone 2 Stage 3 — epoch re-formation in the app | code complete, compiles behind `MLX_HAS_FINALIZE`, **never run** |
 | The five patches landed on the forks, project repointed | **both Xcode jobs green** — the patched MLX builds end to end |
+| Portable path — llama.cpp RPC, **executed** on Linux | topology works; a dead peer aborts uncatchably in ~350 ms (F25); transport halves prompt processing on loopback (F27) |
 | Linux / Windows / Android adapters | **blocked**, see below |
 
 Milestone 2 is code-complete and building. The gap is no longer "uncompiled" — it is **"unrun"**:
@@ -83,6 +84,18 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
    different URLs under the single SwiftPM identity `mlx-swift` and relies on the **root** pin
    winning. That predates this project (F16) — repointing the root only changed *which* fork wins,
    and CI confirms it resolves.
+8. **The published Mac+iPhone benchmark comes from a link this project's target cannot use.**
+   `Apps/InferRing/README.md` reports −12% token generation and **+11% prompt processing** — but two
+   lines above the table it warns that "Wi-Fi and pre-TB5 over RDMA connections will result in sharp
+   performance decline", and below it recommends a USB3.2 cable. An iPhone and a Windows PC have no
+   such cable between them. Do not quote the −12%/+11% figures as though they apply to a Wi-Fi ring.
+9. **On the portable path the transport halves prompt processing with no network at all.** F27:
+   202.6 t/s local versus 109.9 t/s across loopback RPC, per-run bands non-overlapping. Opposite
+   sign to MLX's +11%, so whatever makes MLX's prefill faster across devices is absent here. A
+   second peer is free — the cost is the first hop, not the number of hops. PP is therefore the
+   leading indicator for any cross-machine measurement. The TG column in that table is *not* a
+   transport win; it is same-box scheduling, and per-token cost is merely below the measurement
+   floor.
 
 ## Architectural rules
 
@@ -118,6 +131,7 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | MLX C++ patch compiles | **yes** | `g++ -fsyntax-only -std=c++17` with mlx-swift's vendored `json`/`fmt` headers. Proves the submodule TU compiles; says nothing about what mlx-swift *exposes* (F22) |
 | New C symbols reachable from Swift | **yes** | a C file including `Source/Cmlx/include/mlx.h`, under `-Werror=implicit-function-declaration` — the flag is load-bearing, plain C passes on an implicit declaration |
 | MLX failure semantics | **yes** | `Patches/mlx/tests/socket_thread_failure_test.cpp` against real `socketpair` |
+| llama.cpp RPC behaviour and throughput | **yes — it actually runs** | `Spikes/llamacpp-rpc/run.sh` (topology, peer-kill) and `throughput.sh` (PP/TG/wall). Loopback only — a real link needs a second machine |
 | Agent/skill files — *static* metadata | **yes** | `python3 scripts/validate-agents.py` — parses front matter and checks the mappings |
 | Slash commands at **dispatch** | **no** | needs an interactive session: that a fork spawns the named agent, that `background: false` blocks, that a gated command spawns nothing, that `/verify` displaces the built-in |
 | Swift syntax of Apple code | partial | `swiftc -parse` — syntax only. It passed the Apple adapter for this project's whole life while three real type errors sat in it (F18) |

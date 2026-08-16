@@ -1263,3 +1263,159 @@ crucially no *silent* connection loss. The abort is observed only for a hard `SI
 departure and a network that drops without closing the socket are different paths, and they are
 exactly where the missing socket timeouts would bite instead. Nothing here touches iOS, and nothing
 re-forms after the abort because there is no surviving process to re-form from.
+
+## F26 — Phase 4.2 cannot be done as planned: most abort sites have no error channel
+
+Read at llama.cpp `9d57ce4`, `ggml/src/ggml-backend-impl.h` and `ggml/src/ggml-rpc/ggml-rpc.cpp`.
+This corrects the *shape* of the plan's Phase 4.2, not just its arithmetic. F25 already corrected the
+count from 19 to 18; the larger problem is that "replace the aborts with error returns" is not
+available for most of them.
+
+### 10 of the 18 sites have nowhere to put an error
+
+**Can return one today — 5 sites, genuinely easy:**
+
+| Line | Function | Returns |
+|---|---|---|
+| 345 | `negotiate_hello` | `bool` |
+| 468 | `ggml_backend_rpc_buffer_init_tensor` | `enum ggml_status` |
+| 538 | `ggml_backend_rpc_buffer_cpy_tensor` | `bool` |
+| 732, 739 | `ggml_backend_rpc_graph_compute` | `enum ggml_status` |
+
+**Declared `void` by the ggml backend vtable — 7 sites:**
+
+| Line | Function | vtable declaration |
+|---|---|---|
+| 394 | `..._buffer_free_buffer` | `void (*free_buffer)` — impl.h:43 |
+| 483 | `..._buffer_memset_tensor` | `void (*memset_tensor)` — impl.h:49 |
+| 496, 509 | `..._buffer_set_tensor` | `void (*set_tensor)` — impl.h:50 |
+| 519 | `..._buffer_get_tensor` | `void (*get_tensor)` — impl.h:51 |
+| 548 | `..._buffer_clear` | `void (*clear)` — impl.h:59 |
+| 823 | `get_device_memory` | feeds `void (*get_memory)` — impl.h:168 |
+
+**Return a type with no failure value — 6 sites:** `..._buffer_get_base` (`void *`, impl.h:45),
+`..._buffer_type_alloc_buffer` (`ggml_backend_buffer_t`, where NULL is already a legitimate
+non-error), `get_alignment` / `get_max_size` / `..._buffer_type_get_alloc_size` (`size_t`),
+`ggml_backend_rpc_get_device_count` (`uint32_t`).
+
+**The site F25 measured 3/3 — `ggml-rpc.cpp:509` — is one of the `void` ones.** So the plan's
+version of 4.2 would not have addressed the failure that actually fires.
+
+These signatures belong to `ggml_backend_buffer_i` and `ggml_backend_i`, implemented by CPU, CUDA,
+Metal, Vulkan, SYCL and every other backend. Turning `void set_tensor` into `bool set_tensor` is a
+change to all of ggml, not an RPC-local patch.
+
+### The design that works is this project's own precedent
+
+Load-bearing fact #3 already says it: an exception must never escape a dispatched MLX task, so
+failures are *recorded* and rethrown later from a thread that can carry them. Same structure here:
+
+1. A sticky per-connection failure flag — natural home is `socket_t`, which both
+   `ggml_backend_rpc_buffer_context` and `ggml_backend_rpc_context` already reach.
+2. The `void` and sentinel sites set it, log, and return. They never `abort()`.
+3. `ggml_backend_rpc_graph_compute` converts it: it returns `enum ggml_status` and runs every token.
+   The flag must be checked **at entry**, not only after its own sends, so a peer that died during
+   `set_tensor` fails the graph *before* it computes on stale data.
+
+Detection latency: at most one token boundary.
+
+### The open risk, which mirrors load-bearing fact #4
+
+`get_tensor` (line 519) is the dangerous one. On failure the caller's `data` buffer is left untouched
+or partly written and the caller reads it anyway. If no `graph_compute` follows, the flag is never
+converted and the failure is **silent** — corruption in place of a visible abort. That is exactly the
+shape of fact #4, where `std::future::wait()` discarding an exception produced silent corruption
+"instead of a hang — worse, because a hang is visible."
+
+So the patch is not safe on its own. It needs either a public query
+(`ggml_backend_rpc_connection_failed(...)`) that the host's token loop checks, or a deterministic
+zero-fill on failure. **Undecided — do not write the patch until it is**, and pin it with a test
+mirroring the *unpatched* silent-corruption path, per the rule that tests pin defects and not just
+fixes.
+
+### Consequence
+
+4.2 stays ahead of 4.1 — F25's reordering holds, because abort is still worse than hang. But 4.2 is
+now "record-and-convert behind a sticky flag", not "replace 18 aborts with error returns", and it
+carries a prerequisite decision that did not exist in the plan.
+
+### Not established
+
+Nothing here was compiled or run — this is a reading of two source files. The sticky-flag design has
+not been implemented, so the claim that `graph_compute` is a sufficient conversion point is reasoned,
+not measured. Whether the ggml scheduler propagates a non-`GGML_STATUS_SUCCESS` return from
+`graph_compute` in the way this design assumes has **not** been checked, and it is load-bearing.
+
+## F27 — The RPC transport halves prompt processing before any network is involved
+
+First throughput measurement on the portable path, run in this container.
+Harness: `Spikes/llamacpp-rpc/throughput.sh`. Qwen2.5-0.5B-Instruct Q4_K_M, 128 generated tokens,
+3 repeats, median reported, on a 4-core Xeon @ 2.10GHz with **no GPU**.
+
+### Why this was measured now
+
+`Apps/InferRing/README.md` reports Mac + iPhone at **−12% token generation and +11% prompt
+processing** — cross-device pooling that is genuinely good. But the same README warns that "Wi-Fi and
+pre-TB5 over RDMA connections will result in sharp performance decline" and recommends a USB3.2
+cable. An iPhone and a Windows PC have no such cable between them, so the near-term target is the
+configuration upstream warns against, and it had never been measured on any link at any speed.
+
+### Result
+
+| configuration | PP t/s | TG t/s | wall ms |
+|---|---|---|---|
+| local, no RPC | **202.6** | 24.6 | 6353 |
+| 1 peer, loopback | 109.9 | 27.5 | 8266 |
+| 2 peers, loopback | 111.4 | 27.3 | 8268 |
+
+Per-run spread, which is what makes the deltas trustworthy rather than a median artifact:
+
+```text
+local     PP 205.9 / 202.6 / 200.1     TG 25.1 / 24.5 / 24.6
+1 peer    PP 107.1 / 115.4 / 109.9     TG 28.0 / 26.8 / 27.5
+2 peers   PP 113.7 / 111.4 / 104.6     TG 27.3 / 27.7 / 26.6
+```
+
+The PP bands do not overlap and neither do the TG bands, so both effects are real.
+
+**Three conclusions.**
+
+1. **Prompt processing halves (−46%) on loopback**, with no network at all. That is pure transport
+   and serialisation cost, and it is the metric where the MLX path *gained* 11%. Opposite sign,
+   which matters: whatever makes MLX's prefill faster across devices is absent here.
+2. **A second peer is free.** 1 peer and 2 peers are indistinguishable on every metric. Per-peer
+   overhead is negligible; the cost is the first hop.
+3. **Wall clock rises ~30%**, which is model upload to the server — the part a slow link punishes
+   hardest and which the t/s figures deliberately exclude.
+
+### The TG number is an artifact, and must not be read as a transport win
+
+Token generation is *higher* under RPC (26.6–28.0 vs 24.5–25.1). This is not evidence that adding a
+network hop makes generation faster. Both processes share one 4-core box: with `-ngl 99` all 25
+layers move to the RPC device, so the server's threadpool does the matmuls while the client thread
+blocks on the socket, instead of one 4-thread process doing compute, sampling and tokenisation
+together. Verified the offload is genuine rather than silently falling back to local compute —
+`50 assigned to device RPC0`, `offloaded 25/25 layers to GPU`, and 1918 lines of server-side work.
+
+The honest reading is that on loopback the per-token transport cost is **below this host's
+measurement floor**, not that it is negative.
+
+### Not established
+
+Loopback is not a network: no MTU, no contention, no radio, no latency. CPU-only, 4 cores, a 0.5B
+model — the absolute numbers transfer to nothing. What transfers is the *shape*: PP is the
+transport-sensitive metric and is therefore the leading indicator for T2, and per-peer scaling is
+cheap. No Wi-Fi, no cross-machine hop, and no iOS has been measured.
+
+### A defect in the first version of this harness, and the fix
+
+The first run omitted `-v`, so its logs carried no `assigned to device RPC0` lines and **could not
+distinguish a genuine RPC run from a silent fallback to local compute** — which would have produced
+an entirely believable table measuring nothing. That is the same false-green shape as F18, F20, F22
+and F23. A separate `-v` run was needed to establish the offload was real.
+
+The harness now carries `-v` permanently, counts the offloaded tensors, prints the count beside each
+row, and fails loudly when a row that requested `--rpc` offloaded zero. Re-running with the
+assertion in place reproduces the table — PP 197.0 / 109.3 / 109.8, TG 25.2 / 27.1 / 26.8, with
+`50 tensors on RPC` confirmed on both RPC rows — so the numbers above stand and are now
+self-evidencing rather than taken on trust.

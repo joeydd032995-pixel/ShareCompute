@@ -42,6 +42,59 @@ assumption that hanging was the primary failure. On this evidence 4.2 comes firs
 survivable by a supervisor, whereas an abort takes the whole process down before any supervisor can
 act.
 
+## What the transport costs — `throughput.sh` (F27)
+
+`bash Spikes/llamacpp-rpc/throughput.sh`
+
+T1 answered *does it work* and *how does it fail*. Neither answers *is it fast enough*, which is the
+question the product rests on. Qwen2.5-0.5B-Instruct Q4_K_M, 128 tokens, 3 repeats, median, on a
+4-core Xeon with **no GPU**:
+
+| configuration | PP t/s | TG t/s | wall ms |
+|---|---|---|---|
+| local, no RPC | **202.6** | 24.6 | 6353 |
+| 1 peer, loopback | 109.9 | 27.5 | 8266 |
+| 2 peers, loopback | 111.4 | 27.3 | 8268 |
+
+**Prompt processing halves (−46%) with no network involved at all.** That is pure transport and
+serialisation cost — and it is the metric where `Apps/InferRing/README.md` measures the MLX path
+*gaining* 11% on Mac + iPhone. Opposite sign, which is the interesting part.
+
+**A second peer is free.** 1 peer and 2 peers are indistinguishable everywhere. The cost is the
+first hop, not the number of hops.
+
+**Do not read the TG column as a transport win.** Generation is *higher* under RPC (26.6–28.0 vs
+24.5–25.1) because both processes share one 4-core box: with `-ngl 99` every layer moves to the RPC
+device, so the server's threadpool does the matmuls while the client blocks on the socket. The
+honest reading is that per-token transport cost is below this host's measurement floor, not that it
+is negative.
+
+## What T2 has to measure
+
+T2 — the Windows PC as a second node — was scoped to prove discovery, firewall traversal and a real
+network hop. That is necessary and **not sufficient**. The same table, over Wi-Fi:
+
+```bash
+# On the Windows PC (or any second machine):
+ggml-rpc-server -H 0.0.0.0 -p 50052
+
+# Here:
+RPC_ENDPOINTS=<peer-ip>:50052 bash Spikes/llamacpp-rpc/throughput.sh
+```
+
+The script still measures the local no-RPC row as a control, so the comparison is self-contained on
+whatever hardware runs it.
+
+**PP is the leading indicator.** It is already the transport-sensitive metric on loopback, so it is
+where a real link will hurt first and hardest. Watch wall clock too — it carries the model upload,
+which the t/s figures deliberately exclude and which a slow link punishes most.
+
+This matters because the encouraging −12% / +11% benchmark in `Apps/InferRing/README.md` comes with
+a warning two lines above it — *"Wi-Fi and pre-TB5 over RDMA connections will result in sharp
+performance decline"* — and a recommendation to use a USB3.2 cable. An iPhone and a Windows PC have
+no such cable between them. **The published numbers come from the one configuration this project's
+target cannot use.**
+
 ## Two ways to get a false reading
 
 Both were hit before the numbers above were trusted, and the script guards against both:

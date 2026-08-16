@@ -129,6 +129,27 @@ Two things changed during implementation, both worth carrying forward:
 >
 > Item 2's Swift lifecycle test is now possible. Item 3 still needs Apple hardware and two devices,
 > and remains the whole of what is unverified — a build is not a behaviour.
+>
+> **Milestone 2 is closed.** PR #13 merged as `0b16529`, six checks green, with `mlx-swift/0003`
+> verified against a controlled negative control (identical Xcode 26.6 / clang-2100.1.1.101 on both
+> runs; only the fork commit changed).
+>
+> **The next action is no longer on this list.** F27 measured the portable path's transport cost for
+> the first time and it reorders what matters: prompt processing **halves** across loopback RPC with
+> no network involved, which is the opposite sign to the +11% the MLX path gains on Mac + iPhone.
+> Combined with the warning in `Apps/InferRing/README.md` that Wi-Fi causes "sharp performance
+> decline" — and the fact that an iPhone and a Windows PC have no USB path between them — the
+> published benchmark describes a configuration this project's target cannot use.
+>
+> So **T2 is now a throughput measurement, not a connectivity check**, and it gates Phases 3–5
+> rather than running beside them. If Wi-Fi PP collapses, the product re-scopes (wired Ethernet,
+> smaller models, prefill-only offload, or plain remote inference) and that is much cheaper to learn
+> now than after three phases are built on the assumption. Same reasoning F25 used to reorder 4.1
+> and 4.2.
+>
+> **F26 also reshaped Phase 4.2 before any of it was written:** 10 of the 18 `GGML_ABORT` sites have
+> no error channel, because their signatures come from ggml's shared backend vtable. It becomes a
+> sticky-flag record-and-convert, with an open decision about `get_tensor` and silent corruption.
 
 1. **Stage 3** — epoch re-formation in the app. Now unblocked: `finalize()` is the operation Spike A
    recorded as unavailable. `RingWatchdog`'s loss becomes non-terminal.
