@@ -179,7 +179,17 @@ if [ "$inconclusive" -eq 1 ]; then
     echo "        Draw NO conclusion about whether a loopback ring forms. Fix the launcher"
     echo "        and run again; the per-rank reasons are above."
 elif [ "$failed" -eq 0 ]; then
-    echo "RESULT: a $RANKS-rank MLX ring formed on one machine and exchanged data."
+    # The launcher does not get to decide what was covered -- the probe does, and it says so in its
+    # own final line. Asserting "exchanged data" here while the rank log one line above read
+    # "collective SKIPPED" is precisely the overclaiming this project keeps catching, and this
+    # summary did exactly that on its first green run.
+    if grep -q "collective SKIPPED" "$OUT"/rank-*.log 2>/dev/null; then
+        echo "RESULT: a $RANKS-rank MLX ring FORMED on one machine, and finalize() behaved as"
+        echo "        Stage 2 requires against a real group. NO DATA WAS EXCHANGED -- the"
+        echo "        collective was skipped (F31), so allGather remains unverified."
+    else
+        echo "RESULT: a $RANKS-rank MLX ring formed on one machine and exchanged data."
+    fi
     echo "        CLAUDE.md's 'needs two or more real devices' is too strong -- it needs two"
     echo "        or more RANKS. Milestone 2's unrun half is testable in CI."
 else

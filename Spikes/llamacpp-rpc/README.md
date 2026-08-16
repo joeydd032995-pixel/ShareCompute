@@ -77,8 +77,41 @@ is negative.
 
 ## What T2 has to measure
 
-T2 — the Windows PC as a second node — was scoped to prove discovery, firewall traversal and a real
+T2 — a second machine as an RPC node — was scoped to prove discovery, firewall traversal and a real
 network hop. That is necessary and **not sufficient**.
+
+**Configuration: two PCs.** The Apple path is out of the near-term plan — no Mac means no Xcode,
+which means no iOS build regardless of any developer-account question. The MLX work stays in CI as
+regression protection for anyone who does have two Macs; it is not on the critical path. So the ring
+is **PC A + PC B**, both x86, no signing, no store, no Apple anything.
+
+### Getting the binaries — probably no build required
+
+llama.cpp's release workflow sets `-DGGML_RPC=ON -DLLAMA_BUILD_TOOLS=ON` globally and packages the
+**entire** `build\bin\Release\` directory into `llama-bin-win-cpu-x64.zip`. `ggml-rpc-server` lives
+under `tools/rpc/`, so it should be in that zip already.
+
+**Verify rather than assume** — list the archive and look for `ggml-rpc-server.exe`. If it is
+missing, build with:
+
+```
+cmake -B build -DGGML_RPC=ON -DLLAMA_BUILD_TOOLS=ON
+cmake --build build --config Release
+```
+
+### Which machine does what
+
+| | role | needs |
+|---|---|---|
+| **PC A** (server) | holds layers, runs `ggml-rpc-server` | just the binary — no bash, no scripts |
+| **PC B** (client) | runs the benchmark and a local worker | the binary **and** bash, so WSL2 or Git Bash if it is Windows |
+
+Only the client side runs `throughput.sh`. If the old laptop is the one you would rather put Linux
+on, make it PC B and the scripting problem disappears.
+
+Download the same GGUF onto both machines — the client uploads weights to the server, so the server
+does not strictly need the file, but having it local avoids a slow first run while you are still
+sorting out the network.
 
 ### Read this before starting a server on your network
 
@@ -90,19 +123,23 @@ device on your LAN, guest Wi-Fi and all.
 So bind it to **one specific interface** and firewall it to **one specific client**:
 
 ```powershell
-# Windows PC. Substitute the real addresses -- do not use 0.0.0.0.
-#   <pc-ip>     this machine's LAN address
-#   <client-ip> the machine running the benchmark, and nothing else
+# PC A, the server. Substitute the real addresses -- do not use 0.0.0.0.
+#   <a-ip>  this machine's LAN address  (ipconfig)
+#   <b-ip>  PC B, the benchmark client, and nothing else
 New-NetFirewallRule -DisplayName "ggml-rpc T2" -Direction Inbound -Protocol TCP `
-  -LocalPort 50052 -RemoteAddress <client-ip> -Action Allow
+  -LocalPort 50052 -RemoteAddress <b-ip> -Action Allow
 
-ggml-rpc-server -H <pc-ip> -p 50052
+.\ggml-rpc-server.exe -H <a-ip> -p 50052
 ```
 
 ```bash
-# Benchmark client
-RPC_ENDPOINTS=<pc-ip>:50052 bash Spikes/llamacpp-rpc/throughput.sh
+# PC B, the client. Under WSL2 or Git Bash if this machine is Windows.
+RPC_ENDPOINTS=<a-ip>:50052 bash Spikes/llamacpp-rpc/throughput.sh
 ```
+
+Sanity-check reachability first — `Test-NetConnection <a-ip> -Port 50052` from PC B. A firewall
+silently dropping the connection looks identical to a peer that is simply slow, and the harness
+would report `0/1 peers` without telling you which.
 
 **Stop the server and remove the rule when the run finishes** — this is a measurement, not a
 service:

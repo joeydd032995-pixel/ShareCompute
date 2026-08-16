@@ -114,12 +114,48 @@ mobile. Pooling an iPhone's RAM with a Mac's *is* the product — it is the READ
 benchmark. The safety the specification wants comes instead from short OS-clamped leases and
 mandatory drain-on-background.
 
+> **This decision is now dormant and its premise has changed twice.** It was argued from
+> iPhone-contributes-RAM-to-a-Mac; the plan then moved to iPhone-as-client, which inverts it; and
+> the target is now two PCs with no Apple hardware at all. Nothing depends on it today. **Do not
+> carry the rationale forward unexamined** — if iOS returns, re-derive it against whatever the
+> product is then.
+
+## Target configuration: two PCs, no Apple
+
+**The operator has no Mac.** That removes the iPhone from the near-term plan for a reason stronger
+than the developer-account question: Xcode is macOS-only, so without a Mac there is **no way to
+build for iOS at all**. The account question is moot until a Mac reappears.
+
+The near-term ring is therefore **two x86 PCs on a LAN** — no signing, no store, no Apple anything —
+running the portable llama.cpp RPC path, which T1 already proved works (F25) and F27 already
+measured (F31 aside, that path needs no Metal).
+
+**The MLX work stays in CI and is not deleted.** It is green, it costs only runner minutes, and it
+remains valid for anyone with two Macs. F30's two-rank loopback ring keeps it honest. It is simply
+no longer on the critical path — treat it as regression protection, not as work in progress.
+
+Consequence for the roster: `windows-*` and `linux-*` roles stop being gated by "no non-MLX
+execution path exists". llama.cpp RPC **is** that path, it builds natively on Windows
+(`ggml-rpc` links `ws2_32`, and `transport.cpp` is full of `_WIN32`/winsock2), and upstream ships
+prebuilt Windows binaries with `GGML_RPC=ON`.
+
 ## Why Linux, Windows and Android are blocked
 
 Not sequencing — capability. MLX is Apple-only, so until the specification's Phase 1a (portable
 graph IR + wire protocol) and a non-MLX execution path exist, those nodes have no runtime to run.
 Any agent asked to build one of those adapters should say so rather than produce code with nothing
 to execute it.
+
+> **Windows and Linux are no longer blocked on "no execution path exists".** llama.cpp RPC is that
+> path: it runs (F25), its cost is measured (F27), it builds natively on Windows, and upstream ships
+> prebuilt Windows binaries with `GGML_RPC=ON`. What is still missing for those adapters is Phase 3
+> (the portable contract) and Phase 4 (making RPC survivable — F26), which is ordinary work rather
+> than a capability gap.
+>
+> **The gating in `.claude/agents/` has not been changed to match.** Nine roles still carry the
+> gate. Un-gating `windows-*` and `linux-*` is a deliberate act that should happen when there is
+> something for them to build against, not as a side effect of this note. Android stays gated — no
+> NDK here, and no second Android device in the plan.
 
 ## Verification — what can actually be checked here
 
