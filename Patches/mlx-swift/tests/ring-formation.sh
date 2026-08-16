@@ -119,7 +119,13 @@ describe() {
         127) echo "COMMAND NOT FOUND -- the probe never ran; NOT a result" ;;
         134) echo "ABORT (SIGABRT)" ;;
         139) echo "SEGFAULT" ;;
-        *)   if [ "$1" -gt 128 ]; then echo "signal $(( $1 - 128 ))"; else echo "exit $1"; fi ;;
+        # Only 129..164 are plausibly deaths by signal. A bare 255 is not "signal 127" -- it is
+        # usually a library aborting after printing its own error, which the rank log will show.
+        *)   if [ "$1" -gt 128 ] && [ "$1" -lt 165 ]; then
+                 echo "signal $(( $1 - 128 )) -- died without reporting; NOT a result"
+             else
+                 echo "exit $1 -- died without reporting; NOT a result"
+             fi ;;
     esac
 }
 

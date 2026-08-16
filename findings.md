@@ -1591,3 +1591,73 @@ normalisation. That is a real negative control for the harness itself, which is 
 **The experiment still has no answer.** Two CI cycles have been spent on the harness — a manifest
 argument order (F28) and this — and the ring has never been attempted. Whether two ranks form a
 loopback ring remains exactly as open as before, and the probe compiling is the only thing gained.
+
+## F30 — A two-rank MLX ring forms on one machine. "Needs two devices" was wrong.
+
+Third CI cycle on `d301561`, and the question this project has deferred since session one is
+answered. Both ranks, on one headless GitHub Actions macOS runner, over loopback:
+
+```text
+--- rank 0 ---                          --- rank 1 ---
+[ring] Rank 0 accepting                 [ring] Rank 1 connecting to 0
+[ring] Rank 0 connecting to 1           [ring] Rank 1 accepting
+[rank 0] group formed: size=2 rank=0    [rank 1] group formed: size=2 rank=1
+```
+
+Hostfile `[["127.0.0.1:51430"],["127.0.0.1:51431"]]`, `MLX_RANK` 0 and 1, two processes of
+`RingFormationProbe`. **`size=2` on both.** Not an `EmptyGroup` — `ring::init` accepted the hostfile,
+`RingGroup` was constructed, and the two ranks completed the accept/connect handshake against each
+other.
+
+### What this corrects
+
+`CLAUDE.md` has said since the first session that a multi-device ring "needs two or more real
+devices", and every milestone since has been reported unrun on that basis. **It needs two or more
+*ranks*.** Nothing in `ring::init` is device-specific: it wants `MLX_HOSTFILE` and `MLX_RANK`
+(`ring.cpp:944`) and speaks plain TCP (`ring.cpp:441-454`). The claim conflated a *product*
+requirement — pooling RAM across machines is only useful across machines — with a *testability*
+one, and the second does not follow.
+
+The cost of that conflation was large: it is the stated reason Milestone 2 has been carried as
+"code-complete but unrun" for its entire life, and the reason a cloud Mac looked necessary.
+
+Note what was *not* wrong. F23's conclusion was correct for the test it described — a single
+*process* with no hostfile genuinely cannot exercise the memoisation, and the `tests/README.md`
+already named the fix precisely: *"a real single-host test needs two processes on `127.0.0.1` at
+different ports."* That was right, and unbuilt. This finding is the building of it, not a correction
+of the reasoning.
+
+### What is confirmed, and what is not
+
+**Confirmed: ring formation.** Two ranks, real `RingGroup`, correct size and rank on each.
+
+**Not yet confirmed: anything that moves data.** The run died immediately after, at the first
+`MLXArray` evaluation:
+
+```text
+MLX error: Failed to load the default metallib. library not found
+  at .../mlx-c/mlx/c/array.cpp:232
+```
+
+That is a headless-runner problem, not a ring problem — the runner has no usable Metal device and
+MLX cannot load its default shader library. The probe now calls
+`Device.setDefault(device: Device(.cpu))` before touching any array; nothing here needs a GPU, since
+the ring backend's collectives run on a CPU stream and the payload is one `Int32` per rank.
+
+So `allGather` and `finalize()`-against-a-real-ring remain **unverified**. Until they run, this
+finding covers formation only.
+
+### The three-way verdict earned its keep immediately
+
+The harness classified the crash as **INCONCLUSIVE** and printed "draw NO conclusion" — correctly,
+because a metallib failure says nothing about rings. Had F29's fix not landed one cycle earlier,
+the two-outcome version would have reported *"no loopback ring, CLAUDE.md's claim stands"* while the
+log directly above it read `group formed: size=2`. The harness would have contradicted its own
+evidence, in the direction of the existing belief.
+
+### Not established
+
+Formation on **loopback**, on one machine, with no model loaded and no data exchanged. This says
+nothing about two *physical* devices, about network latency, about Stage 1's fail-instead-of-hang
+path, or about whether re-formation works. It removes the reason those things could not be tested
+in CI; it does not test them.

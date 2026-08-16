@@ -57,6 +57,13 @@ func fail(_ code: Int32, _ message: String) -> Never {
     exit(code)
 }
 
+// Force the CPU device before touching any MLXArray. A GitHub Actions macOS runner is headless and
+// MLX cannot load its default metallib there: the run that first reached the collective died with
+// "Failed to load the default metallib ... at mlx/c/array.cpp:232", *after* the ring had already
+// formed. Nothing in this probe needs the GPU -- the ring backend's collectives run on a CPU stream
+// anyway, and the payload is one Int32 per rank.
+Device.setDefault(device: Device(.cpu))
+
 log("MLX_HOSTFILE = \(environment["MLX_HOSTFILE"] ?? "<unset>")")
 
 // Reported for the record, not used as a gate. `ring::is_available()` returns true unconditionally

@@ -139,19 +139,24 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | Xcode project builds, patched MLX and all | **not here — but yes in CI** | `.github/workflows/` on a macOS runner. Both jobs green: the patched MLX compiles for `arm64-apple-macos` and iOS Simulator, and the new C symbols link |
 | Actor isolation, runtime behaviour | **no** | needs Apple hardware |
 | Android / Windows | **no** | needs those SDKs |
-| Multi-device ring | **no** | needs two or more real devices — **but this is now under test**, see below |
+| Multi-**rank** ring | **yes — corrected, F30** | two processes, one machine, loopback hostfile. `size=2` on both ranks, confirmed on a headless CI runner. `Patches/mlx-swift/tests/ring-formation.sh` |
+| Multi-**device** ring, real hardware | **no** | genuinely needs two machines — but that is a *product* requirement, not a testability one |
 
-**Open experiment: is "two devices" actually "two ranks"?** The MLX ring is plain TCP driven by
-`MLX_HOSTFILE` and `MLX_RANK` — rank N listens on its own address and connects to rank (N+1) % size
-(`ring.cpp:441-454`), and `ring::init` requires nothing but those two variables (`ring.cpp:944`).
-Nothing on that path is device-specific, so **two processes on one machine at different loopback
-ports may form a real ring.** If they do, the whole "unrun" half of Milestone 2 — Stage 1's
-fail-instead-of-hang, Stage 2's `finalize()` against a group that genuinely exists, and the
-per-token `allGather` barrier — becomes testable on a free CI runner.
+**Answered: "two devices" was really "two ranks" (F30).** A two-rank ring **forms on one machine**
+over loopback — `size=2` on both ranks, on a headless CI runner. `ring::init` needs only
+`MLX_HOSTFILE` and `MLX_RANK` (`ring.cpp:944`) and speaks plain TCP (`ring.cpp:441-454`); nothing on
+that path is device-specific. The old claim conflated a *product* requirement — pooling RAM across
+machines is only useful across machines — with a *testability* one, and that mistake is why
+Milestone 2 was carried as "unrun" for its whole life.
 
-`Patches/mlx-swift/tests/ring-formation.sh` and the `mlx-ring.yml` job decide it. **Do not restate
-the row above as settled either way until that job has returned** — it is a reading, and reading has
-been wrong three times here (F18, F20, F22), each time in the reassuring direction.
+`Patches/mlx-swift/tests/ring-formation.sh` and the `mlx-ring.yml` job hold the experiment.
+
+**What is confirmed is formation only.** The first successful run died immediately afterwards on
+`Failed to load the default metallib` — a headless runner with no usable Metal device, not a ring
+fault. The probe now pins `Device.setDefault(device: Device(.cpu))`. Until that run returns,
+`allGather` across ranks and `finalize()` against a *real* group are still unverified, and Stage 1's
+fail-instead-of-hang path and re-formation are untouched. **The reason those could not be tested in
+CI is gone; the tests themselves are not done.**
 
 **State what you verified and what you did not.** Silence about the unverified half is treated as a
 defect here, not an omission.
