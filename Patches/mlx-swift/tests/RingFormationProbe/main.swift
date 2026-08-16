@@ -57,12 +57,15 @@ func fail(_ code: Int32, _ message: String) -> Never {
     exit(code)
 }
 
-// Force the CPU device before touching any MLXArray. A GitHub Actions macOS runner is headless and
-// MLX cannot load its default metallib there: the run that first reached the collective died with
-// "Failed to load the default metallib ... at mlx/c/array.cpp:232", *after* the ring had already
-// formed. Nothing in this probe needs the GPU -- the ring backend's collectives run on a CPU stream
-// anyway, and the payload is one Int32 per rank.
-Device.setDefault(device: Device(.cpu))
+// NOTE: do not touch a Device, Stream or MLXArray outside the guarded block below. Under
+// `swift build` on a headless runner MLX cannot load its Metal shader library and *any* of those
+// aborts the process -- see F31. Group formation and finalize() are unaffected, which is what makes
+// this probe useful at all.
+//
+// `Device.setDefault(device: Device(.cpu))` was tried as a fix and made things strictly worse: it
+// moved the abort from the array step to stream.cpp:106, i.e. *before* the ring formed, destroying
+// the evidence the earlier run had produced. Choosing the CPU device does not avoid Metal
+// initialisation.
 
 log("MLX_HOSTFILE = \(environment["MLX_HOSTFILE"] ?? "<unset>")")
 
@@ -70,6 +73,10 @@ log("MLX_HOSTFILE = \(environment["MLX_HOSTFILE"] ?? "<unset>")")
 // -- it is a compile-time capability check, so on any Apple build this is the constant `true`. A
 // previous version of the lifecycle test predicted `false` here and was wrong (see F23's amendment).
 log("DistributedGroup.isAvailable = \(DistributedGroup.isAvailable)")
+
+// Tracked so the final line states exactly what was covered. An "OK" that silently skipped the
+// collective would overstate the result, which is the habit this project exists to break.
+var collectiveCovered = false
 
 do {
     // strict: false deliberately. In strict mode a missing hostfile throws from C++ and comes back
@@ -98,28 +105,39 @@ do {
                 + "rank \(group.rank)")
     }
 
-    // The collective is the point. A group that constructs but cannot exchange data is not a ring,
-    // and `allGather` specifically is the operation the product depends on: `PipelineLastLayer`
-    // runs it on every forward pass, so every generated token is an all-ranks barrier
-    // (CLAUDE.md load-bearing fact #2). If this returns, ranks genuinely reached each other.
+    // The collective would be the strongest assertion available: a group that constructs but cannot
+    // exchange data is not a ring, and `allGather` is precisely what the product depends on --
+    // `PipelineLastLayer` runs it on every forward pass, so every generated token is an all-ranks
+    // barrier (CLAUDE.md load-bearing fact #2).
     //
-    // 100 + rank rather than the rank itself, so a result of all-zeros -- the most likely shape of
-    // a silent failure -- cannot be mistaken for rank 0's correct contribution.
-    let contributionValues: [Int32] = [100 + expectedRank]
-    let contribution = MLXArray(contributionValues)
-    let gathered = group.allGather(contribution)
+    // It is OPT-IN because it cannot run where this job runs. Under `swift build` on a headless
+    // GitHub runner, constructing any MLXArray aborts with "Failed to load the default metallib"
+    // (F31) -- an environment limitation, not a ring fault. Running it anyway would abort the
+    // process before finalize() is ever reached, which is exactly what happened twice.
+    //
+    // Set PROBE_COLLECTIVE=1 on a machine with a working Metal shader library to include it.
+    if environment["PROBE_COLLECTIVE"] == "1" {
+        // 100 + rank rather than the rank itself, so a result of all-zeros -- the most likely shape
+        // of a silent failure -- cannot be mistaken for rank 0's correct contribution.
+        let contributionValues: [Int32] = [100 + expectedRank]
+        let contribution = MLXArray(contributionValues)
+        let gathered = group.allGather(contribution)
 
-    // `asArray` evaluates internally, so the lazy graph is forced here and any collective failure
-    // surfaces at this line rather than silently later.
-    let gatheredValues = gathered.asArray(Int32.self)
-    let expectedValues = (0 ..< expectedSize).map { Int32(100 + $0) }
+        // `asArray` evaluates internally, so the lazy graph is forced here and any collective
+        // failure surfaces at this line rather than silently later.
+        let gatheredValues = gathered.asArray(Int32.self)
+        let expectedValues = (0 ..< expectedSize).map { Int32(100 + $0) }
 
-    log("allGather -> \(gatheredValues)")
+        log("allGather -> \(gatheredValues)")
 
-    guard gatheredValues == expectedValues else {
-        fail(
-            exitCollectiveFailed,
-            "allGather returned \(gatheredValues), expected \(expectedValues)")
+        guard gatheredValues == expectedValues else {
+            fail(
+                exitCollectiveFailed,
+                "allGather returned \(gatheredValues), expected \(expectedValues)")
+        }
+        collectiveCovered = true
+    } else {
+        log("allGather SKIPPED -- PROBE_COLLECTIVE unset; no Metal shader library here (F31)")
     }
 
     // Stage 2's contract, now against a *real* ring rather than the EmptyGroup the single-process
@@ -141,5 +159,10 @@ guard DistributedGroup.finalize() else {
     fail(exitFinalizeWrong, "finalize() refused after the last handle was released")
 }
 
-log("OK -- ring formed, allGather correct, finalize refused-then-succeeded")
+if collectiveCovered {
+    log("OK -- ring formed, allGather correct, finalize refused-then-succeeded")
+} else {
+    log("OK (collective SKIPPED) -- ring formed and finalize refused-then-succeeded, but no data "
+        + "was exchanged between ranks. Set PROBE_COLLECTIVE=1 where Metal works.")
+}
 exit(exitOK)

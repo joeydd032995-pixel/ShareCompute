@@ -1661,3 +1661,58 @@ Formation on **loopback**, on one machine, with no model loaded and no data exch
 nothing about two *physical* devices, about network latency, about Stage 1's fail-instead-of-hang
 path, or about whether re-formation works. It removes the reason those things could not be tested
 in CI; it does not test them.
+
+## F31 — `swift build` gives no Metal shader library, so MLX arrays cannot run in this CI
+
+Two cycles spent on this, both after F30's ring had already formed. Recording it so nobody spends a
+third.
+
+Under `swift build` on a headless `macos-latest` runner, **any** MLXArray, Stream or Device
+operation aborts the process:
+
+```text
+MLX error: Failed to load the default metallib. library not found (x4)
+  at .../mlx-c/mlx/c/array.cpp:232      # first attempt, at the MLXArray
+  at .../mlx-c/mlx/c/stream.cpp:106     # second attempt, at Device.setDefault
+```
+
+`mlx/backend/metal/device.cpp:148-185` tries five locations — colocated `mlx.metallib`,
+`Resources/mlx`, a SwiftPM bundle named `mlx-swift_Cmlx`, `Resources/default`, and
+`default_mtllib_path` — and reports all five failing. There is no `.metallib` anywhere in the
+mlx-swift checkout and no build plugin that produces one; the shaders are `.metal` sources under
+`Source/Cmlx/mlx-generated/metal`, and `tools/fix-metal-includes.sh` is a manual preparation step.
+The Xcode jobs build the app fine, so this is a **SwiftPM-versus-Xcode difference**, not a broken
+fork.
+
+### Choosing the CPU device does not avoid it
+
+`Device.setDefault(device: Device(.cpu))` was the obvious fix and made things **strictly worse**: it
+moved the abort earlier, from the array step to `stream.cpp:106`, i.e. *before* the ring formed —
+destroying the `group formed: size=2` evidence the previous run had produced. Metal initialisation
+is not avoided by asking for a CPU stream.
+
+### What is and is not reachable
+
+| Operation | Under `swift build` on CI |
+|---|---|
+| `DistributedGroup.initialize` / ring formation | **works** — F30 proved it |
+| `group.size`, `group.rank` | **works** |
+| `DistributedGroup.finalize()` | expected to work — no array involved |
+| Anything constructing an `MLXArray`, `Stream` or `Device` | **aborts** |
+
+So `allGather` is now **opt-in** behind `PROBE_COLLECTIVE=1`, and the probe says explicitly which
+mode it ran in — `OK` versus `OK (collective SKIPPED)`. An unqualified "OK" that had quietly skipped
+the strongest assertion would overstate the result, which is the exact habit this project exists to
+break.
+
+This is also why the existing lifecycle test passes: it calls only `initialize` and `finalize` and
+never touches an array. That was luck, not design.
+
+### Not established
+
+Why the SwiftPM resource bundle is not found, and whether it could be made to work — copying the
+bundle beside the executable, or building the probe under `xcodebuild` instead, are both untried.
+Neither was worth a third cycle when the question being investigated is ring formation, which
+already has its answer. **`allGather` between ranks therefore remains unverified anywhere**, and the
+per-token barrier that every generated token depends on has still never been executed by this
+project.

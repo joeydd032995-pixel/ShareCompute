@@ -151,12 +151,16 @@ Milestone 2 was carried as "unrun" for its whole life.
 
 `Patches/mlx-swift/tests/ring-formation.sh` and the `mlx-ring.yml` job hold the experiment.
 
-**What is confirmed is formation only.** The first successful run died immediately afterwards on
-`Failed to load the default metallib` — a headless runner with no usable Metal device, not a ring
-fault. The probe now pins `Device.setDefault(device: Device(.cpu))`. Until that run returns,
-`allGather` across ranks and `finalize()` against a *real* group are still unverified, and Stage 1's
-fail-instead-of-hang path and re-formation are untouched. **The reason those could not be tested in
-CI is gone; the tests themselves are not done.**
+**What is confirmed is formation only, and one gap will not close in CI (F31).** Under `swift build`
+on a headless runner, *any* `MLXArray`, `Stream` or `Device` operation aborts with `Failed to load
+the default metallib` — a SwiftPM-versus-Xcode difference, not a ring fault, and asking for the CPU
+device does not avoid it. So `allGather` between ranks is **opt-in** behind `PROBE_COLLECTIVE=1` and
+**remains unverified anywhere**: the per-token all-ranks barrier that every generated token depends
+on has still never been executed by this project.
+
+Formation and `finalize()` need no arrays and are reachable. Stage 1's fail-instead-of-hang path and
+re-formation are untouched. **The reason those could not be tested in CI is gone; the tests
+themselves are not written.**
 
 **State what you verified and what you did not.** Silence about the unverified half is treated as a
 defect here, not an omission.
