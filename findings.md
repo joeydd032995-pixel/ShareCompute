@@ -1339,12 +1339,30 @@ fixes.
 now "record-and-convert behind a sticky flag", not "replace 18 aborts with error returns", and it
 carries a prerequisite decision that did not exist in the plan.
 
+### The propagation path is confirmed — the design's load-bearing assumption holds
+
+This was written as an open risk and then checked, because the whole design rests on it. A failing
+`graph_compute` does reach the host as an ordinary error return, with no abort anywhere on the path:
+
+| Step | File and line | Behaviour |
+|---|---|---|
+| RPC backend returns non-`SUCCESS` | `ggml-rpc.cpp:720` | the conversion point this design proposes |
+| Scheduler propagates | `ggml-backend.cpp:1732` and `:1754` | `if (ec != GGML_STATUS_SUCCESS) { return ec; }` — both the plain and `callback_eval` paths |
+| llama.cpp logs and returns | `llama-context.cpp:2490–2496` | `LLAMA_LOG_ERROR(...)`, `return status` |
+| `process_ubatch` gives up cleanly | `llama-context.cpp:1385–1390` | `ret = status; return nullptr;` |
+| `llama_decode` maps it | `llama-context.cpp:1471` (and `:1844` for encode) | `case GGML_STATUS_FAILED: return -3;` |
+
+So a peer that dies mid-generation would surface to the host application as `llama_decode() == -3` —
+catchable, recoverable, and exactly what `GGML_ABORT` denies today. **Phase 4.2 is viable**, and the
+conversion point is the right one.
+
 ### Not established
 
-Nothing here was compiled or run — this is a reading of two source files. The sticky-flag design has
-not been implemented, so the claim that `graph_compute` is a sufficient conversion point is reasoned,
-not measured. Whether the ggml scheduler propagates a non-`GGML_STATUS_SUCCESS` return from
-`graph_compute` in the way this design assumes has **not** been checked, and it is load-bearing.
+Nothing here was compiled or run — this is a reading of source. The sticky flag has not been
+implemented, so while the *propagation* path is now verified by reading it end to end, the claim that
+recording at the `void` sites and checking at `graph_compute` entry is *sufficient* remains reasoned
+rather than measured. The `get_tensor` silent-corruption risk above is untouched by this: it escapes
+precisely by never reaching `graph_compute` at all, so a verified propagation path does not close it.
 
 ## F27 — The RPC transport halves prompt processing before any network is involved
 
