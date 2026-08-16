@@ -47,10 +47,9 @@ jobs:
         # Not `--verbose`: it prints every compile command, and against a from-source MLX build that
         # buries the three assertions this job exists for under megabytes of clang invocations.
         #
-        # -DFMT_CONSTEVAL= is required, not optional (findings.md F17). mlx-swift vendors fmt 10.2.1,
-        # which predates clang tightening how consteval propagates, so `FMT_STRING(...)` fails with
-        # "call to consteval function ... is not a constant expression" -- five errors in format.cc.
-        # Defining FMT_CONSTEVAL empty is a configuration fmt supports and applies itself for
-        # toolchains where consteval misbehaves; it is not a hack invented here. The two Xcode jobs
-        # pass the same thing as OTHER_CPLUSPLUSFLAGS. `-Xcxx` is SwiftPM's spelling of it.
-        run: swift test -Xcxx -DFMT_CONSTEVAL=
+        # No -DFMT_CONSTEVAL= here any more. mlx-swift vendors fmt 10.2.1, which predates clang
+        # tightening how consteval propagates, so `FMT_STRING(...)` used to fail with five errors in
+        # format.cc (findings.md F17, F24). That define now lives in the fork's own Package.swift
+        # (Patches/mlx-swift/0003), which is the one place every consumer resolves -- including a
+        # developer opening the project in Xcode, who no CI setting could ever have helped.
+        run: swift test

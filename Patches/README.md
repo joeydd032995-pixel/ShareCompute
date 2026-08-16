@@ -8,7 +8,7 @@ The app builds against a chain of three repositories, and the fixes span all thr
 |---|---|---|
 | [`mlx`](mlx/) | `38ad257088fb2193ad47e527cf6534a689f30943` | `0001` fail instead of hang · `0002` `finalize()` |
 | [`mlx-c`](mlx-c/) | `0726ca922fc902c4c61ef9c27d94132be418e945` | `0001` export `group_free` + `finalize` |
-| [`mlx-swift`](mlx-swift/) | tag `ios-distrib-0.3.0` (`c53d302`) | `0001` free the group, expose `finalize()` · `0002` declare both in the vendored `Cmlx` headers |
+| [`mlx-swift`](mlx-swift/) | tag `ios-distrib-0.3.0` (`c53d302`) | `0001` free the group, expose `finalize()` · `0002` declare both in the vendored `Cmlx` headers · `0003` define `FMT_CONSTEVAL` empty |
 
 The two submodule pins are read from the mlx-swift tree at that tag; the tag itself is what
 `project.pbxproj` names. (It names it as a *branch*, which it is not — see `findings.md` F13. That
@@ -26,20 +26,26 @@ these patches land. **They have landed:**
 |---|---|---|
 | `mlx` | `sharecompute/stage1-2` | `18e53a6f9b88` |
 | `mlx-c` | `sharecompute/export-finalize` | `55a61ffbe301` |
-| `mlx-swift` | `sharecompute/free-and-finalize` | `6c15a2e53385` |
+| `mlx-swift` | `sharecompute/free-and-finalize` | `c0b3b0264631` |
 
 `project.pbxproj` points at the mlx-swift branch and defines `MLX_HAS_FINALIZE`, so Stage 3's
 teardown compiles its `#if` branch rather than the `#else` that F20 forced. **Both Xcode jobs build
 green against these branches** — see verification step 7.
 
-[`land-mlx-swift-0002.sh`](land-mlx-swift-0002.sh) is what added `0002` to the already-published
-mlx-swift branch, as a fast-forward. It never force-pushes and reports "already applied" on a
-re-run, so it is safe to invoke again:
+[`land-mlx-swift-0002.sh`](land-mlx-swift-0002.sh) and
+[`land-mlx-swift-0003.sh`](land-mlx-swift-0003.sh) added `0002` and `0003` to the already-published
+mlx-swift branch, each as a fast-forward. Neither force-pushes, and re-running after a successful
+push reports "already applied" rather than doing damage:
 
 ```bash
-bash Patches/land-mlx-swift-0002.sh          # apply, show the diff, push nothing
-bash Patches/land-mlx-swift-0002.sh --push   # and push
+bash Patches/land-mlx-swift-0003.sh          # apply, show the diff, push nothing
+bash Patches/land-mlx-swift-0003.sh --push   # and push
 ```
+
+Without `--push` the script clones the fork to a temp directory, applies the patch, commits it
+**locally**, prints the before→after SHAs and stops. The SHA it prints is real but unpublished, and
+a `--push` run produces a *different* one because the commit timestamp is part of the hash. Check
+the remote, not the printed SHA, to know whether it landed.
 
 [`land-on-forks.sh`](land-on-forks.sh) is what put the branches there, and now applies both
 mlx-swift patches on a fresh run:
@@ -94,7 +100,8 @@ git clone https://github.com/N1k1tung/mlx-swift mlx-swift
   && test "$(git rev-parse ios-distrib-0.3.0^{commit})" = "$(git rev-parse c53d302^{commit})" \
   && git checkout --detach c53d302 \
   && git apply "$PATCHES/mlx-swift/0001-free-group-and-expose-finalize.patch" \
-  && git apply "$PATCHES/mlx-swift/0002-declare-cmlx-symbols-in-vendored-headers.patch" )
+  && git apply "$PATCHES/mlx-swift/0002-declare-cmlx-symbols-in-vendored-headers.patch" \
+  && git apply "$PATCHES/mlx-swift/0003-define-fmt-consteval-empty.patch" )
 ```
 
 The mlx-swift checkout is by **commit**, not by the `ios-distrib-0.3.0` tag, with the tag checked
@@ -126,6 +133,16 @@ the mlx-c submodule's headers. It vendors its own copies under `Source/Cmlx/incl
 submodule therefore compiles the definitions without declaring them, and `0001`'s Swift fails with
 `cannot find 'mlx_distributed_group_free' in scope`. `0002` adds both declarations to both copies.
 See `findings.md` F22.
+
+**`mlx-swift/0003` is not part of either stage — it is a toolchain fix.** mlx-swift vendors fmt
+10.2.1, which predates clang tightening how `consteval` propagates, so `FMT_STRING(...)` stops being
+a constant expression and `fmt/src/format.cc` fails with five errors. `0003` defines `FMT_CONSTEVAL`
+empty in the fork's `Package.swift` `cxxSettings` — a configuration fmt supports and applies itself
+for toolchains where consteval misbehaves, not a workaround invented here.
+
+It belongs in the fork rather than in build settings because **no CI setting can help a developer
+who clones the repository and opens it in Xcode**. Before this, three CI jobs each carried their own
+spelling of the same define and a fresh clone carried none. See `findings.md` F17 and F24.
 
 **`finalize()` has a precondition, and it is the easy thing to get wrong.** It returns `false` and
 changes nothing while *any* group handle is still held. Callers must release every one first — in
@@ -198,7 +215,7 @@ Each harness **mirrors** the patched code rather than including it, because MLX 
 here — so both must be updated in step if the patched files change. Each ends with a case that
 reproduces the *unpatched* behaviour, so the defect is pinned rather than merely described.
 
-**4. Patches apply to pristine checkouts.** `git apply --check` for each of the five patches against
+**4. Patches apply to pristine checkouts.** `git apply --check` for each of the six patches against
 its pinned revision — this is what the block under *Applying* above does, with `git apply` in place
 of `--check`.
 
