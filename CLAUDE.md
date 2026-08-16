@@ -29,6 +29,7 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | Milestone 2 Stage 2 — group teardown (`finalize()` across mlx, mlx-c, mlx-swift) | 4 patches, compile and **link** on Apple; harness passes; **never executed** |
 | Milestone 2 Stage 3 — epoch re-formation in the app | code complete, compiles behind `MLX_HAS_FINALIZE`, **never run** |
 | The five patches landed on the forks, project repointed | **both Xcode jobs green** — the patched MLX builds end to end |
+| Portable path — llama.cpp RPC, **executed** on Linux | topology works; a dead peer aborts uncatchably in ~350 ms (F25); transport halves prompt processing on loopback (F27) |
 | Linux / Windows / Android adapters | **blocked**, see below |
 
 Milestone 2 is code-complete and building. The gap is no longer "uncompiled" — it is **"unrun"**:
@@ -83,6 +84,18 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
    different URLs under the single SwiftPM identity `mlx-swift` and relies on the **root** pin
    winning. That predates this project (F16) — repointing the root only changed *which* fork wins,
    and CI confirms it resolves.
+8. **The published Mac+iPhone benchmark comes from a link this project's target cannot use.**
+   `Apps/InferRing/README.md` reports −12% token generation and **+11% prompt processing** — but two
+   lines above the table it warns that "Wi-Fi and pre-TB5 over RDMA connections will result in sharp
+   performance decline", and below it recommends a USB3.2 cable. An iPhone and a Windows PC have no
+   such cable between them. Do not quote the −12%/+11% figures as though they apply to a Wi-Fi ring.
+9. **On the portable path the transport halves prompt processing with no network at all.** F27:
+   217.3 t/s local versus 112.5 t/s across loopback RPC, per-run bands non-overlapping. Opposite
+   sign to MLX's +11%, so whatever makes MLX's prefill faster across devices is absent here. A
+   second peer is free — the cost is the first hop, not the number of hops. PP is therefore the
+   leading indicator for any cross-machine measurement. The TG column in that table is *not* a
+   transport win; it is same-box scheduling, and per-token cost is merely below the measurement
+   floor.
 
 ## Architectural rules
 
@@ -101,12 +114,48 @@ mobile. Pooling an iPhone's RAM with a Mac's *is* the product — it is the READ
 benchmark. The safety the specification wants comes instead from short OS-clamped leases and
 mandatory drain-on-background.
 
+> **This decision is now dormant and its premise has changed twice.** It was argued from
+> iPhone-contributes-RAM-to-a-Mac; the plan then moved to iPhone-as-client, which inverts it; and
+> the target is now two PCs with no Apple hardware at all. Nothing depends on it today. **Do not
+> carry the rationale forward unexamined** — if iOS returns, re-derive it against whatever the
+> product is then.
+
+## Target configuration: two PCs, no Apple
+
+**The operator has no Mac.** That removes the iPhone from the near-term plan for a reason stronger
+than the developer-account question: Xcode is macOS-only, so without a Mac there is **no way to
+build for iOS at all**. The account question is moot until a Mac reappears.
+
+The near-term ring is therefore **two x86 PCs on a LAN** — no signing, no store, no Apple anything —
+running the portable llama.cpp RPC path, which T1 already proved works (F25) and F27 already
+measured (F31 aside, that path needs no Metal).
+
+**The MLX work stays in CI and is not deleted.** It is green, it costs only runner minutes, and it
+remains valid for anyone with two Macs. F30's two-rank loopback ring keeps it honest. It is simply
+no longer on the critical path — treat it as regression protection, not as work in progress.
+
+Consequence for the roster: `windows-*` and `linux-*` roles stop being gated by "no non-MLX
+execution path exists". llama.cpp RPC **is** that path, it builds natively on Windows
+(`ggml-rpc` links `ws2_32`, and `transport.cpp` is full of `_WIN32`/winsock2), and upstream ships
+prebuilt Windows binaries with `GGML_RPC=ON`.
+
 ## Why Linux, Windows and Android are blocked
 
 Not sequencing — capability. MLX is Apple-only, so until the specification's Phase 1a (portable
 graph IR + wire protocol) and a non-MLX execution path exist, those nodes have no runtime to run.
 Any agent asked to build one of those adapters should say so rather than produce code with nothing
 to execute it.
+
+> **Windows and Linux are no longer blocked on "no execution path exists".** llama.cpp RPC is that
+> path: it runs (F25), its cost is measured (F27), it builds natively on Windows, and upstream ships
+> prebuilt Windows binaries with `GGML_RPC=ON`. What is still missing for those adapters is Phase 3
+> (the portable contract) and Phase 4 (making RPC survivable — F26), which is ordinary work rather
+> than a capability gap.
+>
+> **The gating in `.claude/agents/` has not been changed to match.** Nine roles still carry the
+> gate. Un-gating `windows-*` and `linux-*` is a deliberate act that should happen when there is
+> something for them to build against, not as a side effect of this note. Android stays gated — no
+> NDK here, and no second Android device in the plan.
 
 ## Verification — what can actually be checked here
 
@@ -118,13 +167,36 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | MLX C++ patch compiles | **yes** | `g++ -fsyntax-only -std=c++17` with mlx-swift's vendored `json`/`fmt` headers. Proves the submodule TU compiles; says nothing about what mlx-swift *exposes* (F22) |
 | New C symbols reachable from Swift | **yes** | a C file including `Source/Cmlx/include/mlx.h`, under `-Werror=implicit-function-declaration` — the flag is load-bearing, plain C passes on an implicit declaration |
 | MLX failure semantics | **yes** | `Patches/mlx/tests/socket_thread_failure_test.cpp` against real `socketpair` |
+| llama.cpp RPC behaviour and throughput | **yes — it actually runs** | `Spikes/llamacpp-rpc/run.sh` (topology, peer-kill) and `throughput.sh` (PP/TG/wall). Loopback only — a real link needs a second machine |
 | Agent/skill files — *static* metadata | **yes** | `python3 scripts/validate-agents.py` — parses front matter and checks the mappings |
 | Slash commands at **dispatch** | **no** | needs an interactive session: that a fork spawns the named agent, that `background: false` blocks, that a gated command spawns nothing, that `/verify` displaces the built-in |
 | Swift syntax of Apple code | partial | `swiftc -parse` — syntax only. It passed the Apple adapter for this project's whole life while three real type errors sat in it (F18) |
+| **SwiftPM manifests** — semantics, not just syntax | **yes** | `swift package dump-package` in the package directory. It *evaluates* `Package.swift`, so it catches what `-parse` cannot: argument-order rules, bad target paths, malformed products. Verified against a negative control — it reproduces the exact CI error. Run this for **any** `Package.swift` edit (F28) |
 | Xcode project builds, patched MLX and all | **not here — but yes in CI** | `.github/workflows/` on a macOS runner. Both jobs green: the patched MLX compiles for `arm64-apple-macos` and iOS Simulator, and the new C symbols link |
 | Actor isolation, runtime behaviour | **no** | needs Apple hardware |
 | Android / Windows | **no** | needs those SDKs |
-| Multi-device ring | **no** | needs two or more real devices |
+| Multi-**rank** ring | **yes — corrected, F30** | two processes, one machine, loopback hostfile. `size=2` on both ranks, confirmed on a headless CI runner. `Patches/mlx-swift/tests/ring-formation.sh` |
+| Multi-**device** ring, real hardware | **no** | genuinely needs two machines — but that is a *product* requirement, not a testability one |
+
+**Answered: "two devices" was really "two ranks" (F30).** A two-rank ring **forms on one machine**
+over loopback — `size=2` on both ranks, on a headless CI runner. `ring::init` needs only
+`MLX_HOSTFILE` and `MLX_RANK` (`ring.cpp:944`) and speaks plain TCP (`ring.cpp:441-454`); nothing on
+that path is device-specific. The old claim conflated a *product* requirement — pooling RAM across
+machines is only useful across machines — with a *testability* one, and that mistake is why
+Milestone 2 was carried as "unrun" for its whole life.
+
+`Patches/mlx-swift/tests/ring-formation.sh` and the `mlx-ring.yml` job hold the experiment.
+
+**What is confirmed is formation only, and one gap will not close in CI (F31).** Under `swift build`
+on a headless runner, *any* `MLXArray`, `Stream` or `Device` operation aborts with `Failed to load
+the default metallib` — a SwiftPM-versus-Xcode difference, not a ring fault, and asking for the CPU
+device does not avoid it. So `allGather` between ranks is **opt-in** behind `PROBE_COLLECTIVE=1` and
+**remains unverified anywhere**: the per-token all-ranks barrier that every generated token depends
+on has still never been executed by this project.
+
+Formation and `finalize()` need no arrays and are reachable. Stage 1's fail-instead-of-hang path and
+re-formation are untouched. **The reason those could not be tested in CI is gone; the tests
+themselves are not written.**
 
 **State what you verified and what you did not.** Silence about the unverified half is treated as a
 defect here, not an omission.

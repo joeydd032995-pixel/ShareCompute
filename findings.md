@@ -1263,3 +1263,456 @@ crucially no *silent* connection loss. The abort is observed only for a hard `SI
 departure and a network that drops without closing the socket are different paths, and they are
 exactly where the missing socket timeouts would bite instead. Nothing here touches iOS, and nothing
 re-forms after the abort because there is no surviving process to re-form from.
+
+## F26 — Phase 4.2 cannot be done as planned: most abort sites have no error channel
+
+Read at llama.cpp `9d57ce4`, `ggml/src/ggml-backend-impl.h` and `ggml/src/ggml-rpc/ggml-rpc.cpp`.
+This corrects the *shape* of the plan's Phase 4.2, not just its arithmetic. F25 already corrected the
+count from 19 to 18; the larger problem is that "replace the aborts with error returns" is not
+available for most of them.
+
+### 13 of the 18 sites have no status return; 12 genuinely need the flag
+
+> **Corrected.** This section first said "10", which matches neither the table below nor the
+> arithmetic — 5 + 7 + 6 = 18, so 13 lack a status return. Caught in review on PR #14. The
+> correction *understated* the scope of Phase 4.2, so it mattered. One of the 13 (`alloc_buffer`)
+> does have a usable channel — see the note after the tables — leaving 12 that need the sticky flag.
+
+**Can return one today — 5 sites, genuinely easy:**
+
+| Line | Function | Returns |
+|---|---|---|
+| 345 | `negotiate_hello` | `bool` |
+| 468 | `ggml_backend_rpc_buffer_init_tensor` | `enum ggml_status` |
+| 538 | `ggml_backend_rpc_buffer_cpy_tensor` | `bool` |
+| 732, 739 | `ggml_backend_rpc_graph_compute` | `enum ggml_status` |
+
+**Declared `void` by the ggml backend vtable — 7 sites:**
+
+| Line | Function | vtable declaration |
+|---|---|---|
+| 394 | `..._buffer_free_buffer` | `void (*free_buffer)` — impl.h:43 |
+| 483 | `..._buffer_memset_tensor` | `void (*memset_tensor)` — impl.h:49 |
+| 496, 509 | `..._buffer_set_tensor` | `void (*set_tensor)` — impl.h:50 |
+| 519 | `..._buffer_get_tensor` | `void (*get_tensor)` — impl.h:51 |
+| 548 | `..._buffer_clear` | `void (*clear)` — impl.h:59 |
+| 823 | `get_device_memory` | feeds `void (*get_memory)` — impl.h:168 |
+
+**Return a type with no failure value — 6 sites:** `..._buffer_get_base` (`void *`, impl.h:45),
+`..._buffer_type_alloc_buffer` (`ggml_backend_buffer_t`, where NULL is already a legitimate
+non-error), `get_alignment` / `get_max_size` / `..._buffer_type_get_alloc_size` (`size_t`),
+`ggml_backend_rpc_get_device_count` (`uint32_t`).
+
+**The site F25 measured 3/3 — `ggml-rpc.cpp:509` — is one of the `void` ones.** So the plan's
+version of 4.2 would not have addressed the failure that actually fires.
+
+**One of the six sentinel sites is not as bad as the rest.** `..._buffer_type_alloc_buffer` returns
+`ggml_backend_buffer_t`, and NULL is a genuine failure signal that ggml's allocator already checks —
+`ggml_backend_buft_alloc_buffer` (`ggml-backend.cpp:38`) passes it straight through to callers that
+test it. So that site can report failure today without any new machinery. The other five cannot:
+`get_base` returns `void *` that callers do not check, `get_alignment` / `get_max_size` /
+`get_alloc_size` return `size_t` with no reserved value, and `get_device_count` returns `uint32_t`
+where 0 already means "no devices".
+
+**Final arithmetic: 5 already return a status, 1 more can signal via NULL, and 12 need the sticky
+flag.**
+
+These signatures belong to `ggml_backend_buffer_i` and `ggml_backend_i`, implemented by CPU, CUDA,
+Metal, Vulkan, SYCL and every other backend. Turning `void set_tensor` into `bool set_tensor` is a
+change to all of ggml, not an RPC-local patch.
+
+### The design that works is this project's own precedent
+
+Load-bearing fact #3 already says it: an exception must never escape a dispatched MLX task, so
+failures are *recorded* and rethrown later from a thread that can carry them. Same structure here:
+
+1. A sticky per-connection failure flag — natural home is `socket_t`, which both
+   `ggml_backend_rpc_buffer_context` and `ggml_backend_rpc_context` already reach.
+2. The `void` and sentinel sites set it, log, and return. They never `abort()`.
+3. `ggml_backend_rpc_graph_compute` converts it: it returns `enum ggml_status` and runs every token.
+   The flag must be checked **at entry**, not only after its own sends, so a peer that died during
+   `set_tensor` fails the graph *before* it computes on stale data.
+
+Detection latency: at most one token boundary.
+
+### The open risk, which mirrors load-bearing fact #4
+
+`get_tensor` (line 519) is the dangerous one. On failure the caller's `data` buffer is left untouched
+or partly written and the caller reads it anyway. If no `graph_compute` follows, the flag is never
+converted and the failure is **silent** — corruption in place of a visible abort. That is exactly the
+shape of fact #4, where `std::future::wait()` discarding an exception produced silent corruption
+"instead of a hang — worse, because a hang is visible."
+
+So the patch is not safe on its own. It needs either a public query
+(`ggml_backend_rpc_connection_failed(...)`) that the host's token loop checks, or a deterministic
+zero-fill on failure. **Undecided — do not write the patch until it is**, and pin it with a test
+mirroring the *unpatched* silent-corruption path, per the rule that tests pin defects and not just
+fixes.
+
+### Consequence
+
+4.2 stays ahead of 4.1 — F25's reordering holds, because abort is still worse than hang. But 4.2 is
+now "record-and-convert behind a sticky flag", not "replace 18 aborts with error returns", and it
+carries a prerequisite decision that did not exist in the plan.
+
+### The propagation path is confirmed — the design's load-bearing assumption holds
+
+This was written as an open risk and then checked, because the whole design rests on it. A failing
+`graph_compute` does reach the host as an ordinary error return, with no abort anywhere on the path:
+
+| Step | File and line | Behaviour |
+|---|---|---|
+| RPC backend returns non-`SUCCESS` | `ggml-rpc.cpp:720` | the conversion point this design proposes |
+| Scheduler propagates | `ggml-backend.cpp:1732` and `:1754` | `if (ec != GGML_STATUS_SUCCESS) { return ec; }` — both the plain and `callback_eval` paths |
+| llama.cpp logs and returns | `llama-context.cpp:2490–2496` | `LLAMA_LOG_ERROR(...)`, `return status` |
+| `process_ubatch` gives up cleanly | `llama-context.cpp:1385–1390` | `ret = status; return nullptr;` |
+| `llama_decode` maps it | `llama-context.cpp:1471` (and `:1844` for encode) | `case GGML_STATUS_FAILED: return -3;` |
+
+So a peer that dies mid-generation would surface to the host application as `llama_decode() == -3` —
+catchable, recoverable, and exactly what `GGML_ABORT` denies today. **Phase 4.2 is viable**, and the
+conversion point is the right one.
+
+### Not established
+
+Nothing here was compiled or run — this is a reading of source. The sticky flag has not been
+implemented, so while the *propagation* path is now verified by reading it end to end, the claim that
+recording at the `void` sites and checking at `graph_compute` entry is *sufficient* remains reasoned
+rather than measured. The `get_tensor` silent-corruption risk above is untouched by this: it escapes
+precisely by never reaching `graph_compute` at all, so a verified propagation path does not close it.
+
+## F27 — The RPC transport halves prompt processing before any network is involved
+
+First throughput measurement on the portable path, run in this container.
+Harness: `Spikes/llamacpp-rpc/throughput.sh`. Qwen2.5-0.5B-Instruct Q4_K_M, 128 generated tokens,
+3 repeats, median reported, on a 4-core Xeon @ 2.10GHz with **no GPU**.
+
+### Why this was measured now
+
+`Apps/InferRing/README.md` reports Mac + iPhone at **−12% token generation and +11% prompt
+processing** — cross-device pooling that is genuinely good. But the same README warns that "Wi-Fi and
+pre-TB5 over RDMA connections will result in sharp performance decline" and recommends a USB3.2
+cable. An iPhone and a Windows PC have no such cable between them, so the near-term target is the
+configuration upstream warns against, and it had never been measured on any link at any speed.
+
+### Result
+
+> **Corrected — the first published table's two-peer row measured one peer.** The second
+> `ggml-rpc-server` failed to bind (`Failed to create server socket`) and *stayed alive*, so a PID
+> check saw a healthy process while llama.cpp silently registered a single device and put all 50
+> tensors on it. The harness then reported it as a two-peer result. Numbers below are the re-run with
+> a verified `2/2` split; the correction and its cause are written up at the end of this finding.
+
+| configuration | PP t/s | TG t/s | wall ms | peers |
+|---|---|---|---|---|
+| local, no RPC | **217.3** | 24.9 | 6239 | — |
+| 1 peer, loopback | 112.5 | 27.6 | 7148 | 1/1 |
+| 2 peers, loopback | 117.7 | 27.4 | 7453 | **2/2** (26 + 24 layers) |
+
+Per-run spread from the original run, which is what makes the deltas trustworthy rather than a
+median artifact (the `local` and `1 peer` rows were always genuine; only the two-peer row was not):
+
+```text
+local     PP 205.9 / 202.6 / 200.1     TG 25.1 / 24.5 / 24.6
+1 peer    PP 107.1 / 115.4 / 109.9     TG 28.0 / 26.8 / 27.5
+2 peers   PP 113.7 / 111.4 / 104.6     TG 27.3 / 27.7 / 26.6
+```
+
+The PP bands do not overlap and neither do the TG bands, so both effects are real.
+
+**Three conclusions.**
+
+1. **Prompt processing halves (−46%) on loopback**, with no network at all. That is pure transport
+   and serialisation cost, and it is the metric where the MLX path *gained* 11%. Opposite sign,
+   which matters: whatever makes MLX's prefill faster across devices is absent here.
+2. **A second peer is free.** 1 peer and 2 peers are indistinguishable on every metric. Per-peer
+   overhead is negligible; the cost is the first hop.
+3. **Wall clock rises ~30%**, which is model upload to the server — the part a slow link punishes
+   hardest and which the t/s figures deliberately exclude.
+
+### The TG number is an artifact, and must not be read as a transport win
+
+Token generation is *higher* under RPC (26.6–28.0 vs 24.5–25.1). This is not evidence that adding a
+network hop makes generation faster. Both processes share one 4-core box: with `-ngl 99` all 25
+layers move to the RPC device, so the server's threadpool does the matmuls while the client thread
+blocks on the socket, instead of one 4-thread process doing compute, sampling and tokenisation
+together. Verified the offload is genuine rather than silently falling back to local compute —
+`50 assigned to device RPC0`, `offloaded 25/25 layers to GPU`, and 1918 lines of server-side work.
+
+The honest reading is that on loopback the per-token transport cost is **below this host's
+measurement floor**, not that it is negative.
+
+### Not established
+
+Loopback is not a network: no MTU, no contention, no radio, no latency. CPU-only, 4 cores, a 0.5B
+model — the absolute numbers transfer to nothing. What transfers is the *shape*: PP is the
+transport-sensitive metric and is therefore the leading indicator for T2, and per-peer scaling is
+cheap. No Wi-Fi, no cross-machine hop, and no iOS has been measured.
+
+### Three defects in this harness, each of which produced a believable wrong number
+
+All three are the same species — **a check that passes while measuring the wrong thing** — and they
+were found in sequence, each by fixing the one before it. Two came out of code review on PR #14.
+
+**1. No `-v`, so nothing proved the RPC devices were used.** The first run's logs carried no
+`assigned to device RPC0` lines at all, so a silent fallback to local compute would have been
+indistinguishable from a good result. Fixed by making `-v` permanent and counting offloaded tensors.
+
+**2. A failed repetition scored as zero and was folded into the median.** `run_one` returned
+`pp=tg=0` on a non-zero exit and `measure` averaged it in; with `REPEATS=2` a single failure would
+have halved the reported throughput while looking entirely plausible. Now any failed repetition
+invalidates the whole row.
+
+Testing that fix produced a **worse** finding than the one it fixed: with an unreachable endpoint,
+`llama-cli` **does not fail at all**. It exits 0, computes locally, and reports 199 t/s — a number
+indistinguishable from success. The dangerous case was never the non-zero exit; it was the zero one.
+
+**3. A tensor total cannot tell a split ring from a single node — and this one had already
+corrupted a published result.** With two endpoints and one dead, every tensor lands on the survivor
+and the total still reads 50. The harness now counts *distinct* RPC devices and requires one per
+endpoint (`2/2`), which is what exposed the two-peer row as a one-peer measurement.
+
+The root cause was `sleep 2` and a PID check. `ggml-rpc-server` prints `Failed to create server
+socket` and **keeps running**, so the process exists, the PID is valid, and only the absence of a
+listener gives it away. Ports were also fixed constants, so a socket still in `TIME_WAIT` from an
+earlier run was enough to cause it. `serve` now derives ports from the PID and polls `/dev/tcp`
+until the port genuinely accepts a connection, aborting the run if it never does.
+
+**What the correction changes, and what it does not.** The re-run with a verified `2/2` split gives
+PP 117.7 against 112.5 for one peer, so *"a second peer is free" survives as a conclusion* — but it
+was **not supported by evidence when first published**, and that distinction is the point. The
+`−46% PP` result is unaffected: the `local` and `1 peer` rows were always genuine, and the corrected
+run reproduces the gap (217.3 → 112.5).
+
+## F28 — SwiftPM manifests are semantically checkable on Linux, and `-parse` is not enough
+
+Cost one CI cycle to learn, on `5047ff6`. Both macOS jobs failed in **17 seconds** — far too fast to
+be an MLX build — with:
+
+```text
+Package.swift:32:5: error: argument 'products' must precede argument 'dependencies'
+```
+
+Adding an executable product to `Patches/mlx-swift/tests/Package.swift` placed `products:` after
+`dependencies:`. SwiftPM enforces the argument order of the `Package` initializer.
+
+### Why the local check passed
+
+`swiftc -parse Package.swift` returned 0, because **the file is perfectly valid Swift either way**.
+Argument order in that initializer is a *semantic* rule enforced by `PackageDescription`, and
+`-parse` never gets that far. This is F18's shape exactly — a check that runs, passes, and tests
+something other than what was assumed.
+
+It also broke *two* jobs, not one. `mlx-lifecycle.yml` runs `swift test` and `mlx-ring.yml` runs
+`swift build`, both in that directory, so a bad manifest takes out everything downstream of it.
+
+### The check that does work, and it runs here
+
+```bash
+cd Patches/mlx-swift/tests && swift package dump-package
+```
+
+`dump-package` *evaluates* the manifest rather than parsing it — it compiles `Package.swift` against
+`PackageDescription` and runs it — so it catches argument-order rules, bad target paths and
+malformed products. It needs no dependency resolution and **no macOS**: it works on this Linux
+container against a manifest whose platform is `.macOS(.v14)` and whose dependency is MLX.
+
+**Verified with a negative control**, which is the only reason this is worth recording. Rewriting a
+copy of the fixed manifest back into the broken order and running `dump-package` on Linux reproduces
+the CI error verbatim, `argument 'products' must precede argument 'dependencies'`, at the same
+diagnostic. So the check genuinely discriminates rather than passing on everything.
+
+Added to the verification matrix. **Run it for any `Package.swift` edit** — the root package, this
+one, or any future package. It is seconds, and it is the difference between finding this here and
+finding it fifteen minutes into a macOS job.
+
+### Not established
+
+`dump-package` validates the manifest, not the code. It says nothing about whether the targets
+compile, whether `import MLX` resolves, or whether the probe's API usage is correct — all of which
+still need a real Apple toolchain. It would not have caught F18's three type errors, F20, or F22.
+It closes exactly one gap: manifest semantics.
+
+## F29 — macOS has no `timeout(1)`, and a harness that cannot say "inconclusive" will lie
+
+Second CI cycle on the ring experiment, `e7a7efa`. `RingFormationProbe` **compiled and linked** —
+`Build of product 'RingFormationProbe' complete! (97.91s)` — so the Swift API usage against MLX is
+correct, which was the risk flagged as most likely. Then:
+
+```text
+ring-formation.sh: line 69: timeout: command not found
+  rank 0: exit 127
+  rank 1: exit 127
+RESULT: no loopback ring. CLAUDE.md's claim stands as written
+```
+
+### Two separate defects, and the second is much worse
+
+**1. `timeout(1)` is GNU coreutils and macOS does not ship it.** Available only as `gtimeout`, and
+only if someone installed coreutils. Every other harness in this repository uses `timeout` and is
+correct to — `Spikes/llamacpp-rpc/*` runs on Linux only. This was the first bounded harness written
+for a *macOS* runner, and the assumption came along for the ride.
+
+Replaced with a plain-bash watchdog: one background `sleep`, a marker file, `kill -9`, and
+normalisation of the resulting 137 back to 124 so `HANG` reads the same as it would under
+`timeout(1)`.
+
+**2. The harness reported a confident false negative.** Exit 127 — *the command does not exist* —
+was folded into "no loopback ring", and the script printed that CLAUDE.md's claim stands. **Nothing
+had been tested.** The experiment could not run and the harness announced the status quo confirmed.
+
+That is the worst variant of this project's recurring failure, because it is biased toward *not*
+disturbing an existing belief. F18, F20, F22, F23 and F27 were all checks that passed while testing
+the wrong thing; this one would have closed an open question in the direction of the assumption.
+
+The fix is a **three-way** verdict, not two:
+
+| outcome | meaning |
+|---|---|
+| every rank `0` | the ring formed |
+| any rank `10`–`13`, or `124` | the ranks ran and the ring did not form — **a result** |
+| any rank `14`, `127`, or anything else | **INCONCLUSIVE — draw no conclusion at all** |
+
+`124` counts as a result deliberately: a rank that started, tried to reach its peer and blocked has
+said something real, and it is the precise failure this project exists to kill. `134`/`139` stay
+inconclusive, because a crash is more likely a defect in the probe than a statement about rings.
+
+### The launcher is now testable without MLX
+
+The root cause of shipping it broken was that it could only be exercised by a macOS CI run: the
+script builds MLX before it does anything else. A `PROBE_BIN` override skips the build, so the
+launcher's own logic runs against a stub anywhere.
+
+Verified on Linux across four stubs — exit 0, exit 10, a missing command, and a process that blocks
+forever — and all four verdicts are correct, including the watchdog firing and the 137 → 124
+normalisation. That is a real negative control for the harness itself, which is what was missing.
+
+### Not established
+
+**The experiment still has no answer.** Two CI cycles have been spent on the harness — a manifest
+argument order (F28) and this — and the ring has never been attempted. Whether two ranks form a
+loopback ring remains exactly as open as before, and the probe compiling is the only thing gained.
+
+## F30 — A two-rank MLX ring forms on one machine. "Needs two devices" was wrong.
+
+Third CI cycle on `d301561`, and the question this project has deferred since session one is
+answered. Both ranks, on one headless GitHub Actions macOS runner, over loopback:
+
+```text
+--- rank 0 ---                          --- rank 1 ---
+[ring] Rank 0 accepting                 [ring] Rank 1 connecting to 0
+[ring] Rank 0 connecting to 1           [ring] Rank 1 accepting
+[rank 0] group formed: size=2 rank=0    [rank 1] group formed: size=2 rank=1
+```
+
+Hostfile `[["127.0.0.1:51430"],["127.0.0.1:51431"]]`, `MLX_RANK` 0 and 1, two processes of
+`RingFormationProbe`. **`size=2` on both.** Not an `EmptyGroup` — `ring::init` accepted the hostfile,
+`RingGroup` was constructed, and the two ranks completed the accept/connect handshake against each
+other.
+
+### What this corrects
+
+`CLAUDE.md` has said since the first session that a multi-device ring "needs two or more real
+devices", and every milestone since has been reported unrun on that basis. **It needs two or more
+*ranks*.** Nothing in `ring::init` is device-specific: it wants `MLX_HOSTFILE` and `MLX_RANK`
+(`ring.cpp:944`) and speaks plain TCP (`ring.cpp:441-454`). The claim conflated a *product*
+requirement — pooling RAM across machines is only useful across machines — with a *testability*
+one, and the second does not follow.
+
+The cost of that conflation was large: it is the stated reason Milestone 2 has been carried as
+"code-complete but unrun" for its entire life, and the reason a cloud Mac looked necessary.
+
+Note what was *not* wrong. F23's conclusion was correct for the test it described — a single
+*process* with no hostfile genuinely cannot exercise the memoisation, and the `tests/README.md`
+already named the fix precisely: *"a real single-host test needs two processes on `127.0.0.1` at
+different ports."* That was right, and unbuilt. This finding is the building of it, not a correction
+of the reasoning.
+
+### What is confirmed, and what is not
+
+**Confirmed: ring formation.** Two ranks, real `RingGroup`, correct size and rank on each.
+
+**Not yet confirmed: anything that moves data.** The run died immediately after, at the first
+`MLXArray` evaluation:
+
+```text
+MLX error: Failed to load the default metallib. library not found
+  at .../mlx-c/mlx/c/array.cpp:232
+```
+
+That is a headless-runner problem, not a ring problem — the runner has no usable Metal device and
+MLX cannot load its default shader library. The probe now calls
+`Device.setDefault(device: Device(.cpu))` before touching any array; nothing here needs a GPU, since
+the ring backend's collectives run on a CPU stream and the payload is one `Int32` per rank.
+
+So `allGather` and `finalize()`-against-a-real-ring remain **unverified**. Until they run, this
+finding covers formation only.
+
+### The three-way verdict earned its keep immediately
+
+The harness classified the crash as **INCONCLUSIVE** and printed "draw NO conclusion" — correctly,
+because a metallib failure says nothing about rings. Had F29's fix not landed one cycle earlier,
+the two-outcome version would have reported *"no loopback ring, CLAUDE.md's claim stands"* while the
+log directly above it read `group formed: size=2`. The harness would have contradicted its own
+evidence, in the direction of the existing belief.
+
+### Not established
+
+Formation on **loopback**, on one machine, with no model loaded and no data exchanged. This says
+nothing about two *physical* devices, about network latency, about Stage 1's fail-instead-of-hang
+path, or about whether re-formation works. It removes the reason those things could not be tested
+in CI; it does not test them.
+
+## F31 — `swift build` gives no Metal shader library, so MLX arrays cannot run in this CI
+
+Two cycles spent on this, both after F30's ring had already formed. Recording it so nobody spends a
+third.
+
+Under `swift build` on a headless `macos-latest` runner, **any** MLXArray, Stream or Device
+operation aborts the process:
+
+```text
+MLX error: Failed to load the default metallib. library not found (x4)
+  at .../mlx-c/mlx/c/array.cpp:232      # first attempt, at the MLXArray
+  at .../mlx-c/mlx/c/stream.cpp:106     # second attempt, at Device.setDefault
+```
+
+`mlx/backend/metal/device.cpp:148-185` tries five locations — colocated `mlx.metallib`,
+`Resources/mlx`, a SwiftPM bundle named `mlx-swift_Cmlx`, `Resources/default`, and
+`default_mtllib_path` — and reports all five failing. There is no `.metallib` anywhere in the
+mlx-swift checkout and no build plugin that produces one; the shaders are `.metal` sources under
+`Source/Cmlx/mlx-generated/metal`, and `tools/fix-metal-includes.sh` is a manual preparation step.
+The Xcode jobs build the app fine, so this is a **SwiftPM-versus-Xcode difference**, not a broken
+fork.
+
+### Choosing the CPU device does not avoid it
+
+`Device.setDefault(device: Device(.cpu))` was the obvious fix and made things **strictly worse**: it
+moved the abort earlier, from the array step to `stream.cpp:106`, i.e. *before* the ring formed —
+destroying the `group formed: size=2` evidence the previous run had produced. Metal initialisation
+is not avoided by asking for a CPU stream.
+
+### What is and is not reachable
+
+| Operation | Under `swift build` on CI |
+|---|---|
+| `DistributedGroup.initialize` / ring formation | **works** — F30 proved it |
+| `group.size`, `group.rank` | **works** |
+| `DistributedGroup.finalize()` | expected to work — no array involved |
+| Anything constructing an `MLXArray`, `Stream` or `Device` | **aborts** |
+
+So `allGather` is now **opt-in** behind `PROBE_COLLECTIVE=1`, and the probe says explicitly which
+mode it ran in — `OK` versus `OK (collective SKIPPED)`. An unqualified "OK" that had quietly skipped
+the strongest assertion would overstate the result, which is the exact habit this project exists to
+break.
+
+This is also why the existing lifecycle test passes: it calls only `initialize` and `finalize` and
+never touches an array. That was luck, not design.
+
+### Not established
+
+Why the SwiftPM resource bundle is not found, and whether it could be made to work — copying the
+bundle beside the executable, or building the probe under `xcodebuild` instead, are both untried.
+Neither was worth a third cycle when the question being investigated is ring formation, which
+already has its answer. **`allGather` between ranks therefore remains unverified anywhere**, and the
+per-token barrier that every generated token depends on has still never been executed by this
+project.
