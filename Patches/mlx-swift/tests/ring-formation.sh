@@ -31,12 +31,21 @@ OUT=${OUT:-/tmp/mlx-ring-formation}
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 
-echo "==> building RingFormationProbe ($CONFIG)"
-if ! swift build -c "$CONFIG" --product RingFormationProbe; then
-    echo "build failed" >&2
-    exit 1
+# PROBE_BIN exists so this launcher's own logic -- the watchdog, the exit-code classification, the
+# three-way verdict -- can be exercised against a stub on a machine with no MLX. Without it the
+# script could only ever be tested by a macOS CI run, which is how it shipped reporting
+# "no loopback ring" for a missing timeout(1).
+if [ -n "${PROBE_BIN:-}" ]; then
+    BIN="$PROBE_BIN"
+    echo "==> using PROBE_BIN=$BIN (skipping build)"
+else
+    echo "==> building RingFormationProbe ($CONFIG)"
+    if ! swift build -c "$CONFIG" --product RingFormationProbe; then
+        echo "build failed" >&2
+        exit 1
+    fi
+    BIN="$(swift build -c "$CONFIG" --show-bin-path)/RingFormationProbe"
 fi
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/RingFormationProbe"
 [ -x "$BIN" ] || { echo "probe binary not found at $BIN" >&2; exit 1; }
 
 # Ports derived from the PID so a rerun cannot collide with sockets left in TIME_WAIT by the last
@@ -70,12 +79,34 @@ while [ "$r" -lt "$RANKS" ]; do
     MLX_RANK="$r" \
     PROBE_EXPECT_SIZE="$RANKS" \
     MLX_RING_VERBOSE=1 \
-        timeout "$TIMEOUT" "$BIN" > "$OUT/rank-$r.log" 2>&1 &
+        "$BIN" > "$OUT/rank-$r.log" 2>&1 &
     pids="$pids $!"
     r=$((r + 1))
 done
 
-# The probe's exit codes; anything unlisted is a genuine surprise and says so.
+# macOS ships no timeout(1) -- it is GNU coreutils, present only as `gtimeout` and only if someone
+# installed it. The first run of this job died on `timeout: command not found`, so the bound is now
+# a plain watchdog that needs nothing but bash.
+#
+# One watchdog for the whole set rather than one per rank: the ranks are a unit, and if any of them
+# is still alive at the deadline the ring did not close.
+TIMED_OUT_MARKER="$OUT/timed-out"
+rm -f "$TIMED_OUT_MARKER"
+(
+    sleep "$TIMEOUT"
+    for p in $pids; do
+        if kill -0 "$p" 2>/dev/null; then
+            : > "$TIMED_OUT_MARKER"
+            kill -9 "$p" 2>/dev/null
+        fi
+    done
+) &
+WATCHDOG=$!
+
+# The probe's exit codes. Anything outside its own vocabulary means the experiment did not run, and
+# that must NOT be reported as a result -- the first version mapped `timeout: command not found`
+# (exit 127) onto "no loopback ring", which confidently confirmed the status quo without testing
+# anything. A false negative in the direction of an existing belief is the worst kind.
 describe() {
     case "$1" in
         0)   echo "OK -- ring formed, allGather correct, finalize refused-then-succeeded" ;;
@@ -83,22 +114,46 @@ describe() {
         11)  echo "WRONG SHAPE -- a group formed but not the requested size/rank" ;;
         12)  echo "COLLECTIVE FAILED -- allGather returned the wrong data" ;;
         13)  echo "FINALIZE WRONG -- teardown did not behave as Stage 2 requires" ;;
-        14)  echo "BAD ENVIRONMENT -- launcher error, not a finding" ;;
-        124) echo "HANG -- timed out after ${TIMEOUT}s (the failure this project exists to kill)" ;;
+        14)  echo "BAD ENVIRONMENT -- the probe could not start; NOT a result" ;;
+        124) echo "HANG -- killed after ${TIMEOUT}s (the failure this project exists to kill)" ;;
+        127) echo "COMMAND NOT FOUND -- the probe never ran; NOT a result" ;;
         134) echo "ABORT (SIGABRT)" ;;
         139) echo "SEGFAULT" ;;
         *)   if [ "$1" -gt 128 ]; then echo "signal $(( $1 - 128 ))"; else echo "exit $1"; fi ;;
     esac
 }
 
-failed=0
+# Did this rank actually answer the question, whatever the answer was?
+#
+# 0 and 10-13 are the probe speaking. 124 counts too: a rank that started, tried to reach its peer
+# and blocked has told us something real about ring formation -- it is the exact failure this whole
+# project exists to kill, so calling it "never ran" would throw away the most interesting negative
+# available.
+#
+# 14/127 mean the probe never got far enough to have an opinion. 134/139 (abort, segfault) are left
+# here deliberately: a crash is more likely a defect in the probe than a statement about rings, and
+# claiming an answer from one would be exactly the overreach this function exists to prevent.
+answered() {
+    case "$1" in
+        0|10|11|12|13|124) return 0 ;;
+        *)                 return 1 ;;
+    esac
+}
+
+failed=0        # any rank that did not report OK
+inconclusive=0  # any rank that never ran, so no conclusion may be drawn at all
 r=0
 for pid in $pids; do
     wait "$pid"; rc=$?
+    # The watchdog kills with SIGKILL, so a timed-out rank shows 137. Normalise it to 124 so the
+    # HANG case reads the same as it would under timeout(1).
+    if [ "$rc" -eq 137 ] && [ -f "$TIMED_OUT_MARKER" ]; then rc=124; fi
     printf '  rank %d: %s\n' "$r" "$(describe "$rc")"
     [ "$rc" -ne 0 ] && failed=1
+    answered "$rc" || inconclusive=1
     r=$((r + 1))
 done
+kill -9 "$WATCHDOG" 2>/dev/null
 
 echo
 echo "==> rank output"
@@ -110,12 +165,20 @@ while [ "$r" -lt "$RANKS" ]; do
 done
 
 echo
-if [ "$failed" -eq 0 ]; then
+# Three outcomes, not two. Collapsing "the experiment could not run" into "the experiment said no"
+# is how the first version of this script reported CLAUDE.md's claim confirmed by a missing
+# timeout(1).
+if [ "$inconclusive" -eq 1 ]; then
+    echo "RESULT: INCONCLUSIVE -- at least one rank never ran, so nothing was tested."
+    echo "        Draw NO conclusion about whether a loopback ring forms. Fix the launcher"
+    echo "        and run again; the per-rank reasons are above."
+elif [ "$failed" -eq 0 ]; then
     echo "RESULT: a $RANKS-rank MLX ring formed on one machine and exchanged data."
     echo "        CLAUDE.md's 'needs two or more real devices' is too strong -- it needs two"
     echo "        or more RANKS. Milestone 2's unrun half is testable in CI."
 else
-    echo "RESULT: no loopback ring. CLAUDE.md's claim stands as written; the unrun half of"
-    echo "        Milestone 2 still needs real hardware. The per-rank reasons are above."
+    echo "RESULT: the ranks ran and the ring did not form as required."
+    echo "        This IS a result: CLAUDE.md's claim stands, and the unrun half of Milestone 2"
+    echo "        still needs real hardware. The specific assertion that failed is above."
 fi
 exit "$failed"

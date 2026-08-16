@@ -1531,3 +1531,63 @@ finding it fifteen minutes into a macOS job.
 compile, whether `import MLX` resolves, or whether the probe's API usage is correct — all of which
 still need a real Apple toolchain. It would not have caught F18's three type errors, F20, or F22.
 It closes exactly one gap: manifest semantics.
+
+## F29 — macOS has no `timeout(1)`, and a harness that cannot say "inconclusive" will lie
+
+Second CI cycle on the ring experiment, `e7a7efa`. `RingFormationProbe` **compiled and linked** —
+`Build of product 'RingFormationProbe' complete! (97.91s)` — so the Swift API usage against MLX is
+correct, which was the risk flagged as most likely. Then:
+
+```text
+ring-formation.sh: line 69: timeout: command not found
+  rank 0: exit 127
+  rank 1: exit 127
+RESULT: no loopback ring. CLAUDE.md's claim stands as written
+```
+
+### Two separate defects, and the second is much worse
+
+**1. `timeout(1)` is GNU coreutils and macOS does not ship it.** Available only as `gtimeout`, and
+only if someone installed coreutils. Every other harness in this repository uses `timeout` and is
+correct to — `Spikes/llamacpp-rpc/*` runs on Linux only. This was the first bounded harness written
+for a *macOS* runner, and the assumption came along for the ride.
+
+Replaced with a plain-bash watchdog: one background `sleep`, a marker file, `kill -9`, and
+normalisation of the resulting 137 back to 124 so `HANG` reads the same as it would under
+`timeout(1)`.
+
+**2. The harness reported a confident false negative.** Exit 127 — *the command does not exist* —
+was folded into "no loopback ring", and the script printed that CLAUDE.md's claim stands. **Nothing
+had been tested.** The experiment could not run and the harness announced the status quo confirmed.
+
+That is the worst variant of this project's recurring failure, because it is biased toward *not*
+disturbing an existing belief. F18, F20, F22, F23 and F27 were all checks that passed while testing
+the wrong thing; this one would have closed an open question in the direction of the assumption.
+
+The fix is a **three-way** verdict, not two:
+
+| outcome | meaning |
+|---|---|
+| every rank `0` | the ring formed |
+| any rank `10`–`13`, or `124` | the ranks ran and the ring did not form — **a result** |
+| any rank `14`, `127`, or anything else | **INCONCLUSIVE — draw no conclusion at all** |
+
+`124` counts as a result deliberately: a rank that started, tried to reach its peer and blocked has
+said something real, and it is the precise failure this project exists to kill. `134`/`139` stay
+inconclusive, because a crash is more likely a defect in the probe than a statement about rings.
+
+### The launcher is now testable without MLX
+
+The root cause of shipping it broken was that it could only be exercised by a macOS CI run: the
+script builds MLX before it does anything else. A `PROBE_BIN` override skips the build, so the
+launcher's own logic runs against a stub anywhere.
+
+Verified on Linux across four stubs — exit 0, exit 10, a missing command, and a process that blocks
+forever — and all four verdicts are correct, including the watchdog firing and the 137 → 124
+normalisation. That is a real negative control for the harness itself, which is what was missing.
+
+### Not established
+
+**The experiment still has no answer.** Two CI cycles have been spent on the harness — a manifest
+argument order (F28) and this — and the ring has never been attempted. Whether two ranks form a
+loopback ring remains exactly as open as before, and the probe compiling is the only thing gained.

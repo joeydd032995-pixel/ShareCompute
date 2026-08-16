@@ -99,8 +99,40 @@ The probe asserts three things in order, and each is a first for this project if
    ring rather than the `EmptyGroup` the single-process test can reach. F23 is exactly why this
    matters: the assertion above is vacuous without a hostfile, and meaningful with one.
 
-Exit codes are the interface, so a failure says which of the three it was, and `timeout` turns a
+Exit codes are the interface, so a failure says which of the three it was, and a watchdog turns a
 ring that never closes into a reported `HANG` rather than a job that runs to its limit.
+
+### The verdict is three-way, and that is not a detail
+
+| outcome | meaning |
+|---|---|
+| every rank `0` | the ring formed |
+| any rank `10`–`13`, or `124` (hang) | the ranks ran and the ring did not form — **a result** |
+| any rank `14`, `127`, anything else | **INCONCLUSIVE — draw no conclusion** |
+
+The first version had only two outcomes, and so reported `timeout: command not found` (exit 127) as
+*"no loopback ring, CLAUDE.md's claim stands as written"*. Nothing had been tested. A harness that
+cannot say "I could not run" will eventually confirm whatever you already believed — see F29.
+
+`124` is deliberately a *result*: a rank that started, tried to reach its peer and blocked has said
+something real, and it is the exact failure this project exists to kill.
+
+### Testing the launcher without MLX
+
+The reason it shipped broken is that it could only be exercised by a macOS CI run — it builds MLX
+before doing anything. `PROBE_BIN` skips the build so the launcher's own logic runs against a stub:
+
+```bash
+printf '#!/usr/bin/env bash\nexit 10\n' > /tmp/stub && chmod +x /tmp/stub
+PROBE_BIN=/tmp/stub TIMEOUT=4 bash ring-formation.sh
+```
+
+Verified this way on Linux across exit 0, exit 10, a missing command, and a process that blocks
+forever. Do that before changing the launcher; it takes seconds and needs no Apple hardware.
+
+**macOS ships no `timeout(1)`** — it is GNU coreutils. The bound here is a plain-bash watchdog for
+that reason. The `Spikes/llamacpp-rpc/` harnesses still use `timeout` correctly, because they run
+on Linux only.
 
 The CI job carries `continue-on-error: true` **deliberately and temporarily**. Until the experiment
 has returned once, red would mean "the hypothesis was wrong", not "the branch is broken". Remove it
