@@ -1482,3 +1482,52 @@ PP 117.7 against 112.5 for one peer, so *"a second peer is free" survives as a c
 was **not supported by evidence when first published**, and that distinction is the point. The
 `−46% PP` result is unaffected: the `local` and `1 peer` rows were always genuine, and the corrected
 run reproduces the gap (217.3 → 112.5).
+
+## F28 — SwiftPM manifests are semantically checkable on Linux, and `-parse` is not enough
+
+Cost one CI cycle to learn, on `5047ff6`. Both macOS jobs failed in **17 seconds** — far too fast to
+be an MLX build — with:
+
+```text
+Package.swift:32:5: error: argument 'products' must precede argument 'dependencies'
+```
+
+Adding an executable product to `Patches/mlx-swift/tests/Package.swift` placed `products:` after
+`dependencies:`. SwiftPM enforces the argument order of the `Package` initializer.
+
+### Why the local check passed
+
+`swiftc -parse Package.swift` returned 0, because **the file is perfectly valid Swift either way**.
+Argument order in that initializer is a *semantic* rule enforced by `PackageDescription`, and
+`-parse` never gets that far. This is F18's shape exactly — a check that runs, passes, and tests
+something other than what was assumed.
+
+It also broke *two* jobs, not one. `mlx-lifecycle.yml` runs `swift test` and `mlx-ring.yml` runs
+`swift build`, both in that directory, so a bad manifest takes out everything downstream of it.
+
+### The check that does work, and it runs here
+
+```bash
+cd Patches/mlx-swift/tests && swift package dump-package
+```
+
+`dump-package` *evaluates* the manifest rather than parsing it — it compiles `Package.swift` against
+`PackageDescription` and runs it — so it catches argument-order rules, bad target paths and
+malformed products. It needs no dependency resolution and **no macOS**: it works on this Linux
+container against a manifest whose platform is `.macOS(.v14)` and whose dependency is MLX.
+
+**Verified with a negative control**, which is the only reason this is worth recording. Rewriting a
+copy of the fixed manifest back into the broken order and running `dump-package` on Linux reproduces
+the CI error verbatim, `argument 'products' must precede argument 'dependencies'`, at the same
+diagnostic. So the check genuinely discriminates rather than passing on everything.
+
+Added to the verification matrix. **Run it for any `Package.swift` edit** — the root package, this
+one, or any future package. It is seconds, and it is the difference between finding this here and
+finding it fifteen minutes into a macOS job.
+
+### Not established
+
+`dump-package` validates the manifest, not the code. It says nothing about whether the targets
+compile, whether `import MLX` resolves, or whether the probe's API usage is correct — all of which
+still need a real Apple toolchain. It would not have caught F18's three type errors, F20, or F22.
+It closes exactly one gap: manifest semantics.

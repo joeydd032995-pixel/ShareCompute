@@ -20,6 +20,16 @@ let package = Package(
         // MLX is Apple-only. This package cannot build on Linux and is not expected to.
         .macOS(.v14)
     ],
+    // NOTE: `products` must precede `dependencies`. SwiftPM enforces the argument order of this
+    // initializer, and getting it wrong is a *semantic* error that `swiftc -parse` cannot see --
+    // the file is perfectly valid Swift either way. That is F18 in miniature, and it broke both
+    // macOS jobs on 5047ff6 in 17 seconds.
+    products: [
+        // Declared so `swift build --product` can name it. The launcher needs a built binary path,
+        // not a test bundle, because a ring needs two *processes* -- one per rank -- and XCTest
+        // gives one process.
+        .executable(name: "RingFormationProbe", targets: ["RingFormationProbe"])
+    ],
     dependencies: [
         // The patched fork, at the same branch `project.pbxproj` names. Pinning it here rather than
         // to a commit is intentional: this check should follow the branch the app actually builds
@@ -28,12 +38,6 @@ let package = Package(
             url: "https://github.com/joeydd032995-pixel/mlx-swift",
             branch: "sharecompute/free-and-finalize"
         )
-    ],
-    products: [
-        // Declared so `swift build --product` can name it. The launcher needs a built binary path,
-        // not a test bundle, because a ring needs two *processes* -- one per rank -- and XCTest
-        // gives one process.
-        .executable(name: "RingFormationProbe", targets: ["RingFormationProbe"])
     ],
     targets: [
         .executableTarget(

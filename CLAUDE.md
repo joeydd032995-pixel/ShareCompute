@@ -135,6 +135,7 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | Agent/skill files — *static* metadata | **yes** | `python3 scripts/validate-agents.py` — parses front matter and checks the mappings |
 | Slash commands at **dispatch** | **no** | needs an interactive session: that a fork spawns the named agent, that `background: false` blocks, that a gated command spawns nothing, that `/verify` displaces the built-in |
 | Swift syntax of Apple code | partial | `swiftc -parse` — syntax only. It passed the Apple adapter for this project's whole life while three real type errors sat in it (F18) |
+| **SwiftPM manifests** — semantics, not just syntax | **yes** | `swift package dump-package` in the package directory. It *evaluates* `Package.swift`, so it catches what `-parse` cannot: argument-order rules, bad target paths, malformed products. Verified against a negative control — it reproduces the exact CI error. Run this for **any** `Package.swift` edit (F28) |
 | Xcode project builds, patched MLX and all | **not here — but yes in CI** | `.github/workflows/` on a macOS runner. Both jobs green: the patched MLX compiles for `arm64-apple-macos` and iOS Simulator, and the new C symbols link |
 | Actor isolation, runtime behaviour | **no** | needs Apple hardware |
 | Android / Windows | **no** | needs those SDKs |
