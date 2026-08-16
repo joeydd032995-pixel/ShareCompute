@@ -1165,3 +1165,101 @@ on the command line, and `Package.swift` already sets `MLX_VERSION` and `MLX_ENA
 — F17 notes that clobbering those was the reason the Xcode jobs use `OTHER_CPLUSPLUSFLAGS` rather
 than `GCC_PREPROCESSOR_DEFINITIONS`. A `cxxSettings` `.define` appends rather than replaces, so this
 should be safe, but "should be" is not a build.
+
+---
+
+## F25 — llama.cpp RPC works, and dies uncatchably: the first execution-layer result this project has *run*
+
+T1, run in this container against llama.cpp `9d57ce4`. Every execution-layer claim before this one
+was a reading of source or a harness *mirroring* code that could not be compiled here, because MLX is
+Apple-only. llama.cpp builds and runs on x86_64 Linux, so this drives the real binaries.
+Harness: `Spikes/llamacpp-rpc/run.sh`.
+
+### The topology is real
+
+Two `ggml-rpc-server` processes, one `llama-cli` client, Qwen2.5-0.5B-Instruct Q4_K_M:
+
+```text
+- RPC0 : 127.0.0.1:50300 (16075 MiB free)
+- RPC1 : 127.0.0.1:50301 (16075 MiB free)
+     26 assigned to device RPC0
+     24 assigned to device RPC1
+```
+
+Layers genuinely split across two processes, generation completes, exit 0. This is the first
+positive capability result on the portable path, and it is what makes Phases 4–5 worth doing at all.
+
+### Killing a peer aborts the client in ~350 ms
+
+Reproducible 3/3, killed once real output was flowing:
+
+| run | outcome | detect → death |
+|---|---|---|
+| 1 | ABORT (SIGABRT) | 365 ms |
+| 2 | ABORT (SIGABRT) | 361 ms |
+| 3 | ABORT (SIGABRT) | 349 ms |
+
+```text
+ggml-rpc.cpp:509: Remote RPC server crashed or returned malformed response
+E send failed (bytes_sent=0, size_to_send=8)
+```
+
+`:509` and `:519` both appear, depending on whether `set_tensor` or `get_tensor` was in flight. Both
+reach the same one-line macro:
+
+```c
+ggml-rpc.cpp:30:  #define RPC_STATUS_ASSERT(x) if (!(x)) GGML_ABORT("Remote RPC server crashed or returned malformed response")
+```
+
+**18 call sites across 16 functions** at this commit. F15 said 19; the count has drifted by one, so
+use this number rather than restating F15's.
+
+### This corrects F15's emphasis, and reorders Phase 4
+
+F15 predicted a **hang**, reasoning from the absence of `SO_RCVTIMEO`/`SO_SNDTIMEO`. That absence is
+confirmed — still **zero occurrences** in `ggml/src/ggml-rpc/` at HEAD — but it is not what fires
+first on a hard peer kill. The *send* path notices immediately (`bytes_sent=0` on a dead socket) and
+aborts long before any receive could block.
+
+So the primary failure mode is **abort, not hang**, and that is worse for this project:
+
+- A hang is survivable by a supervisor: something outside can notice and restart.
+- `abort()` **cannot be caught**. No exception, no error return, no chance to re-form. The process is
+  gone, taking every other node's session state with it.
+
+Detection is not the problem — llama.cpp detects a dead peer promptly and correctly. What it does
+next is unrecoverable by construction. **Phase 4.2 (error return in place of `GGML_ABORT`) therefore
+comes before Phase 4.1 (bounded waits)**, reversing the order F15 set. Bounded waits still matter,
+for the cases this test does not cover.
+
+Note the symmetry with MLX: Stage 1 there turned a hang into a thrown error. Here the equivalent work
+turns an abort into a returned error. Same destination, opposite starting point.
+
+### Two false readings caught before they became results
+
+Both are recorded because each produced a *confident wrong answer* first, and the second is the more
+dangerous kind — it fails green.
+
+- **`llama-cli` defaults to conversation mode.** Without `-st` and closed stdin it generates
+  correctly, then waits at a `>` prompt. The bounded run times out and looks exactly like a hang.
+  Case A was initially read as "RPC hangs" when it had worked perfectly.
+- **A small model finishes before the kill lands.** stories15M reaches EOS in about a second, so the
+  peer was killed after the run was already over and the harness reported "clean exit" — a pass that
+  tested nothing. Fixed with `--ignore-eos`, a larger model, and waiting for real output before
+  killing; the script now reports "window too short, not a result" rather than a verdict.
+
+### Also confirmed at HEAD
+
+- Upstream's only RPC CI job is still `continue-on-error: true` and runs `ctest -L main` — it never
+  starts two processes, so nothing upstream exercises what this measured. F15's characterisation
+  stands.
+- The server target is **`ggml-rpc-server`** under `tools/rpc/`, not `rpc-server` under
+  `examples/rpc/` as F15 and F21 have it. Renamed and moved since those were written.
+
+### Not established
+
+Both peers are on loopback, so there is no real network hop — no latency, no MTU, no firewall, and
+crucially no *silent* connection loss. The abort is observed only for a hard `SIGKILL`; a graceful
+departure and a network that drops without closing the socket are different paths, and they are
+exactly where the missing socket timeouts would bite instead. Nothing here touches iOS, and nothing
+re-forms after the abort because there is no surviving process to re-form from.

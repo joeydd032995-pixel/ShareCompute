@@ -8,7 +8,12 @@ expensive to establish, and so you do not repeat mistakes this project has alrea
 Elastic ring membership for [infer-ring](Apps/InferRing/README.md), following the *Distributed
 Heterogeneous Inference Framework* specification.
 
-infer-ring is a **shipping App Store app** (`id6757767558`) that pools RAM across iOS and macOS
+infer-ring is **N1k1tung's** open-source app — **theirs, not this project's** — shipped by them to
+the App Store as `id6757767558`, and vendored into this repository under `Apps/InferRing/`. The
+bundle identifiers are `com.n1k1tung.*` and the `DEVELOPMENT_TEAM` values in `project.pbxproj` are
+theirs, so **nothing here can be signed or distributed by this project without its own Apple
+Developer account and bundle IDs.** Do not infer from the App Store listing that such an account
+exists — that mistake has already been made once. It pools RAM across iOS and macOS
 devices to run models too large for one machine, using MLX pipeline/tensor parallelism over a
 Bonjour-discovered LAN ring. The original failure this project attacks: **one node disappearing
 wedged the entire ring indefinitely**, with no detection and no diagnostic.

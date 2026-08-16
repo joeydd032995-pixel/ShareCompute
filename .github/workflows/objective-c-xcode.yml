@@ -43,9 +43,10 @@ jobs:
 
       - name: Available toolchains
         # Recorded for diagnosis: the pinned mlx-swift vendors fmt 10.2.1, which
-        # does not compile under Xcode 26's clang (findings.md F17). If the
-        # FMT_CONSTEVAL workaround below ever stops working, pinning an older
-        # Xcode here is the fallback -- this listing says which exist.
+        # does not compile under Xcode 26's clang (findings.md F17). The fix now
+        # lives in the fork's Package.swift (Patches/mlx-swift/0003) rather than
+        # here, so this job passes no flags for it. If that ever stops working,
+        # pinning an older Xcode is the fallback -- this listing says which exist.
         run: |
           ls -d /Applications/Xcode*.app 2>/dev/null || echo "(no versioned Xcodes)"
           xcodebuild -version
@@ -68,7 +69,6 @@ jobs:
             -scheme "$SCHEME" \
             -destination "platform=macOS" \
             ARCHS=arm64 \
-            OTHER_CPLUSPLUSFLAGS="-DFMT_CONSTEVAL=" \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee /tmp/xcodebuild-macos.log | xcpretty
 
