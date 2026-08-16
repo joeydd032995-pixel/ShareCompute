@@ -38,10 +38,23 @@ REPEATS=${REPEATS:-3}
 NGEN=${NGEN:-128}
 RPC_ENDPOINTS=${RPC_ENDPOINTS:-}
 
+# The defaults above are this container's paths. On any other machine both need overriding, so say
+# so explicitly rather than making someone guess which variable to set.
 for f in "$BIN/ggml-rpc-server" "$BIN/llama-cli"; do
-    [ -x "$f" ] || { echo "missing $f — see README.md" >&2; exit 1; }
+    if [ ! -x "$f" ]; then
+        echo "missing: $f" >&2
+        echo "  Set BIN= to the directory holding llama-cli and ggml-rpc-server, e.g." >&2
+        echo "    BIN=/c/llama/build/bin RPC_ENDPOINTS=... bash $0" >&2
+        echo "  On Windows under Git Bash a C:\\ path is written /c/... — see README.md" >&2
+        exit 1
+    fi
 done
-[ -r "$MODEL" ] || { echo "missing model $MODEL — see README.md" >&2; exit 1; }
+if [ ! -r "$MODEL" ]; then
+    echo "missing model: $MODEL" >&2
+    echo "  Set MODEL= to a .gguf file on THIS machine. Only the client needs it -- the RPC" >&2
+    echo "  server takes no model argument and receives tensors over the wire." >&2
+    exit 1
+fi
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 export LD_LIBRARY_PATH="$BIN:${LD_LIBRARY_PATH:-}"

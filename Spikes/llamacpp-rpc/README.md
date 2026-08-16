@@ -109,9 +109,24 @@ cmake --build build --config Release
 Only the client side runs `throughput.sh`. If the old laptop is the one you would rather put Linux
 on, make it PC B and the scripting problem disappears.
 
-Download the same GGUF onto both machines — the client uploads weights to the server, so the server
-does not strictly need the file, but having it local avoids a slow first run while you are still
-sorting out the network.
+**Only PC B needs the GGUF.** `ggml-rpc-server --help` shows no model argument at all — its entire
+option set is `-t/--threads`, `-d/--device`, `-H/--host`, `-p/--port`, `-c/--cache`. The client reads
+the model and uploads tensors over the wire. Adding `-c` on the server caches what it receives, which
+makes repeat runs much faster; leave it off for the first run so the wall-clock column reflects a
+genuine cold upload.
+
+### The one flag that will otherwise ruin the measurement
+
+**`ggml-rpc-server` defaults to `-t 2`.** Two threads. Left alone, PC A computes its share of the
+layers on two cores, the split row looks terrible, and you conclude the network is slow when you have
+actually measured thread starvation. Set it to PC A's physical core count:
+
+```
+.\ggml-rpc-server.exe -H <a-ip> -p 50052 -t 8      # 8 = PC A's cores
+```
+
+This is the same class of mistake as everything else recorded in `findings.md`: a number that looks
+like an answer to the question you asked, and is an answer to a different one.
 
 ### Read this before starting a server on your network
 
