@@ -1,0 +1,54 @@
+name: MLX ring formation
+
+# The experiment this project has been deferring since session one.
+#
+# Every milestone report has said the MLX ring is "unrun" because it "needs two or more real
+# devices". Reading mlx/distributed/ring/ring.cpp suggests that conflates two RANKS with two
+# MACHINES: the ring is plain TCP driven by MLX_HOSTFILE and MLX_RANK, so two processes on one
+# machine with different loopback ports should form one.
+#
+# If they do, this job runs -- for the first time anywhere in this project -- a genuine
+# DistributedGroup: an allGather that actually crosses between ranks, and a finalize() that actually
+# destroys a ring rather than an EmptyGroup.
+#
+# `continue-on-error` is deliberate and temporary. Until the experiment has returned once, a red
+# cross here would mean "the hypothesis was wrong", not "the branch is broken", and blocking merges
+# on an open question is the wrong default. Remove it once the answer is known and recorded --
+# whichever way it goes, this becomes a real regression gate.
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ring:
+    name: Two-rank loopback ring on macOS
+    runs-on: macos-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Versions
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Form a two-rank ring
+        working-directory: Patches/mlx-swift/tests
+        # The script bounds every rank with `timeout`, so a ring that never closes is reported as a
+        # HANG rather than running until the job's own limit -- the same rule the MLX C++ harnesses
+        # follow, and the reason a hang is observed here instead of inherited.
+        run: bash ring-formation.sh

@@ -480,3 +480,92 @@ That gates the whole iOS half of the next milestone.
 | New macOS job failed on fmt/consteval | 1 | F17 had already diagnosed it; the job simply carried no `-DFMT_CONSTEVAL=`. Added as `-Xcxx`, which is SwiftPM's spelling — the setting does not carry across build systems by name. Recorded as F24 |
 | Asserted the operator ships infer-ring on the App Store | 1 | Inferred from `CLAUDE.md`'s unattributed phrasing; the bundle IDs and team IDs are N1k1tung's. Caught by the operator, not by me. `CLAUDE.md` corrected at the source so the next reader cannot repeat it |
 | Test comment predicted `isAvailable == false`; it printed `true` | 1 | Read `ring::is_available()` rather than re-guessing: it returns `true` unconditionally. Comment rewritten around what the value actually reports |
+
+---
+
+## Session 8 — Milestone 2 merged, and the first throughput number
+
+### PR #13 merged as `0b16529`, six checks green
+
+`mlx-swift/0003` landed on the fork at `c0b3b026` and the `-DFMT_CONSTEVAL=` flag came out of all
+three CI jobs. **The verification is a controlled comparison, not just a green tick:**
+
+| | Aug 14, `52f48af` | Aug 16, `dac8f23` |
+|---|---|---|
+| Swift / clang | 6.3.3, `clang-2100.1.1.101` | 6.3.3, `clang-2100.1.1.101` |
+| Xcode | 26.6 (`17F113`) | 26.6 (`17F113`) |
+| Command | `swift test -Xcxx -DFMT_CONSTEVAL=` | `swift test` |
+| Fork resolved | `6c15a2e` (pre-`0003`) | `c0b3b02` (with `0003`) |
+
+Identical toolchain; one variable changed. The negative control is real — two minutes before the
+Aug-14 pass, the *same image* without the flag produced the five `consteval` errors in `format.cc`.
+Read from the job logs rather than the conclusion fields, per the standing rule.
+
+The alternative explanation — "the runner image rolled and fmt compiles now regardless" — was the
+one thing that could have made this a false green, and checking the Versions step of both runs is
+what killed it.
+
+### F26 — Phase 4.2 is not the shape the plan said
+
+Reading `ggml-backend-impl.h` against `ggml-rpc.cpp` before writing any code: **13 of the 18
+`GGML_ABORT` sites have no error channel at all.** Seven are declared `void` by ggml's shared backend
+vtable (`set_tensor`, `get_tensor`, `free_buffer`, `memset_tensor`, `clear`, `get_memory`), six more
+return `size_t` or a pointer with no failure value. Changing those signatures means changing CUDA,
+Metal, Vulkan and every other backend — not an RPC-local patch. One of the thirteen, `alloc_buffer`,
+can already signal via NULL, which ggml's allocator checks — so **12 genuinely need the sticky
+flag**. (This paragraph first said 10, which matched neither the table nor 5 + 7 + 6 = 18; caught in
+review on PR #14, and the error understated the scope of the phase.)
+
+And **the site T1 measured 3/3, `ggml-rpc.cpp:509`, is one of the `void` ones**, so the planned fix
+would have missed the failure that actually fires.
+
+The workable design is this project's own precedent (load-bearing fact #3): a sticky per-connection
+flag, recorded by the `void` sites, converted at `graph_compute` — which returns `enum ggml_status`
+and runs every token. One open risk, deliberately unresolved: `get_tensor` failing leaves the
+caller's buffer unwritten, and if no `graph_compute` follows the flag never converts, giving **silent
+corruption in place of a visible abort** — precisely fact #4's shape. Decide before writing.
+
+### F27 — the transport halves prompt processing before any network exists
+
+New harness `Spikes/llamacpp-rpc/throughput.sh`. Qwen2.5-0.5B Q4_K_M, 128 tokens, 3 repeats, median,
+4-core Xeon, no GPU:
+
+| configuration | PP t/s | TG t/s | wall ms | peers |
+|---|---|---|---|---|
+| local, no RPC | **217.3** | 24.9 | 6239 | — |
+| 1 peer, loopback | 112.5 | 27.6 | 7148 | 1/1 |
+| 2 peers, loopback | 117.7 | 27.4 | 7453 | **2/2** (26 + 24 layers) |
+
+Per-run bands do not overlap, so both deltas are real. PP **halves with no network at all** — and PP
+is the metric where `Apps/InferRing/README.md` measures the MLX path *gaining* 11% on Mac + iPhone.
+Opposite sign. A second peer is free: the cost is the first hop, not the number of hops.
+
+**These are the corrected numbers.** The table first published here reported a two-peer row that was
+really one peer — the second `ggml-rpc-server` failed to bind and *stayed alive*, so a PID check saw
+a healthy process while llama.cpp registered one device and put all 50 tensors on it. Found by
+following a review comment on PR #14 further than the comment went. The harness now polls until the
+port genuinely accepts a connection, derives ports from the PID so a `TIME_WAIT` socket cannot cause
+it, and counts *distinct* RPC devices per row. "A second peer is free" survives as a conclusion, but
+it had no evidence behind it until the split was verified at 26 + 24.
+
+The TG column is *not* a transport win. Both processes share one 4-core box, so with `-ngl 99` the
+server's threadpool does the matmuls while the client blocks on the socket. Per-token transport cost
+is below this host's measurement floor, not negative.
+
+**Why this was measured at all:** the encouraging −12%/+11% figures come with a warning two lines
+above them — *"Wi-Fi and pre-TB5 over RDMA connections will result in sharp performance decline"* —
+and a USB3.2 recommendation. An iPhone and a Windows PC have no such cable. The published numbers
+come from the one configuration this project's target cannot use.
+
+### Errors encountered (session 8)
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| First `throughput.sh` omitted `-v`, so its logs could not prove the RPC devices were used at all | 1 | Caught by grepping the logs for `assigned to device` and finding nothing. A silent fallback to local compute would have produced a perfectly believable table — the same false-green shape as F18/F20/F22/F23. Harness now carries `-v`, counts offloaded tensors, prints the count per row, and fails loudly on an `--rpc` row that offloaded zero. Re-run reproduces the table |
+| Nearly reported "RPC makes generation faster" | 1 | TG rising when a network hop is *added* is implausible; checked the per-run spread and the thread allocation instead of publishing the median. Bands genuinely do not overlap, but the cause is same-box scheduling, so the claim is "below the measurement floor", not "negative" |
+| Both loopback servers logged to the same file | 1 | Tag collision in `serve` — `srv-a.log` overwritten, losing the evidence the second peer served. Distinct tags |
+| **Published a two-peer measurement that used one peer** | 1 | The second server printed `Failed to create server socket` and *kept running*, so the PID was valid and `sleep 2` looked sufficient; fixed ports meant a `TIME_WAIT` socket was enough to cause it. Now: ports derived from the PID, `/dev/tcp` polled until the port accepts, and *distinct* RPC devices counted per row (`2/2`). Found by following a PR review comment further than it went |
+| An unreachable RPC peer produces a believable number, not an error | 1 | `llama-cli` exits **0** and computes locally — measured at 199 t/s with zero tensors offloaded. The non-zero-exit guard the review asked for was necessary but would not have caught this; the offload count is what does |
+| A failed repetition scored 0 and was folded into the median | 1 | Raised in review on PR #14. With `REPEATS=2` one failure would have halved the result while looking plausible. Whole row now invalidated |
+| Wrote "10 of the 18" when the table said 7 + 6 = 13 | 1 | Raised in review on PR #14. Plain arithmetic error that *understated* Phase 4.2's scope and had propagated into three documents. Corrected to 13, of which 12 need the flag — `alloc_buffer`'s NULL is a channel ggml already checks |
+| Told the operator to run an unauthenticated service on `0.0.0.0` | 1 | Raised in review on PR #14. This repo's own F15 records that ggml-rpc-server has no auth or TLS and that upstream says never to expose it. README now binds one interface, firewalls to one client, and says to tear it down afterwards |
