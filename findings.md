@@ -1716,3 +1716,76 @@ Neither was worth a third cycle when the question being investigated is ring for
 already has its answer. **`allGather` between ranks therefore remains unverified anywhere**, and the
 per-token barrier that every generated token depends on has still never been executed by this
 project.
+
+## F32 — Phase 4.2 already exists upstream as PR #26724, and it corroborates F26 independently
+
+Searched llama.cpp's issues and PRs before writing any of Phase 4.2. The work has been done by
+someone else, is open, and reached the same design from the same constraints.
+
+**`ggml-org/llama.cpp` PR #26724 — "rpc : do not abort the process when the remote server fails"**,
+opened 2026-08-07 by `erwinzhang7`, still open in draft awaiting review from the code owner.
+
+### It matches F26's design point for point
+
+| F26 concluded | PR #26724 does |
+|---|---|
+| sticky per-connection failure flag, not exceptions | a "failed" endpoint latch, modelled on the Metal backend's `has_error` |
+| convert at a site that returns `enum ggml_status` | returns `GGML_STATUS_FAILED` in place of `GGML_ABORT` |
+| propagation reaches `llama_decode() == -3` | states exactly that: "llama_decode converts it to -3, and the server returns HTTP 500" |
+| `get_tensor` returns `void` and cannot report | same problem identified, same wording |
+
+The propagation chain F26 verified by reading — `ggml-backend.cpp:1732/1754` → `llama-context.cpp`
+`:2490` → `:1385` → `:1471` → `return -3` — is independently confirmed by the PR author. Two
+readings arriving at the same chain is much stronger than one.
+
+### It decides the question F26 deliberately left open
+
+F26 recorded the `get_tensor` silent-corruption risk and listed two candidate fixes without choosing:
+a public connection-failed query, or a deterministic zero-fill. **The PR picks zero-fill**, and
+argues the bound: the destination is zeroed and the endpoint marked, so the damage is "at most one
+decode returning zeroed output before the next one fails cleanly" — which holds only because the
+flag is checked at entry to the next `graph_compute`, exactly as F26 required.
+
+That is a real answer to the open decision, with a stated bound rather than a hand-wave. It is not
+obviously the *best* answer — a caller that reads logits once and never decodes again still consumes
+zeros silently — but it is defensible and it is written.
+
+### Consequence: do not write Phase 4.2 from scratch
+
+Three options, in preference order:
+
+1. **Help land #26724.** It is in draft, needs two approvals, and has one acknowledged defect — the
+   reviewer noted the server reports `/health` as ok while non-operational, and the author offered
+   three fixes without picking one. What a stalled PR needs is evidence and testing, and **this
+   project has exactly that**: T1's peer-kill harness reproduces the abort 3/3 at ~350 ms with the
+   `:509`/`:519` split recorded (F25). That is directly usable review material.
+2. **Carry it as a patch** in `Patches/` if it stalls, rather than writing a parallel implementation.
+3. Write our own only if it is rejected on design grounds — which, given it matches F26, would also
+   invalidate F26.
+
+Either way this removes the largest piece of speculative work from the plan and **avoids a fourth
+fork**, which is the recurring maintenance cost this project has least accounted for.
+
+### Also found: two facts about the RPC backend's standing
+
+**`tools/rpc/README.md` states the backend is in "proof-of-concept development stage"** and that
+"the functionality is fragile and insecure. Never run the RPC server on an open network or in a
+sensitive environment!" F15 recorded the security half; the *proof-of-concept* framing is new and
+matters for how much weight the portable path can carry.
+
+**Open issue #28487 (2026-09-06): "RPC deadlocks with 3+ endpoints; 2 works reliably."** A hang, not
+a crash — one dispatcher thread blocked in `recv_data()`, main thread in `rpc_dispatcher::send()`,
+all sockets ESTABLISHED with empty queues, servers alive and logging nothing. **CPU backend
+specifically**; reportedly fine on CUDA/HIP with four endpoints. Unconfirmed, no maintainer response.
+
+Two consequences. T2 uses **two** endpoints, which the report explicitly says works reliably — so it
+does not threaten the immediate measurement. But it is a documented ceiling on the portable path at
+exactly the scale this project's headline promises, and it is the *hang* F15 originally predicted,
+surfacing somewhere neither F25 nor F26 looked.
+
+### Not established
+
+Read from GitHub, not run. #26724 has not been checked out, built, or tested here, and its behaviour
+against T1's peer-kill harness is unverified — that test is the obvious next step and has not been
+done. #28487 is an unconfirmed report by a third party and has not been reproduced. Whether the code
+owner will accept #26724's approach at all is unknown; there is no maintainer response on it yet.

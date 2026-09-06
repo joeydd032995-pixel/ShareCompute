@@ -96,6 +96,16 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
    leading indicator for any cross-machine measurement. The TG column in that table is *not* a
    transport win; it is same-box scheduling, and per-token cost is merely below the measurement
    floor.
+10. **Phase 4.2 already exists upstream — do not write it.** `ggml-org/llama.cpp` **PR #26724**,
+    "rpc : do not abort the process when the remote server fails", open in draft since 2026-08-07.
+    It matches F26 point for point: a sticky failed-endpoint latch (modelled on Metal's
+    `has_error`), `GGML_STATUS_FAILED` in place of `GGML_ABORT`, propagating to
+    `llama_decode() == -3`. It also *decides* the `get_tensor` question F26 left open, by
+    zero-filling the destination and bounding damage to one decode. Help land it, or carry it as a
+    patch if it stalls — writing a parallel implementation means a **fourth fork**, which is the
+    maintenance cost this project has least accounted for. Full analysis and the two other things
+    that search turned up — the "proof-of-concept" framing in `tools/rpc/README.md`, and open issue
+    #28487's 3+-endpoint deadlock — are in F32.
 
 ## Architectural rules
 
