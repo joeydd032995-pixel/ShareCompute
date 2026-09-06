@@ -1717,17 +1717,17 @@ already has its answer. **`allGather` between ranks therefore remains unverified
 per-token barrier that every generated token depends on has still never been executed by this
 project.
 
-## F32 — Phase 4.2 already exists upstream as PR #26724, and it corroborates F26 independently
+## F32 — Most of Phase 4.2 exists upstream, corroborating F26 — but it is not sufficient here
 
 Searched llama.cpp's issues and PRs before writing any of Phase 4.2. The work has been done by
 someone else, is open, and reached the same design from the same constraints.
 
-**`ggml-org/llama.cpp` PR #26724 — "rpc : do not abort the process when the remote server fails"**,
+**ggml-org/llama.cpp#26724 — "rpc : do not abort the process when the remote server fails"**,
 opened 2026-08-07 by `erwinzhang7`, still open in draft awaiting review from the code owner.
 
 ### It matches F26's design point for point
 
-| F26 concluded | PR #26724 does |
+| F26 concluded | `#26724` does |
 |---|---|
 | sticky per-connection failure flag, not exceptions | a "failed" endpoint latch, modelled on the Metal backend's `has_error` |
 | convert at a site that returns `enum ggml_status` | returns `GGML_STATUS_FAILED` in place of `GGML_ABORT` |
@@ -1746,15 +1746,40 @@ argues the bound: the destination is zeroed and the endpoint marked, so the dama
 decode returning zeroed output before the next one fails cleanly" — which holds only because the
 flag is checked at entry to the next `graph_compute`, exactly as F26 required.
 
-That is a real answer to the open decision, with a stated bound rather than a hand-wave. It is not
-obviously the *best* answer — a caller that reads logits once and never decodes again still consumes
-zeros silently — but it is defensible and it is written.
+That is a real answer to the open decision, with a stated bound rather than a hand-wave.
+
+**But it does not meet this project's bar, and calling it "defensible" was too soft.** Corrected
+after review on ShareCompute PR #15. Two of this repository's own statements rule it out as a *complete* Phase
+4.2:
+
+- `task_plan.md:3-4` states the milestone goal as "the ring detects it, re-plans, and keeps working,
+  **with no corrupted output** and no deadlock". Zeroed logits are corrupted output.
+- Load-bearing fact #4 says silent corruption is **worse than a hang**, "because a hang is visible".
+  Zero-fill converts an uncatchable abort into exactly that silent case for any caller that does not
+  decode again.
+
+And this project would be a direct victim, not a bystander. **T1 and T2 run bounded single
+generations.** A peer failing mid-run under zero-fill hands the harness a complete-looking result and
+a plausible tokens/sec number from a broken run — the same shape as F27's false readings, in the very
+measurement the product decision rests on.
+
+So the correct reading is narrower than "Phase 4.2 is superseded":
+
+- **For upstream, zero-fill is a clear improvement.** An abort takes the process down; a zeroed
+  decode that fails cleanly on the next one is recoverable. ggml-org/llama.cpp#26724 deserves to land.
+- **For ShareCompute it is necessary but not sufficient.** The host must be able to ask whether an
+  endpoint has failed *before* consuming logits. That is the other option F26 listed — a public
+  `ggml_backend_rpc_connection_failed(...)`-style query — and it is now **required rather than
+  optional**.
+
+Phase 4.2 therefore becomes *adopt ggml-org/llama.cpp#26724, then add the query and check it in the host's token loop*
+— materially smaller than writing the whole thing, but not zero.
 
 ### Consequence: do not write Phase 4.2 from scratch
 
 Three options, in preference order:
 
-1. **Help land #26724.** It is in draft, needs two approvals, and has one acknowledged defect — the
+1. **Help land ggml-org/llama.cpp#26724.** It is in draft, needs two approvals, and has one acknowledged defect — the
    reviewer noted the server reports `/health` as ok while non-operational, and the author offered
    three fixes without picking one. What a stalled PR needs is evidence and testing, and **this
    project has exactly that**: T1's peer-kill harness reproduces the abort 3/3 at ~350 ms with the
@@ -1773,7 +1798,7 @@ fork**, which is the recurring maintenance cost this project has least accounted
 sensitive environment!" F15 recorded the security half; the *proof-of-concept* framing is new and
 matters for how much weight the portable path can carry.
 
-**Open issue #28487 (2026-09-06): "RPC deadlocks with 3+ endpoints; 2 works reliably."** A hang, not
+**Open issue ggml-org/llama.cpp#28487 (2026-09-06): "RPC deadlocks with 3+ endpoints; 2 works reliably."** A hang, not
 a crash — one dispatcher thread blocked in `recv_data()`, main thread in `rpc_dispatcher::send()`,
 all sockets ESTABLISHED with empty queues, servers alive and logging nothing. **CPU backend
 specifically**; reportedly fine on CUDA/HIP with four endpoints. Unconfirmed, no maintainer response.
@@ -1785,7 +1810,7 @@ surfacing somewhere neither F25 nor F26 looked.
 
 ### Not established
 
-Read from GitHub, not run. #26724 has not been checked out, built, or tested here, and its behaviour
+Read from GitHub, not run. ggml-org/llama.cpp#26724 has not been checked out, built, or tested here, and its behaviour
 against T1's peer-kill harness is unverified — that test is the obvious next step and has not been
-done. #28487 is an unconfirmed report by a third party and has not been reproduced. Whether the code
-owner will accept #26724's approach at all is unknown; there is no maintainer response on it yet.
+done. ggml-org/llama.cpp#28487 is an unconfirmed report by a third party and has not been reproduced. Whether the code
+owner will accept ggml-org/llama.cpp#26724's approach at all is unknown; there is no maintainer response on it yet.

@@ -96,16 +96,25 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
    leading indicator for any cross-machine measurement. The TG column in that table is *not* a
    transport win; it is same-box scheduling, and per-token cost is merely below the measurement
    floor.
-10. **Phase 4.2 already exists upstream — do not write it.** `ggml-org/llama.cpp` **PR #26724**,
+10. **Phase 4.2 mostly exists upstream — adopt, do not rewrite.** **ggml-org/llama.cpp#26724**,
     "rpc : do not abort the process when the remote server fails", open in draft since 2026-08-07.
     It matches F26 point for point: a sticky failed-endpoint latch (modelled on Metal's
     `has_error`), `GGML_STATUS_FAILED` in place of `GGML_ABORT`, propagating to
-    `llama_decode() == -3`. It also *decides* the `get_tensor` question F26 left open, by
-    zero-filling the destination and bounding damage to one decode. Help land it, or carry it as a
-    patch if it stalls — writing a parallel implementation means a **fourth fork**, which is the
-    maintenance cost this project has least accounted for. Full analysis and the two other things
-    that search turned up — the "proof-of-concept" framing in `tools/rpc/README.md`, and open issue
-    #28487's 3+-endpoint deadlock — are in F32.
+    `llama_decode() == -3`. Help land it, or carry it as a patch if it stalls — writing a parallel
+    implementation means a **fourth fork**, the maintenance cost this project has least accounted
+    for.
+
+    **It is necessary but not sufficient here.** For `get_tensor` it zero-fills the destination and
+    bounds damage to one decode, which is a clear win over an abort *for upstream* — but zeroed
+    logits are corrupted output, and `task_plan.md:3-4` sets the milestone goal as "no corrupted
+    output", while fact #4 above says silent corruption is worse than a visible hang. **T1 and T2
+    are bounded single generations**, so a peer failing under zero-fill hands the harness a
+    plausible tokens/sec number from a broken run — F27's failure mode, in the measurement the
+    product decision rests on. So Phase 4.2 is *adopt `#26724`, then add a public failed-endpoint
+    query and check it before consuming logits* — the other option F26 listed, now required.
+
+    Full analysis, plus the "proof-of-concept" framing in `tools/rpc/README.md` and open issue
+    ggml-org/llama.cpp#28487's 3+-endpoint deadlock, is in F32.
 
 ## Architectural rules
 

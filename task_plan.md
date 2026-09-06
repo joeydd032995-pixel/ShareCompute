@@ -150,6 +150,26 @@ Two things changed during implementation, both worth carrying forward:
 > **F26 also reshaped Phase 4.2 before any of it was written:** 13 of the 18 `GGML_ABORT` sites have
 > no error channel, because their signatures come from ggml's shared backend vtable. It becomes a
 > sticky-flag record-and-convert, with an open decision about `get_tensor` and silent corruption.
+>
+> **Phase 4.2 is now mostly superseded — do not schedule the implementation (F32).**
+> **ggml-org/llama.cpp#26724** already implements it, matching F26's design point for point, and is
+> open in draft upstream. Writing a parallel version means a **fourth fork**.
+>
+> It is **not a complete substitute**, and the residual work is specific. For `get_tensor` it
+> zero-fills the destination — a clear win over an abort *upstream*, but zeroed logits are corrupted
+> output, which the **Goal at the top of this file explicitly rules out**, and load-bearing fact #4
+> holds that silent corruption is worse than a visible hang. T1 and T2 are bounded single
+> generations, so a peer failing under zero-fill would hand the harness a plausible tokens/sec number
+> from a broken run.
+>
+> **Phase 4.2 therefore = adopt `#26724`, then add a public failed-endpoint query and check it before
+> consuming logits** — the other option F26 listed, now required rather than optional.
+>
+> **Next concrete action, and it is not implementation:** re-clone llama.cpp (the container was
+> recycled), check out ggml-org/llama.cpp#26724, and run `Spikes/llamacpp-rpc/run.sh` against it.
+> If the abort becomes a clean error return, that is reproducible evidence worth posting on a PR
+> that is stalled awaiting review — and it is what this project can uniquely contribute, since F25
+> already reproduces the abort 3/3 at ~350 ms.
 
 1. **Stage 3** — epoch re-formation in the app. Now unblocked: `finalize()` is the operation Spike A
    recorded as unavailable. `RingWatchdog`'s loss becomes non-terminal.
