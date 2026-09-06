@@ -165,11 +165,35 @@ Two things changed during implementation, both worth carrying forward:
 > **Phase 4.2 therefore = adopt `#26724`, then add a public failed-endpoint query and check it before
 > consuming logits** — the other option F26 listed, now required rather than optional.
 >
-> **Next concrete action, and it is not implementation:** re-clone llama.cpp (the container was
-> recycled), check out ggml-org/llama.cpp#26724, and run `Spikes/llamacpp-rpc/run.sh` against it.
-> If the abort becomes a clean error return, that is reproducible evidence worth posting on a PR
-> that is stalled awaiting review — and it is what this project can uniquely contribute, since F25
-> already reproduces the abort 3/3 at ~350 ms.
+> **DONE — that action was carried out, and the PR was measured (F33).** llama.cpp was re-cloned,
+> `refs/pull/26724/head` built alongside **its own merge-base** as a control, and
+> `Spikes/llamacpp-rpc/run.sh` run against both at `REPEATS=5`.
+>
+> | | aborts | detection | exit code |
+> |---|---|---|---|
+> | control `9ba73fd1f` | **5/5** | 402–417 ms | 134 (SIGABRT) |
+> | `pr26724` `a911a9bf4` | **0/5** | **124–159 ms** | **0** |
+>
+> The abort is gone and detection is ~2.9× faster. The predicted zero-fill problem is confirmed and
+> is worse than argued: **every run emits one corrupted token** (`…is a vital part&`) sampled from
+> the zeroed logits ~0.8 ms before `graph_compute` notices the latch, so it reaches user-visible
+> output rather than being discarded internally.
+>
+> **Residual Phase 4.2 work, now three items rather than one:**
+>
+> 1. **A public failed-endpoint query**, checked before consuming logits. Unchanged from F32, and now
+>    demonstrated necessary rather than argued.
+> 2. **A way to clear a failed endpoint.** The latch is insert-only with no erase and no public
+>    accessor, so an endpoint that fails is dead for the life of the process — which forecloses
+>    re-formation, the entire point of this project. Same shape as MLX's function-local static group
+>    cache; see load-bearing fact #11.
+> 3. **Never trust the process exit code.** `llama-cli` exits 0 after a peer dies mid-generation.
+>    This is pre-existing CLI behaviour, not the PR's — the control build also exits 0 against an
+>    unreachable endpoint, silently falling back to CPU. Any supervisor must read `llama_decode`'s
+>    return value.
+>
+> **Open decision, not yet taken:** the before/after above is exactly what a stalled PR needs, and
+> nothing has been posted upstream. Publishing to someone else's repository is the operator's call.
 
 1. **Stage 3** — epoch re-formation in the app. Now unblocked: `finalize()` is the operation Spike A
    recorded as unavailable. `RingWatchdog`'s loss becomes non-terminal.

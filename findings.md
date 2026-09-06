@@ -1814,3 +1814,216 @@ Read from GitHub, not run. ggml-org/llama.cpp#26724 has not been checked out, bu
 against T1's peer-kill harness is unverified — that test is the obvious next step and has not been
 done. ggml-org/llama.cpp#28487 is an unconfirmed report by a third party and has not been reproduced. Whether the code
 owner will accept ggml-org/llama.cpp#26724's approach at all is unknown; there is no maintainer response on it yet.
+
+## F33 — ggml-org/llama.cpp#26724 removes the abort. Executed. It also emits one corrupted token, 5/5.
+
+F32 read the PR on GitHub and ended with "has not been checked out, built, or tested here, and its
+behaviour against T1's peer-kill harness is unverified". That is now done. This is a **controlled
+comparison**, not a "does the PR work" check: F25 measured the abort at `9d57ce4`, and the PR is
+based on something much newer, so the PR's own merge-base is the only control that lets any change
+be attributed to the PR rather than to four weeks of unrelated upstream churn.
+
+| | commit | build |
+|---|---|---|
+| control | `9ba73fd1f` — merge-base of `pr26724` and `master` | `/home/user/bin-base` |
+| subject | `a911a9bf4` — `refs/pull/26724/head` | `/home/user/bin-pr` |
+
+Same machine, same model (Qwen2.5-0.5B-Instruct Q4_K_M), same harness, `REPEATS=5`. The two builds
+were confirmed distinct before running: the new message string appears 3× in the PR's
+`libggml-rpc.so` and 0× in the control's.
+
+### The headline: the uncatchable abort is gone
+
+| | aborts | clean exits | detection latency | last message |
+|---|---|---|---|---|
+| control `9ba73fd1f` | **5/5** | 0 | 402–417 ms | `ggml-rpc.cpp:519: Remote RPC server crashed or returned malformed response` |
+| `pr26724` | **0/5** | 5/5 | **124–159 ms** | `[ggml_backend_rpc_buffer_get_tensor] RPC server … crashed or returned a malformed response - the device is now unusable` |
+
+Every run killed a peer genuinely mid-generation (27–62 bytes of generated text past the prompt
+echo) with both peers verified in use (26 + 24 layers, 2 distinct RPC devices). No invalid runs.
+
+F25's finding is reproduced exactly on the newer base — the abort was not incidentally fixed by
+other upstream work — and the PR eliminates it. **Detection is also ~2.9× faster**, which is a real
+secondary benefit: the failure is noticed at the `get_tensor` that touches the dead socket rather
+than after the assert path unwinds.
+
+The full propagation chain F26 verified *by reading* has now **executed**:
+
+```
+[ggml_backend_rpc_buffer_get_tensor] … the device is now unusable
+graph_compute: ggml_backend_sched_graph_compute_async failed with error -1
+process_ubatch: failed to compute graph, compute status: -1
+llama_decode: failed to decode, ret = -3
+srv decode: Compute error. → HTTP 500 → "Error: Compute error."
+```
+
+This is the first time this project has run an execution-layer failure path end to end rather than
+mirroring it.
+
+### The new result: zero-fill emits exactly one corrupted token, and it reaches the output
+
+F32 argued against zero-fill from this repository's own documents (`task_plan.md:3-4`, load-bearing
+fact #4). That argument is now **measured**, and it is more concrete than the argument was.
+
+Every PR run ends with one anomalous punctuation token appended to an otherwise coherent sentence:
+
+| run | generated text, tail | final token |
+|---|---|---|
+| 1 | `…is a vital part` **&** | `5 '&'` |
+| 2 | `…that covers the` **-** | `12 '-'` |
+| 3 | `The Ocean: A Vast and Intricate Realm` / `The` **+** | `10 '+'` |
+| 4 | `…referred to as the "sea", is an` **+** | `10 '+'` |
+| 5 | `…a vast expanse of water that envelops the` **\*** | `9 '*'` |
+
+5/5, and the signature is unambiguous: the preceding tokens are ordinary vocabulary ids (949 ` part`,
+279 ` the`, 785 `The`, 458 ` an`), the final one is always a **single-digit-or-low id** — which is
+what sampling from an all-zero logit vector produces, since equal logits leave the top-k filter
+holding the lowest indices, and those are punctuation in Qwen's BPE vocabulary. The control never
+produces one: it aborts before a corrupted token can be sampled.
+
+The timeline pins the mechanism to the millisecond (run 1, `/tmp/t1-pr/b1.log`):
+
+```
+3.579.509  E [ggml_backend_rpc_buffer_get_tensor] RPC server 127.0.0.1:27172 crashed … now unusable
+3.580.306  D slot process_toke: n_decoded = 14 … next token: 5 '&'     ← 0.8 ms later
+3.597.800  E graph_compute: ggml_backend_sched_graph_compute_async failed with error -1
+```
+
+**There is an ~18 ms window between the zero-fill and the failure surfacing, and a token is sampled
+and emitted inside it.** The PR's own comment at that site reads:
+
+```c
+// ggml_backend_tensor_get() returns void, so there is no way to report this to the
+// caller here - zero the destination so that partial or stale data is never used
+```
+
+The zeroed data *is* used — by the sampler, one token later, before `graph_compute` gets a chance to
+check the latch. The bound the PR states ("at most one decode returning zeroed output before the
+next one fails cleanly") is accurate; what was not established until now is that the zeroed decode
+is **user-visible output**, not an internal value discarded on the way to the error.
+
+This is not an argument for rejecting the PR. It is strictly better than an abort, and the corruption
+is bounded and immediately followed by a hard error. It is an argument that **ShareCompute cannot
+consume tokens without checking `llama_decode`'s return**, which F32 already concluded and this
+turns from a design preference into a reproducible test case.
+
+### llama-cli exits 0 — and that is not the PR's doing
+
+The exit status after a peer dies mid-generation is **0**, 5/5. A supervisor checking `$?` sees
+success; the only evidence of failure is text on stderr and a truncated answer ending in a stray `&`.
+
+Attribution was checked rather than assumed, because it would be easy to blame the PR for this.
+Running the **control** build against an unreachable endpoint:
+
+```
+BASE build, unreachable peer -> exit code: 0
+0 'assigned to device RPC' lines   (silent fallback to CPU)
+```
+
+So exit-0-on-RPC-failure is pre-existing `llama-cli` behaviour, unchanged by the PR. `show_error()`
+in `tools/cli/cli-ui.h:236` prints and returns; `run()` still returns 0. The ggml and llama layers
+report the failure correctly — `llama_decode` returns `-3` — and the CLI discards that on the way
+out. Any ShareCompute supervisor must read the API return, never the process exit code. This also
+corroborates the earlier `throughput.sh` observation that an unreachable peer yields a plausible
+t/s number from a run with zero offload.
+
+### Re-formation is foreclosed, and by the same mechanism MLX used
+
+The PR's failed-endpoint latch is **insert-only**. Verified by reading every mutation of the set in
+`pr26724`'s `ggml-rpc.cpp`: one `insert` at line 47, no `erase`, no `clear` (the `buffers.erase` at
+1067 is the unrelated server-side buffer map). The PR's own test file states it outright:
+
+> Each scenario needs its own proxy, so its own endpoint string: a failed endpoint is latched in a
+> process-wide set that is never cleared.
+
+And there is **no public way to ask**: `rpc_endpoint_is_failed` is file-static, and `ggml-rpc.h`
+exposes nothing about failure state — the whole public surface is `init`, `is_rpc`, `buffer_type`,
+`get_device_memory`, `start_server`, `reg`, `add_server`. So a host can neither query the latch nor
+release it. Once an endpoint string has failed, it is unusable for the life of the process.
+
+That is exactly load-bearing fact #1, in a different runtime:
+
+| | cache | consequence |
+|---|---|---|
+| MLX | `distributed::init` holds groups in a **function-local static**, returns the stale group and ignores the rewritten hostfile | a group cannot be re-initialised |
+| llama.cpp RPC | `ggml_backend_rpc_add_server` holds `reg_map` in a **function-local static**, keyed by endpoint string | a registration cannot be replaced |
+| ggml-org/llama.cpp#26724 | `get_failed_endpoints()` holds the latch in a **function-local static**, insert-only | a failure cannot be cleared |
+
+`reg_map` was checked against the control and **predates the PR** — it is upstream's existing design,
+not something ggml-org/llama.cpp#26724 introduced. The PR adds a second never-invalidated function-local static on
+top of the first.
+
+**Both execution paths this project has examined independently foreclose re-formation, by the same
+mechanism.** That is worth more than either instance: it means epochs-not-mutation is not an MLX
+workaround, it is the shape these runtimes force, and the ShareCompute core's model survives the
+platform pivot unchanged. It also means Phase 4.3 has the same two asks on both paths — a way to ask
+whether a peer is dead, and a way to forget that it was.
+
+### The harness was wrong twice, and both would have produced false results
+
+The comparison above is only trustworthy because `run.sh` was hardened first. Two defects were found
+by running it, not by reading it:
+
+1. **Ports sat inside the ephemeral range.** `PORT_BASE` was derived from the PID into 50000–59000,
+   and this host's `ip_local_port_range` is **32768–60999**. `llama-cli`'s own outbound RPC
+   connections can therefore transiently occupy the port a later server tries to bind, and one run in
+   three died with `Failed to create server socket`. An *intermittent* bind failure is the worst
+   possible shape: it silently yields a one-peer run, which is precisely the false result F27 exists
+   to prevent. Ports now sit below `ip_local_port_range`, and `serve()` retries on a fresh port.
+
+2. **`serve()`'s `exit 1` was swallowed by a subshell.** It was called as `PA=$(serve …)`, so the
+   guard's `exit` killed only the command substitution and the script sailed on with an empty PID —
+   the check fired, printed, and changed nothing. It now sets `SERVE_PID`/`SERVE_PORT` globals.
+   **`throughput.sh` had the identical shape** at its three call sites and the same ephemeral-range
+   port base; both were fixed there too.
+
+`run.sh` also gained what F27 taught: distinct-device counting on every run rather than case A only,
+a `genlen()` that counts only text *after* the echoed prompt (llama-cli writes ~1300 bytes of
+spinner, banner and command list to stdout before generating, so any raw size threshold fires during
+model load and kills the peer mid-upload — a different code path than the one the case exists to
+probe), separate stdout/stderr capture, a diagnostic regex matching **both** message forms, and a
+summary line reporting aborts/hangs/errors/invalid so a mixed result cannot be read as uniform.
+
+The old harness would have reported the PR as a pass. It would have been right by luck.
+
+### Not established
+
+- **No cross-machine hop.** Both peers are loopback. T2 still needs the second PC.
+- **Re-formation after failure was not executed.** The never-cleared latch is established by reading
+  the source and by the PR author's own test comment, not by running a host that tries to re-attach.
+  `llama-cli` exits, so it cannot demonstrate a process-lifetime latch; that needs a long-lived host,
+  which does not exist yet.
+- **Only a hard `kill -9` was tested**, as in F25. A graceful peer shutdown and a silently dropped
+  network are different cases, and are where the missing `SO_RCVTIMEO`/`SO_SNDTIMEO` would bite.
+- **The PR's own `tests/test-rpc.cpp` was not run**, only read. It ships 453 lines with a TCP proxy
+  and a kill switch, and explicitly excludes the server-side `GGML_ASSERT` removal in
+  `rpc_server::graph_compute()` because the CPU backend has no failing-compute path.
+- **Nothing was posted upstream.** The before/after above is exactly what a stalled PR needs, but
+  publishing to someone else's repository has not been done and needs a decision.
+
+### Side result: F27's absolute throughput numbers do not reproduce across sessions
+
+`throughput.sh` was re-run after the `serve()` rewrite, as a regression check on a script whose
+output is a published table. It passes — 2/2 peers verified, no bind failures — but the absolutes
+have moved a long way:
+
+| configuration | F27, at `9d57ce4` | this run, at `9ba73fd1f` |
+|---|---|---|
+| local, no RPC | 217.3 PP / 24.9 TG | **133.0** PP / **37.5** TG |
+| 1 peer, loopback | 112.5 PP / 27.6 TG | 72.5 PP / 20.4 TG |
+| 2 peers, loopback | 117.7 PP / 27.4 TG | 72.6 PP / 21.4 TG |
+
+Same container class (4-core Xeon @ 2.80 GHz, no GPU), same model, same flags, no stray processes,
+box idle. The cause was **not** isolated — it is some mix of four weeks of upstream change and
+session-to-session variance on shared infrastructure (this container reports a load average near 1.0
+while genuinely idle, which suggests host-level noise it cannot see).
+
+**The conclusions survive; the numbers do not.** Prompt processing still roughly halves under RPC
+(−45% here versus −48% in F27), and a second peer is still free (72.5 → 72.6, as 112.5 → 117.7). Both
+F27 findings were about *ratios within one session*, and both hold.
+
+The consequence is a rule for T2, and it is the useful part: **never compare a cross-machine number
+against a published absolute from another session.** A 40% swing is available from the environment
+alone, which is far larger than the effect T2 is trying to measure. `throughput.sh` already does the
+right thing by emitting the `local, no RPC` control row in every run — that row, not F27's table, is
+the denominator for the operator's two-PC result.

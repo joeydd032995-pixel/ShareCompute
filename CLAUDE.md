@@ -30,6 +30,7 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | Milestone 2 Stage 3 — epoch re-formation in the app | code complete, compiles behind `MLX_HAS_FINALIZE`, **never run** |
 | The five patches landed on the forks, project repointed | **both Xcode jobs green** — the patched MLX builds end to end |
 | Portable path — llama.cpp RPC, **executed** on Linux | topology works; a dead peer aborts uncatchably in ~350 ms (F25); transport halves prompt processing on loopback (F27) |
+| Phase 4.2 on the portable path — `ggml-org/llama.cpp#26724` | **built and executed against a matched control (F33)**: abort gone, 5/5 → 0/5. Not adopted yet; two gaps remain |
 | Linux / Windows / Android adapters | **blocked**, see below |
 
 Milestone 2 is code-complete and building. The gap is no longer "uncompiled" — it is **"unrun"**:
@@ -116,6 +117,28 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
     Full analysis, plus the "proof-of-concept" framing in `tools/rpc/README.md` and open issue
     ggml-org/llama.cpp#28487's 3+-endpoint deadlock, is in F32.
 
+    **This has now been built and run against a matched control (F33), and the argument above
+    survived contact with the evidence — sharpened, not weakened.** The abort is gone, 5/5 → 0/5,
+    with detection ~2.9× faster. The zero-fill concern is no longer inferred: every run emits one
+    corrupted token (`…is a vital part&`) sampled from the zeroed logits ~0.8 ms before
+    `graph_compute` notices, always a low token id because equal logits leave top-k holding the
+    lowest indices. Separately, **`llama-cli` exits 0** after a peer dies — pre-existing CLI
+    behaviour, not the PR's — so a supervisor must read `llama_decode`'s return, never `$?`.
+
+11. **Both execution paths foreclose re-formation with the same mechanism: a function-local static
+    that is never invalidated.** MLX caches groups in `distributed::init` and returns the stale one
+    forever (fact #1). llama.cpp caches registrations in `ggml_backend_rpc_add_server`'s `reg_map`,
+    keyed by endpoint string — and `#26724` adds `get_failed_endpoints()`, an insert-only latch with
+    no erase, no clear, and no public query (`rpc_endpoint_is_failed` is file-static; `ggml-rpc.h`
+    exposes nothing). Once an endpoint fails it is dead for the life of the process.
+
+    Two independent runtimes making the same mistake is worth more than either instance:
+    **epochs-not-mutation is not an MLX workaround, it is the shape these runtimes force.** The
+    `ShareComputeCore` model survives the platform pivot unchanged, and Phase 4.3 has the same two
+    asks on both paths — a way to ask whether a peer is dead, and a way to forget that it was.
+    Established by reading source plus the PR author's own test comment; **not executed**, because
+    demonstrating a process-lifetime latch needs a long-lived host and `llama-cli` exits. F33.
+
 ## Architectural rules
 
 **`Sources/ShareComputeCore/` imports nothing.** Not MLX, not UIKit, not SwiftNIO. Transport is
@@ -187,6 +210,7 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | New C symbols reachable from Swift | **yes** | a C file including `Source/Cmlx/include/mlx.h`, under `-Werror=implicit-function-declaration` — the flag is load-bearing, plain C passes on an implicit declaration |
 | MLX failure semantics | **yes** | `Patches/mlx/tests/socket_thread_failure_test.cpp` against real `socketpair` |
 | llama.cpp RPC behaviour and throughput | **yes — it actually runs** | `Spikes/llamacpp-rpc/run.sh` (topology, peer-kill) and `throughput.sh` (PP/TG/wall). Loopback only — a real link needs a second machine |
+| An upstream llama.cpp PR's runtime behaviour | **yes** | build the PR *and its merge-base*, run `run.sh` against both with `BIN=`. Confirm the binaries differ first (`strings … \| grep -c`) — a control that is secretly the same build proves nothing (F33) |
 | Agent/skill files — *static* metadata | **yes** | `python3 scripts/validate-agents.py` — parses front matter and checks the mappings |
 | Slash commands at **dispatch** | **no** | needs an interactive session: that a fork spawns the named agent, that `background: false` blocks, that a gated command spawns nothing, that `/verify` displaces the built-in |
 | Swift syntax of Apple code | partial | `swiftc -parse` — syntax only. It passed the Apple adapter for this project's whole life while three real type errors sat in it (F18) |
