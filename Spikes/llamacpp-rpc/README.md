@@ -42,6 +42,45 @@ assumption that hanging was the primary failure. On this evidence 4.2 comes firs
 survivable by a supervisor, whereas an abort takes the whole process down before any supervisor can
 act.
 
+## The abort is fixed upstream — measured, not read (F33)
+
+`ggml-org/llama.cpp#26724` ("rpc : do not abort the process when the remote server fails") removes
+it. This harness was run against the PR **and against the PR's own merge-base as a control**, because
+F25 measured the abort at `9d57ce4` and the PR is based on something four weeks newer — without the
+matched control, nothing observed could be attributed to the PR rather than to unrelated churn.
+
+```bash
+BIN=/home/user/bin-base bash Spikes/llamacpp-rpc/run.sh   # 9ba73fd1f, the merge-base
+BIN=/home/user/bin-pr   bash Spikes/llamacpp-rpc/run.sh   # a911a9bf4, refs/pull/26724/head
+```
+
+| | aborts | detection | last message |
+|---|---|---|---|
+| control `9ba73fd1f` | **5/5** | 402–417 ms | `ggml-rpc.cpp:519: Remote RPC server crashed…` |
+| `pr26724` | **0/5** | **124–159 ms** | `[…get_tensor] RPC server … the device is now unusable` |
+
+So F25's abort reproduces on the newer base, the PR eliminates it, and detection gets ~2.9× faster.
+The full chain to `llama_decode: failed to decode, ret = -3` has now **executed** — the first time
+this project has run an execution-layer failure path rather than mirroring it.
+
+**Two things the PR does not fix, and both bite this project.**
+
+*It emits one corrupted token, 5/5.* The `get_tensor` zero-fill lands in the logits, and the sampler
+draws from them ~0.8 ms before `graph_compute` notices the latch — so every run appends a stray
+punctuation token to an otherwise coherent sentence (`…is a vital part&`, `…that covers the-`). The
+token id is always a low one (5, 9, 10, 12) because equal logits leave top-k holding the lowest
+indices. The PR's bound — "at most one decode returning zeroed output" — is accurate; what was not
+established before is that the zeroed decode is **user-visible output**. ShareCompute must therefore
+check `llama_decode`'s return before consuming tokens.
+
+*`llama-cli` exits 0.* A peer dies mid-generation and the process still reports success. This is
+**not** the PR's doing — the control build exits 0 against an unreachable endpoint too, silently
+falling back to CPU. `show_error()` prints and `run()` returns 0 regardless. Read the API return,
+never the process exit code.
+
+Neither is a reason to reject the PR: it is strictly better than an uncatchable abort. See F33 for
+the timelines, token ids, and the never-cleared endpoint latch that still blocks re-formation.
+
 ## What the transport costs — `throughput.sh` (F27)
 
 `bash Spikes/llamacpp-rpc/throughput.sh`
@@ -184,15 +223,23 @@ the transport cost, which a single number cannot.
 where a real link will hurt first and hardest. Watch wall clock too — it carries the model upload,
 which the t/s figures deliberately exclude and which a slow link punishes most.
 
+**Compare against your own `local, no RPC` row, never against the table above.** Re-running this
+script in a later session on the same container class gave 133.0 PP where the table says 217.3 — a
+~40% swing from the environment and four weeks of upstream change, with the box idle and no stray
+processes. That is far larger than the effect T2 is trying to measure. The ratios held (−45% versus
+−48%; a second peer still free), and ratios are all these numbers ever supported. The script emits
+the local control row on every run precisely so the denominator comes from the same session. See the
+side result in F33.
+
 This matters because the encouraging −12% / +11% benchmark in `Apps/InferRing/README.md` comes with
 a warning two lines above it — *"Wi-Fi and pre-TB5 over RDMA connections will result in sharp
 performance decline"* — and a recommendation to use a USB3.2 cable. An iPhone and a Windows PC have
 no such cable between them. **The published numbers come from the one configuration this project's
 target cannot use.**
 
-## Two ways to get a false reading
+## Four ways to get a false reading
 
-Both were hit before the numbers above were trusted, and the script guards against both:
+All four were hit before any number here was trusted, and the script guards against each:
 
 - **`-st` and closed stdin.** Without them `llama-cli` enters conversation mode and waits at a `>`
   prompt after generating. The bounded run then times out and looks *exactly* like a hang — case A
@@ -202,11 +249,27 @@ Both were hit before the numbers above were trusted, and the script guards again
   kill lands after the run is already finished and reports a meaningless "clean exit". The script
   waits for real output before killing, and reports "window too short" rather than a verdict when
   the client finishes first.
+- **Ports inside the ephemeral range.** The port base was 50000; this host's `ip_local_port_range`
+  is 32768–60999, so `llama-cli`'s own outbound connections could grab the port a later server tried
+  to bind. Roughly one run in three failed with `Failed to create server socket` — and an
+  *intermittent* bind failure silently yields a one-peer run, the exact false result F27 exists to
+  prevent. Ports now sit below the range and `serve()` retries. Same fix in `throughput.sh`.
+- **A guard that cannot stop the script.** `serve()` detected the bind failure and called `exit 1` —
+  from inside `PA=$(serve …)`, a subshell, so it killed the substitution and nothing else. Both
+  scripts now set `SERVE_PID`/`SERVE_PORT` globals instead. The comment claiming it "exits the
+  script" had been wrong since it was written.
+
+**What the harness now asserts on every run, not just case A:** two *distinct* RPC devices in use,
+generation genuinely started (counted as bytes **after** the echoed prompt — `llama-cli` writes
+~1300 bytes of spinner, banner and command list to stdout before the first token, so any raw size
+threshold fires during model load and kills the peer mid-upload, a different code path entirely),
+and a summary line reporting aborts / hangs / error-exits / clean-exits / invalid so a mixed result
+cannot be mistaken for a uniform one.
 
 ## Setup
 
 ```bash
-git clone --depth=1 https://github.com/ggml-org/llama.cpp /home/user/llama.cpp
+git clone https://github.com/ggml-org/llama.cpp /home/user/llama.cpp
 cd /home/user/llama.cpp
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_RPC=ON -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF
 ninja -C build ggml-rpc-server llama-cli
@@ -214,6 +277,23 @@ ninja -C build ggml-rpc-server llama-cli
 mkdir -p /home/user/models && cd /home/user/models
 curl -sSLO https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
 ```
+
+To reproduce the F33 comparison, fetch the PR and build **its merge-base** as the control — not
+`master`, and not whatever commit F25 used:
+
+```bash
+git fetch origin refs/pull/26724/head:pr26724
+git checkout -q $(git merge-base pr26724 origin/master)   # 9ba73fd1f
+ninja -C build ggml-rpc-server llama-cli && cp -a build/bin/. /home/user/bin-base/
+git checkout -q pr26724
+ninja -C build ggml-rpc-server llama-cli && cp -a build/bin/. /home/user/bin-pr/
+```
+
+The PR touches four files, so the second build is incremental and takes about a minute. Confirm the
+two builds actually differ before drawing any conclusion from them —
+`strings bin-pr/libggml-rpc.so* | grep -c "the device is now unusable"` should be non-zero and the
+same command against `bin-base` should be `0`. A shallow clone will not work: `--depth=1` cannot
+compute the merge-base.
 
 The server target is **`ggml-rpc-server`**, under `tools/rpc/`. F15 and F21 call it `rpc-server`
 under `examples/rpc/`; it has been renamed and moved since. Override `BIN`, `MODEL`, `OUT` and
@@ -224,7 +304,19 @@ Read at llama.cpp `9d57ce4`.
 ## Not established
 
 No cross-machine hop — both peers are loopback, so nothing here exercises real network latency,
-MTU, or a firewall. No iOS. No re-formation after the abort, because there is nothing left to
-re-form from. And the abort is observed only for a *hard* kill; a peer that goes away gracefully, or
-a network that drops without closing the socket, are separate cases and are exactly where the
-missing `SO_RCVTIMEO`/`SO_SNDTIMEO` (still zero occurrences at HEAD) would bite instead.
+MTU, or a firewall. No iOS. And the failure is observed only for a *hard* kill; a peer that goes away
+gracefully, or a network that drops without closing the socket, are separate cases and are exactly
+where the missing `SO_RCVTIMEO`/`SO_SNDTIMEO` (still zero occurrences at HEAD) would bite instead.
+
+**Re-formation is still unproven, and now for a sharper reason than "nothing to re-form from".**
+Under `pr26724` the failed endpoint is latched in a process-global set with **no erase, no clear, and
+no public query** — `rpc_endpoint_is_failed` is file-static and `ggml-rpc.h` exposes nothing about
+failure state. Once an endpoint string fails it is unusable for the life of the process. That is
+established by reading the source and by the PR's own test comment, not by running it: `llama-cli`
+exits, so it cannot demonstrate a process-lifetime latch. Proving it needs a long-lived host, which
+does not exist yet. It is the same shape as MLX's function-local static group cache (load-bearing
+fact #1) — see F33 for why two independent runtimes foreclosing re-formation the same way is the
+more useful finding.
+
+The PR's own `tests/test-rpc.cpp` — 453 lines, a TCP proxy with a kill switch — was read but **not
+run** here.

@@ -150,6 +150,63 @@ Two things changed during implementation, both worth carrying forward:
 > **F26 also reshaped Phase 4.2 before any of it was written:** 13 of the 18 `GGML_ABORT` sites have
 > no error channel, because their signatures come from ggml's shared backend vtable. It becomes a
 > sticky-flag record-and-convert, with an open decision about `get_tensor` and silent corruption.
+>
+> **Phase 4.2 is now mostly superseded — do not schedule the implementation (F32).**
+> **ggml-org/llama.cpp#26724** already implements it, matching F26's design point for point, and is
+> open in draft upstream. Writing a parallel version means a **fourth fork**.
+>
+> It is **not a complete substitute**, and the residual work is specific. For `get_tensor` it
+> zero-fills the destination — a clear win over an abort *upstream*, but zeroed logits are corrupted
+> output, which the **Goal at the top of this file explicitly rules out**, and load-bearing fact #4
+> holds that silent corruption is worse than a visible hang. T1 and T2 are bounded single
+> generations, so a peer failing under zero-fill would hand the harness a plausible tokens/sec number
+> from a broken run.
+>
+> **Phase 4.2 therefore = adopt `#26724`, then add a public failed-endpoint query and check it before
+> consuming logits** — the other option F26 listed, now required rather than optional.
+>
+> **DONE — that action was carried out, and the PR was measured (F33).** llama.cpp was re-cloned,
+> `refs/pull/26724/head` built alongside **its own merge-base** as a control, and
+> `Spikes/llamacpp-rpc/run.sh` run against both at `REPEATS=5`.
+>
+> | | aborts | detection | exit code |
+> |---|---|---|---|
+> | control `9ba73fd1f` | **5/5** | 402–417 ms | 134 (SIGABRT) |
+> | `pr26724` `a911a9bf4` | **0/5** | **124–159 ms** | **0** |
+>
+> The abort is gone and detection is ~2.9× faster. The predicted zero-fill problem is confirmed and
+> is worse than argued: **every run emits one corrupted token** (`…is a vital part&`) sampled from
+> the zeroed logits ~0.8 ms before `graph_compute` notices the latch, so it reaches user-visible
+> output rather than being discarded internally.
+>
+> **Residual Phase 4.2 work, now three items rather than one:**
+>
+> 1. **A public failed-endpoint query**, checked before consuming logits. Unchanged from F32, and now
+>    demonstrated necessary rather than argued.
+> 2. **A way to clear a failed endpoint.** The latch is insert-only with no erase and no public
+>    accessor, so an endpoint that fails is dead for the life of the process — which forecloses
+>    re-formation, the entire point of this project. Same shape as MLX's function-local static group
+>    cache; see load-bearing fact #11.
+> 3. **Never trust the process exit code.** `llama-cli` exits 0 after a peer dies mid-generation.
+>    This is pre-existing CLI behaviour, not the PR's — the control build also exits 0 against an
+>    unreachable endpoint, silently falling back to CPU. Any supervisor must read `llama_decode`'s
+>    return value.
+>
+> **Posted upstream** (2026-09-07, by the operator) — the before/after, the corrupted-token
+> timeline, and a question about whether a query/reset for the failed-endpoint latch is intended.
+>
+> **Residual item #1 may close without us writing it (F34).** The PR author's own preferred fix for
+> an unrelated defect — `/health` reporting ok while non-operational — is to export the latch:
+> *"The state already exists (`rpc_endpoint_is_failed` in ggml-rpc.cpp) it's just static. Needs a
+> small exported query."* That is verbatim what residual item #1 asks for, proposed for a reason
+> that has nothing to do with this project, which is the strongest form of alignment. It does
+> **not** close item #2 — a query is not a reset, so re-formation stays foreclosed.
+>
+> **This project now has a stake in which option the maintainer takes.** The author's option 3
+> ("keep fail-fast on the client side") would **reinstate the uncatchable abort** — F25, the defect
+> that makes the portable path unusable here. Option 1 is both the author's preference and the best
+> outcome for ShareCompute; option 2 is acceptable but defers the client half. None of this is
+> settled: `ggerganov`'s review is still outstanding a month on.
 
 1. **Stage 3** — epoch re-formation in the app. Now unblocked: `finalize()` is the operation Spike A
    recorded as unavailable. `RingWatchdog`'s loss becomes non-terminal.

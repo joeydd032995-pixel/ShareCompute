@@ -30,6 +30,7 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | Milestone 2 Stage 3 — epoch re-formation in the app | code complete, compiles behind `MLX_HAS_FINALIZE`, **never run** |
 | The five patches landed on the forks, project repointed | **both Xcode jobs green** — the patched MLX builds end to end |
 | Portable path — llama.cpp RPC, **executed** on Linux | topology works; a dead peer aborts uncatchably in ~350 ms (F25); transport halves prompt processing on loopback (F27) |
+| Phase 4.2 on the portable path — `ggml-org/llama.cpp#26724` | **built and executed against a matched control (F33)**: abort gone, 5/5 → 0/5. Not adopted yet; two gaps remain |
 | Linux / Windows / Android adapters | **blocked**, see below |
 
 Milestone 2 is code-complete and building. The gap is no longer "uncompiled" — it is **"unrun"**:
@@ -96,6 +97,47 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
    leading indicator for any cross-machine measurement. The TG column in that table is *not* a
    transport win; it is same-box scheduling, and per-token cost is merely below the measurement
    floor.
+10. **Phase 4.2 mostly exists upstream — adopt, do not rewrite.** **ggml-org/llama.cpp#26724**,
+    "rpc : do not abort the process when the remote server fails", open in draft since 2026-08-07.
+    It matches F26 point for point: a sticky failed-endpoint latch (modelled on Metal's
+    `has_error`), `GGML_STATUS_FAILED` in place of `GGML_ABORT`, propagating to
+    `llama_decode() == -3`. Help land it, or carry it as a patch if it stalls — writing a parallel
+    implementation means a **fourth fork**, the maintenance cost this project has least accounted
+    for.
+
+    **It is necessary but not sufficient here.** For `get_tensor` it zero-fills the destination and
+    bounds damage to one decode, which is a clear win over an abort *for upstream* — but zeroed
+    logits are corrupted output, and `task_plan.md:3-4` sets the milestone goal as "no corrupted
+    output", while fact #4 above says silent corruption is worse than a visible hang. **T1 and T2
+    are bounded single generations**, so a peer failing under zero-fill hands the harness a
+    plausible tokens/sec number from a broken run — F27's failure mode, in the measurement the
+    product decision rests on. So Phase 4.2 is *adopt `#26724`, then add a public failed-endpoint
+    query and check it before consuming logits* — the other option F26 listed, now required.
+
+    Full analysis, plus the "proof-of-concept" framing in `tools/rpc/README.md` and open issue
+    ggml-org/llama.cpp#28487's 3+-endpoint deadlock, is in F32.
+
+    **This has now been built and run against a matched control (F33), and the argument above
+    survived contact with the evidence — sharpened, not weakened.** The abort is gone, 5/5 → 0/5,
+    with detection ~2.9× faster. The zero-fill concern is no longer inferred: every run emits one
+    corrupted token (`…is a vital part&`) sampled from the zeroed logits ~0.8 ms before
+    `graph_compute` notices, always a low token id because equal logits leave top-k holding the
+    lowest indices. Separately, **`llama-cli` exits 0** after a peer dies — pre-existing CLI
+    behaviour, not the PR's — so a supervisor must read `llama_decode`'s return, never `$?`.
+
+11. **Both execution paths foreclose re-formation with the same mechanism: a function-local static
+    that is never invalidated.** MLX caches groups in `distributed::init` and returns the stale one
+    forever (fact #1). llama.cpp caches registrations in `ggml_backend_rpc_add_server`'s `reg_map`,
+    keyed by endpoint string — and `#26724` adds `get_failed_endpoints()`, an insert-only latch with
+    no erase, no clear, and no public query (`rpc_endpoint_is_failed` is file-static; `ggml-rpc.h`
+    exposes nothing). Once an endpoint fails it is dead for the life of the process.
+
+    Two independent runtimes making the same mistake is worth more than either instance:
+    **epochs-not-mutation is not an MLX workaround, it is the shape these runtimes force.** The
+    `ShareComputeCore` model survives the platform pivot unchanged, and Phase 4.3 has the same two
+    asks on both paths — a way to ask whether a peer is dead, and a way to forget that it was.
+    Established by reading source plus the PR author's own test comment; **not executed**, because
+    demonstrating a process-lifetime latch needs a long-lived host and `llama-cli` exits. F33.
 
 ## Architectural rules
 
@@ -168,6 +210,7 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | New C symbols reachable from Swift | **yes** | a C file including `Source/Cmlx/include/mlx.h`, under `-Werror=implicit-function-declaration` — the flag is load-bearing, plain C passes on an implicit declaration |
 | MLX failure semantics | **yes** | `Patches/mlx/tests/socket_thread_failure_test.cpp` against real `socketpair` |
 | llama.cpp RPC behaviour and throughput | **yes — it actually runs** | `Spikes/llamacpp-rpc/run.sh` (topology, peer-kill) and `throughput.sh` (PP/TG/wall). Loopback only — a real link needs a second machine |
+| An upstream llama.cpp PR's runtime behaviour | **yes** | build the PR *and its merge-base*, run `run.sh` against both with `BIN=`. Confirm the binaries differ first (`strings … \| grep -c`) — a control that is secretly the same build proves nothing (F33) |
 | Agent/skill files — *static* metadata | **yes** | `python3 scripts/validate-agents.py` — parses front matter and checks the mappings |
 | Slash commands at **dispatch** | **no** | needs an interactive session: that a fork spawns the named agent, that `background: false` blocks, that a gated command spawns nothing, that `/verify` displaces the built-in |
 | Swift syntax of Apple code | partial | `swiftc -parse` — syntax only. It passed the Apple adapter for this project's whole life while three real type errors sat in it (F18) |

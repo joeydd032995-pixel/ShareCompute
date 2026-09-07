@@ -569,3 +569,57 @@ come from the one configuration this project's target cannot use.
 | A failed repetition scored 0 and was folded into the median | 1 | Raised in review on PR #14. With `REPEATS=2` one failure would have halved the result while looking plausible. Whole row now invalidated |
 | Wrote "10 of the 18" when the table said 7 + 6 = 13 | 1 | Raised in review on PR #14. Plain arithmetic error that *understated* Phase 4.2's scope and had propagated into three documents. Corrected to 13, of which 12 need the flag — `alloc_buffer`'s NULL is a channel ggml already checks |
 | Told the operator to run an unauthenticated service on `0.0.0.0` | 1 | Raised in review on PR #14. This repo's own F15 records that ggml-rpc-server has no auth or TLS and that upstream says never to expose it. README now binds one interface, firewalls to one client, and says to tear it down afterwards |
+
+## Session 9 — ggml-org/llama.cpp#26724 built and executed against a matched control
+
+The action F32 left open. llama.cpp re-cloned (the container had been recycled),
+`refs/pull/26724/head` built **and its own merge-base built alongside it**, `run.sh` run against both
+at `REPEATS=5`.
+
+The control choice was the whole method. F25 measured the abort at `9d57ce4`; the PR is based on
+something four weeks newer, so comparing the PR against F25's numbers would attribute a month of
+unrelated upstream change to the PR. The merge-base `9ba73fd1f` is the only control that isolates it.
+
+| | commit | aborts | detection | exit code |
+|---|---|---|---|---|
+| control | `9ba73fd1f` | **5/5** | 402–417 ms | 134 (SIGABRT) |
+| subject | `a911a9bf4` | **0/5** | **124–159 ms** | **0** |
+
+F25 reproduces on the newer base, so the abort was not incidentally fixed by other work. The PR
+removes it and detects ~2.9× faster. The propagation chain F26 verified *by reading* —
+`get_tensor` → `graph_compute … -1` → `llama_decode ret = -3` → `Compute error.` — has now **run**,
+which is the first execution-layer failure path this project has executed rather than mirrored.
+
+**Two results the PR's own testing does not have.**
+
+*Zero-fill emits one corrupted token, 5/5.* Every run appends a stray punctuation token to a coherent
+sentence — `…is a vital part&`, `…that covers the-`, `…envelops the*` — always a low token id
+(5, 9, 10, 12), because equal logits leave top-k holding the lowest indices and those are punctuation
+in Qwen's BPE vocabulary. The timeline puts it 0.8 ms after the zero-fill and 18 ms before
+`graph_compute` notices. F32 argued this from `task_plan.md`'s "no corrupted output" goal; it is now
+measured, and sharper than the argument — the zeroed decode is **user-visible output**, not an
+internal value discarded on the way to the error.
+
+*`llama-cli` exits 0.* Attribution was checked rather than assumed: the **control** build also exits
+0 against an unreachable endpoint, with zero offload and a silent CPU fallback. So this is
+pre-existing CLI behaviour, not the PR's — `show_error()` prints and `run()` returns 0 anyway.
+
+Neither is a reason to reject the PR. Both are reasons ShareCompute cannot adopt it unmodified.
+
+**The generalisable finding (load-bearing fact #11).** The PR's failed-endpoint latch is insert-only
+— no erase, no clear, and `rpc_endpoint_is_failed` is file-static with nothing in `ggml-rpc.h` — so a
+failed endpoint is dead for the life of the process. `ggml_backend_rpc_add_server`'s `reg_map` has
+the same shape and **predates the PR** (checked against the control). That is exactly MLX's
+`distributed::init` group cache: a function-local static that is never invalidated. Two independent
+runtimes foreclosing re-formation the same way means **epochs-not-mutation is not an MLX workaround,
+it is the shape these runtimes force** — and `ShareComputeCore` survives the platform pivot unchanged.
+
+### Errors encountered (session 9)
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| **Harness ports sat inside the ephemeral range** | 1 | `PORT_BASE` was 50000–59000; this host's `ip_local_port_range` is **32768–60999**, so `llama-cli`'s own outbound connections could occupy the port a later server tried to bind. Roughly one run in three died with `Failed to create server socket` — and an *intermittent* bind failure silently yields a one-peer run, the exact false result F27 exists to prevent. Found by running the hardened harness, not by reading it. Ports now sit below the range and `serve()` retries on a fresh one. Same fix in `throughput.sh` |
+| **The bind guard could not stop the script** | 1 | `serve()` called `exit 1` from inside `PA=$(serve …)` — a subshell — so it killed the substitution and the script continued with an empty PID. The function carried a `# or exits the script` comment while doing exactly that. Both scripts now set `SERVE_PID`/`SERVE_PORT` globals. `throughput.sh` had the identical shape at all three call sites |
+| My own "generation has started" test fired during model load | 1 | Rewrote case B to key off stdout size, assuming stdout carried only generated text. It does not: `llama-cli` writes a spinner, an ASCII banner and a command list — ~1300 bytes — before the first token, so a 256-byte threshold is satisfied before generation begins and the kill lands mid-upload, a different code path than the one the case exists to probe. Caught by *checking the assumption against a real log* instead of trusting it. `genlen()` now counts only bytes after the echoed prompt |
+| Nearly attributed `llama-cli`'s exit 0 to the PR | 1 | It would have been an easy and damaging claim to publish upstream. Tested the control build against an unreachable endpoint first: it also exits 0. Pre-existing CLI behaviour |
+| F27's absolute throughput numbers did not reproduce | 1 | 133.0 PP where the table says 217.3, box idle, no strays, same container class. Cause **not isolated** — some mix of four weeks of upstream change and shared-infrastructure variance. Recorded as such rather than quietly republishing. The ratios hold (−45% vs −48%), and ratios are all F27 ever supported; the operative rule for T2 is to compare against the same-session `local, no RPC` control row, which `throughput.sh` emits every run |
