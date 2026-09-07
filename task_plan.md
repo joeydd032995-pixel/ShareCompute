@@ -192,8 +192,21 @@ Two things changed during implementation, both worth carrying forward:
 >    unreachable endpoint, silently falling back to CPU. Any supervisor must read `llama_decode`'s
 >    return value.
 >
-> **Open decision, not yet taken:** the before/after above is exactly what a stalled PR needs, and
-> nothing has been posted upstream. Publishing to someone else's repository is the operator's call.
+> **Posted upstream** (2026-09-07, by the operator) — the before/after, the corrupted-token
+> timeline, and a question about whether a query/reset for the failed-endpoint latch is intended.
+>
+> **Residual item #1 may close without us writing it (F34).** The PR author's own preferred fix for
+> an unrelated defect — `/health` reporting ok while non-operational — is to export the latch:
+> *"The state already exists (`rpc_endpoint_is_failed` in ggml-rpc.cpp) it's just static. Needs a
+> small exported query."* That is verbatim what residual item #1 asks for, proposed for a reason
+> that has nothing to do with this project, which is the strongest form of alignment. It does
+> **not** close item #2 — a query is not a reset, so re-formation stays foreclosed.
+>
+> **This project now has a stake in which option the maintainer takes.** The author's option 3
+> ("keep fail-fast on the client side") would **reinstate the uncatchable abort** — F25, the defect
+> that makes the portable path unusable here. Option 1 is both the author's preference and the best
+> outcome for ShareCompute; option 2 is acceptable but defers the client half. None of this is
+> settled: `ggerganov`'s review is still outstanding a month on.
 
 1. **Stage 3** — epoch re-formation in the app. Now unblocked: `finalize()` is the operation Spike A
    recorded as unavailable. `RingWatchdog`'s loss becomes non-terminal.

@@ -1781,7 +1781,9 @@ Three options, in preference order:
 
 1. **Help land ggml-org/llama.cpp#26724.** It is in draft, needs two approvals, and has one acknowledged defect — the
    reviewer noted the server reports `/health` as ok while non-operational, and the author offered
-   three fixes without picking one. What a stalled PR needs is evidence and testing, and **this
+   three fixes without picking one. *[Corrected by **F34**: the author did pick — "I suggest 1,
+   fallback 2" — and option 1 exports the failed-endpoint query this project needs. Also: the
+   "reviewer" is `Kononnable`, a community member, not the maintainer.]* What a stalled PR needs is evidence and testing, and **this
    project has exactly that**: T1's peer-kill harness reproduces the abort 3/3 at ~350 ms with the
    `:509`/`:519` split recorded (F25). That is directly usable review material.
 2. **Carry it as a patch** in `Patches/` if it stalls, rather than writing a parallel implementation.
@@ -2027,3 +2029,59 @@ against a published absolute from another session.** A 40% swing is available fr
 alone, which is far larger than the effect T2 is trying to measure. `throughput.sh` already does the
 right thing by emitting the `local, no RPC` control row in every run — that row, not F27's table, is
 the denominator for the operator's two-PC result.
+
+## F34 — The `#26724` author already chose a fix, and option 1 exports what Phase 4.2 needs
+
+Correction to F32 and a material update to Phase 4.2's residual scope.
+
+**F32 said the author "offered three fixes without picking one". That is wrong** — they picked.
+`erwinzhang7`, 2026-08-08, replying to `Kononnable` (both community members; neither is the
+maintainer, and the PR still awaits `ggerganov` with no maintainer review recorded):
+
+> Yeah, you're right wrt the health check and it's a defect this PR introduces. […] **I suggest 1,
+> fallback 2.** Either way the "after: /health still ok" row in my description is wrong.
+
+The three options, and what each means *for this project*:
+
+| | the author's option | consequence here |
+|---|---|---|
+| **1** (their preference) | Fix health reporting. *"The state already exists (`rpc_endpoint_is_failed` in ggml-rpc.cpp) it's just static. Needs a **small exported query** and a check so a failed endpoint reports 503."* | **Closes Phase 4.2 residual item #1 as a side effect.** |
+| **2** (their fallback) | Land the server half now, hold the client half until health reporting ships with it | acceptable, but the abort survives until the client half lands |
+| **3** | Keep fail-fast on the client side; server half plus a clean exit instead of an abort | **actively bad here — the client keeps aborting**, which is F25, the defect that makes the portable path unusable |
+
+**Option 1 is the outcome ShareCompute should want, and it is the author's own preference.** The
+"small exported query" is verbatim the thing F32 identified as required and F33 confirmed missing —
+a public way to ask whether an endpoint has failed, before consuming logits. It is being proposed
+for an unrelated reason (health reporting must not claim ok while non-operational), which is the
+strongest kind of alignment: nobody has to be persuaded of our use case for it to land.
+
+**It does not close residual item #2.** A query is not a reset. The latch stays insert-only, so
+re-formation remains foreclosed and load-bearing fact #11 stands unchanged.
+
+### The author independently confirms fact #11
+
+> a coordinator with a dead endpoint has invalid buffers and can't recover, so surviving only helps
+> if it serves other models that don't use that endpoint and it must not claim to be healthy.
+
+That is the person who wrote the code stating the re-formation problem in their own words, arrived
+at independently. F33 established it by reading the source; this is corroboration from the author.
+
+### Where F33's evidence actually bites
+
+The author's condition list for the client half being worth keeping has two entries: it must serve
+other models, and it must not claim to be healthy. **F33 adds a third they do not have:** it must
+not emit the token it already sampled from the zeroed logits. That condition is specific to the
+client half — precisely the half option 2 defers and option 3 reverts — and it is the one piece of
+this exchange that could not have been reached by reading the diff.
+
+So the project's stake is concrete rather than academic: **option 3 would reinstate the uncatchable
+abort**, and the F33 measurement is the argument against treating fail-fast as the safe default,
+because it shows what the client half actually does instead.
+
+### Not established
+
+The author's comment is a **proposal, not a merged change** — no maintainer has responded to it in
+the month since, and `ggerganov`'s review is still outstanding. Nothing here says option 1 will
+land, or that the exported query will have a shape this project can use. Whether the maintainer
+accepts the approach at all remains the open question F32 flagged and F33 did not answer. The
+participant list and comment attribution were read from the PR page, not from the API.
