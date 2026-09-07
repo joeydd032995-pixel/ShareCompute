@@ -2035,8 +2035,8 @@ the denominator for the operator's two-PC result.
 Correction to F32 and a material update to Phase 4.2's residual scope.
 
 **F32 said the author "offered three fixes without picking one". That is wrong** — they picked.
-`erwinzhang7`, 2026-08-08, replying to `Kononnable` (both community members; neither is the
-maintainer, and the PR still awaits `ggerganov` with no maintainer review recorded):
+`erwinzhang7`, 2026-08-08, replying to `Kononnable` (both community members; neither is a code
+owner, and no code-owner review is recorded — see the CODEOWNERS note at the end of this finding):
 
 > Yeah, you're right wrt the health check and it's a defect this PR introduces. […] **I suggest 1,
 > fallback 2.** Either way the "after: /health still ok" row in my description is wrong.
@@ -2078,10 +2078,37 @@ So the project's stake is concrete rather than academic: **option 3 would reinst
 abort**, and the F33 measurement is the argument against treating fail-fast as the safe default,
 because it shows what the client half actually does instead.
 
+### Who actually gates this PR — not who it looks like
+
+GitHub shows *"requested a review from `ggerganov` as a code owner"*, which reads as though the
+project lead is the gate on the RPC design. He is not. The literal CODEOWNERS lines:
+
+```
+/ggml/src/ggml-rpc/    @ggml-org/ggml-rpc
+/tools/rpc/            @ggml-org/ggml-rpc
+/tests/                @ggerganov
+```
+
+The PR touches `ggml-rpc.cpp` and `transport.cpp` — owned by the **team** `@ggml-org/ggml-rpc` — and
+also adds `tests/test-rpc.cpp` and `tests/CMakeLists.txt`, which is what pulled in `@ggerganov`.
+**His review request is triggered by the test files, not the backend change.** The substantive
+review belongs to the RPC team.
+
+This matters for reading the stall: "waiting on `ggerganov`" understates it, because the design
+question — whether option 1, 2 or 3 is right — sits with the team that owns the backend.
+
+**`rgerganov` does not appear in CODEOWNERS at all.** He wrote the RPC backend originally and is the
+obvious candidate for `@ggml-org/ggml-rpc`, but CODEOWNERS does not list team membership and it was
+not confirmed from any other source. Do not assert it. An earlier automated summary claimed he
+appeared "via the team", which was inference presented as a reading — the kind of false-green this
+project keeps cataloguing, arriving this time through a summarising tool rather than a test.
+
 ### Not established
 
-The author's comment is a **proposal, not a merged change** — no maintainer has responded to it in
-the month since, and `ggerganov`'s review is still outstanding. Nothing here says option 1 will
-land, or that the exported query will have a shape this project can use. Whether the maintainer
-accepts the approach at all remains the open question F32 flagged and F33 did not answer. The
-participant list and comment attribution were read from the PR page, not from the API.
+The author's comment is a **proposal, not a merged change** — nobody has responded to it in the month
+since. Nothing here says option 1 will land, or that the exported query will have a shape this
+project can use. Whether the approach is accepted at all remains the open question F32 flagged and
+F33 did not answer. Comment attribution and the participant list were read from the PR page and
+CODEOWNERS was read from `raw.githubusercontent.com`, both via a summarising fetch rather than the
+API; the CODEOWNERS lines above were re-fetched with a verbatim-only prompt after the first summary
+proved unreliable.
