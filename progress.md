@@ -623,3 +623,38 @@ it is the shape these runtimes force** — and `ShareComputeCore` survives the p
 | My own "generation has started" test fired during model load | 1 | Rewrote case B to key off stdout size, assuming stdout carried only generated text. It does not: `llama-cli` writes a spinner, an ASCII banner and a command list — ~1300 bytes — before the first token, so a 256-byte threshold is satisfied before generation begins and the kill lands mid-upload, a different code path than the one the case exists to probe. Caught by *checking the assumption against a real log* instead of trusting it. `genlen()` now counts only bytes after the echoed prompt |
 | Nearly attributed `llama-cli`'s exit 0 to the PR | 1 | It would have been an easy and damaging claim to publish upstream. Tested the control build against an unreachable endpoint first: it also exits 0. Pre-existing CLI behaviour |
 | F27's absolute throughput numbers did not reproduce | 1 | 133.0 PP where the table says 217.3, box idle, no strays, same container class. Cause **not isolated** — some mix of four weeks of upstream change and shared-infrastructure variance. Recorded as such rather than quietly republishing. The ratios hold (−45% vs −48%), and ratios are all F27 ever supported; the operative rule for T2 is to compare against the same-session `local, no RPC` control row, which `throughput.sh` emits every run |
+
+## Session 10 — re-formation tested for real; `/health` defect reproduced
+
+F33's largest open item closed. It said a process-lifetime latch "needs a long-lived host, which
+does not exist yet" — but `llama-server` is one, it just had not been built. One ninja target.
+
+`Spikes/llamacpp-rpc/latch.sh`: two loopback peers, one `llama-server`, 2 distinct RPC devices
+asserted up front. Ask → kill peer B → ask → **restart peer B on the same address** → ask.
+
+| step | HTTP | `/health` |
+|---|---|---|
+| both alive | 200 | ok |
+| peer B killed | 500 | **ok** |
+| peer B restarted, same address | 500 | **ok** |
+
+**Zero connections from `llama-server` to the restarted peer, 3/3.** The endpoint is finished for
+the life of the process; a healthy worker listening where the client already knows to look is
+invisible to it. Re-planning around a lost node — the entire goal at the top of `task_plan.md` — is
+unavailable on the portable path as it stands.
+
+`llama-server` survived every run, which is the PR working as designed in a long-lived host. Against
+the unpatched base the experiment cannot run at all: the kill aborts the process outright.
+
+**`/health` returns `{"status":"ok"}` while every completion returns 500.** Not a new discovery —
+`Kononnable` raised it on the PR, `erwinzhang7` accepted it as "a defect this PR introduces" — but
+there was no reproduction until now. It also confirms F34's reading: their preferred fix exports the
+latch query so a failed endpoint reports 503, which fixes this *and* hands this project Phase 4.2
+residual item #1. One change, both problems.
+
+### Errors encountered (session 10)
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| **The harness counted its own probes as the evidence** | 1 | Everything turns on how many connections the restarted peer accepts, and `listening()`'s `/dev/tcp` check *is* a connection that `ggml-rpc-server` logs identically. First run reported 2 and **correctly refused to conclude** — the third verdict branch ("cannot separate these") is the only reason it did not publish a false negative. Both were the harness; each showed as an accept followed instantly by a close, with no HELLO between. Count is now a delta taken after probing ends, with the discount printed |
+| **Claimed a mechanism the evidence did not support** | 1 | The verdict read "the client short-circuited before touching the socket, which is the latch and not the dead buffers". The server log refutes it: request 3 emits six `send failed (bytes_sent=0)` before `graph_compute` reports −1 — the client *does* write, to the stale socket it already holds. Checked task ids (25 = post-kill, 28 = post-restart) rather than assuming the lines belonged to the right request. Corrected to "no reconnection", which is what was actually measured; latch vs `reg_map` vs buffers stays unisolated |

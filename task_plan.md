@@ -187,6 +187,12 @@ Two things changed during implementation, both worth carrying forward:
 >    accessor, so an endpoint that fails is dead for the life of the process — which forecloses
 >    re-formation, the entire point of this project. Same shape as MLX's function-local static group
 >    cache; see load-bearing fact #11.
+>
+>    **Confirmed by experiment (F35), no longer just by reading.** `Spikes/llamacpp-rpc/latch.sh`
+>    runs a long-lived `llama-server`, kills a peer, restarts it on the same address, and measures
+>    what the restarted peer receives: **zero connections**, 3/3. A healthy worker on an address the
+>    client already knows is invisible to it. So item 2 is not a nicety — without it the portable
+>    path cannot do the one thing this project exists to do.
 > 3. **Never trust the process exit code.** `llama-cli` exits 0 after a peer dies mid-generation.
 >    This is pre-existing CLI behaviour, not the PR's — the control build also exits 0 against an
 >    unreachable endpoint, silently falling back to CPU. Any supervisor must read `llama_decode`'s

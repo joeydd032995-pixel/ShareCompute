@@ -81,6 +81,43 @@ never the process exit code.
 Neither is a reason to reject the PR: it is strictly better than an uncatchable abort. See F33 for
 the timelines, token ids, and the never-cleared endpoint latch that still blocks re-formation.
 
+## Can a dead peer ever be re-attached? — `latch.sh` (F35)
+
+`bash Spikes/llamacpp-rpc/latch.sh`
+
+F33 could not answer this: `llama-cli` exits the moment generation fails, and a process-lifetime
+latch needs a process that lives. **`llama-server` is that process.** Two peers, one long-lived
+server, then: ask → kill peer B → ask → **restart peer B on the same address** → ask.
+
+| step | HTTP | `/health` |
+|---|---|---|
+| both peers alive | **200** | ok |
+| peer B killed | **500** `Compute error.` | **ok** |
+| peer B restarted, same address | **500** `Compute error.` | **ok** |
+
+**The measurement is the restarted peer's log, not the HTTP status.** A 500 proves nothing on its
+own — the latch, `add_server`'s `reg_map` and the dead buffers are all present and any one would
+cause it. So the script counts what the *restarted* peer receives, since `ggml-rpc-server` logs
+`Accepted client connection` on every connect.
+
+**Zero connections from `llama-server` to the restarted peer, 3/3.** A healthy peer, listening on
+the exact address the client already knows, is invisible to it. Within one process a failed endpoint
+is finished; re-planning around a lost node is not available on this path as it stands.
+
+The script does **not** claim which cache is responsible, and an earlier version wrongly did. The
+client still writes — to the stale socket it already holds (`send failed`, `bytes_sent=0`) — so it
+is not short-circuiting before all network activity. Isolating latch from `reg_map` from buffers
+needs a build with one disabled.
+
+`llama-server` survives the whole run, which is the PR working as intended in a long-lived host.
+Against the unpatched base this experiment **cannot run at all**: the kill aborts the process and
+leaves nothing to interrogate.
+
+**`/health` reports ok while the server cannot serve.** Not a new discovery — `Kononnable` raised it
+on the PR and the author accepted it as "a defect this PR introduces" — but this is a reproduction
+of it. Their preferred fix exports the latch query so a failed endpoint returns 503, which would fix
+this *and* give this project the failed-endpoint query Phase 4.2 needs. Same change, both problems.
+
 ## What the transport costs — `throughput.sh` (F27)
 
 `bash Spikes/llamacpp-rpc/throughput.sh`
@@ -258,6 +295,11 @@ All four were hit before any number here was trusted, and the script guards agai
   from inside `PA=$(serve …)`, a subshell, so it killed the substitution and nothing else. Both
   scripts now set `SERVE_PID`/`SERVE_PORT` globals instead. The comment claiming it "exits the
   script" had been wrong since it was written.
+- **A probe that counted as its own evidence.** `latch.sh` decides everything on how many
+  connections the restarted peer accepts — and its own `/dev/tcp` liveness check *is* a connection,
+  which `ggml-rpc-server` logs identically. The first run reported 2 and correctly refused to
+  conclude; both were the harness. The count is now a delta taken after probing stops, printed
+  alongside the discount so the subtraction is visible (F35).
 
 **What the harness now asserts on every run, not just case A:** two *distinct* RPC devices in use,
 generation genuinely started (counted as bytes **after** the echoed prompt — `llama-cli` writes
@@ -308,15 +350,7 @@ MTU, or a firewall. No iOS. And the failure is observed only for a *hard* kill; 
 gracefully, or a network that drops without closing the socket, are separate cases and are exactly
 where the missing `SO_RCVTIMEO`/`SO_SNDTIMEO` (still zero occurrences at HEAD) would bite instead.
 
-**Re-formation is still unproven, and now for a sharper reason than "nothing to re-form from".**
-Under `pr26724` the failed endpoint is latched in a process-global set with **no erase, no clear, and
-no public query** — `rpc_endpoint_is_failed` is file-static and `ggml-rpc.h` exposes nothing about
-failure state. Once an endpoint string fails it is unusable for the life of the process. That is
-established by reading the source and by the PR's own test comment, not by running it: `llama-cli`
-exits, so it cannot demonstrate a process-lifetime latch. Proving it needs a long-lived host, which
-does not exist yet. It is the same shape as MLX's function-local static group cache (load-bearing
-fact #1) — see F33 for why two independent runtimes foreclosing re-formation the same way is the
-more useful finding.
+**Re-formation is now disproven by experiment, not by reading — see `latch.sh` below.**
 
 The PR's own `tests/test-rpc.cpp` — 453 lines, a TCP proxy with a kill switch — was read but **not
 run** here.

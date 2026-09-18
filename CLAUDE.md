@@ -31,6 +31,7 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | The five patches landed on the forks, project repointed | **both Xcode jobs green** — the patched MLX builds end to end |
 | Portable path — llama.cpp RPC, **executed** on Linux | topology works; a dead peer aborts uncatchably in ~350 ms (F25); transport halves prompt processing on loopback (F27) |
 | Phase 4.2 on the portable path — `ggml-org/llama.cpp#26724` | **built and executed against a matched control (F33)**: abort gone, 5/5 → 0/5. Not adopted yet; two gaps remain |
+| Re-formation on the portable path | **executed and refuted (F35)** — a restarted peer gets zero connections from a surviving `llama-server`; the endpoint is dead for the process's life. `/health` still reports ok |
 | Linux / Windows / Android adapters | **blocked**, see below |
 
 Milestone 2 is code-complete and building. The gap is no longer "uncompiled" — it is **"unrun"**:
@@ -136,8 +137,16 @@ Established by reading the pinned MLX sources. Full evidence with file and line 
     **epochs-not-mutation is not an MLX workaround, it is the shape these runtimes force.** The
     `ShareComputeCore` model survives the platform pivot unchanged, and Phase 4.3 has the same two
     asks on both paths — a way to ask whether a peer is dead, and a way to forget that it was.
-    Established by reading source plus the PR author's own test comment; **not executed**, because
-    demonstrating a process-lifetime latch needs a long-lived host and `llama-cli` exits. F33.
+    Established by reading source plus the PR author's own test comment; **now also executed
+    (F35)** — `llama-server` is the long-lived host `llama-cli` could not be. Kill a peer, restart
+    it on the same address, and the surviving server never contacts it again: **zero** connections
+    to a healthy peer listening on an address the client already knows, 3/3. Within one process a
+    failed endpoint is finished, and re-planning around a lost node is unavailable.
+
+    **Which** cache does it is *not* isolated — the client still writes to the stale socket it
+    holds, so it is not short-circuiting before all network activity; latch, `reg_map` and dead
+    buffers are all present and each alone would explain it. Do not attribute it to the latch
+    specifically without a build that disables one.
 
 ## Architectural rules
 
@@ -211,6 +220,7 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | MLX failure semantics | **yes** | `Patches/mlx/tests/socket_thread_failure_test.cpp` against real `socketpair` |
 | llama.cpp RPC behaviour and throughput | **yes — it actually runs** | `Spikes/llamacpp-rpc/run.sh` (topology, peer-kill) and `throughput.sh` (PP/TG/wall). Loopback only — a real link needs a second machine |
 | An upstream llama.cpp PR's runtime behaviour | **yes** | build the PR *and its merge-base*, run `run.sh` against both with `BIN=`. Confirm the binaries differ first (`strings … \| grep -c`) — a control that is secretly the same build proves nothing (F33) |
+| Whether a dead RPC peer can ever be re-attached | **yes** | `Spikes/llamacpp-rpc/latch.sh` — `llama-server` is long-lived, so it can be asked what `llama-cli` cannot. Read the **restarted peer's** accept count, not the HTTP status, and discount the harness's own `/dev/tcp` probes (F35) |
 | Agent/skill files — *static* metadata | **yes** | `python3 scripts/validate-agents.py` — parses front matter and checks the mappings |
 | Slash commands at **dispatch** | **no** | needs an interactive session: that a fork spawns the named agent, that `background: false` blocks, that a gated command spawns nothing, that `/verify` displaces the built-in |
 | Swift syntax of Apple code | partial | `swiftc -parse` — syntax only. It passed the Apple adapter for this project's whole life while three real type errors sat in it (F18) |

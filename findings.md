@@ -2112,3 +2112,98 @@ F33 did not answer. Comment attribution and the participant list were read from 
 CODEOWNERS was read from `raw.githubusercontent.com`, both via a summarising fetch rather than the
 API; the CODEOWNERS lines above were re-fetched with a verbatim-only prompt after the first summary
 proved unreliable.
+
+## F35 — Re-formation is impossible, executed. And `/health` lies, measured.
+
+F33 closed with re-formation as its largest unverified claim: the never-cleared latch was
+established *by reading* `ggml-org/llama.cpp#26724` and by the author's own test comment, but not by
+running anything, "because demonstrating a process-lifetime latch needs a long-lived host and
+`llama-cli` exits."
+
+`llama-server` is that host. `Spikes/llamacpp-rpc/latch.sh` now runs the experiment.
+
+### Method
+
+Two `ggml-rpc-server` peers on loopback, one `llama-server` with `--rpc A,B -ngl 99`, 2 distinct RPC
+devices asserted before anything else. Then: ask, kill peer B, ask, **restart peer B on the same
+address**, ask. Built from `a911a9bf4` (`pull/26724/head`) — against the unpatched base the
+experiment cannot run at all, because the kill aborts the whole process and leaves no survivor to
+interrogate. That asymmetry is itself the PR's value.
+
+| step | HTTP | `/health` |
+|---|---|---|
+| baseline, both peers alive | **200** | ok |
+| after peer B killed | **500** `Compute error.` | **ok** |
+| after peer B restarted on the same address | **500** `Compute error.` | **ok** |
+
+**`llama-server` survived the entire run.** That is the PR working as intended in a long-lived host
+rather than a CLI — the first time this project has seen that.
+
+### The measurement is the restarted peer's log, not the request
+
+"The request still fails" proves nothing on its own: the latch, `add_server`'s `reg_map`, and the
+dead buffers are all present simultaneously, and each alone would produce a 500. So the experiment
+counts what the **restarted** peer receives. `ggml-rpc-server` logs `Accepted client connection` on
+every connect.
+
+**Zero connections from `llama-server` to the restarted peer.** A healthy peer, listening on the
+exact address the client already knows, is invisible to it. Reproduced 3/3.
+
+That is the fact re-formation depends on, and it is now measured rather than read: **within one
+process, a failed endpoint is finished. Restarting the worker changes nothing.** Recovery requires
+restarting the host process, which for ShareCompute means the whole point — re-planning around a
+lost node and carrying on — is unavailable on the portable path as it stands.
+
+### What this does *not* establish, and the correction that produced it
+
+**The mechanism is not isolated, and the first verdict wording claimed it was.** The script
+originally concluded the client "short-circuited before touching the socket, which is the latch and
+not the dead buffers". The server log refutes that: request 3 (task 28) emits six
+`send failed (bytes_sent=0, size_to_send=1)` lines before `graph_compute` reports `-1`. The client
+*does* still write — to the **stale socket it already holds** — it simply never re-resolves the
+endpoint or opens a new connection. So the honest claim is "no reconnection", not "the latch
+short-circuits". Separating latch from `reg_map` from buffers needs a build with one disabled, and
+was not done.
+
+Request boundaries were checked rather than assumed: task 25 is the post-kill request and task 28
+the post-restart one, so the `send failed` lines genuinely belong to request 3 and not to a
+straggler from request 2.
+
+### `/health` reports ok while the server cannot serve — reproduced
+
+Every completion after the kill returns 500, and `/health` returns `{"status":"ok"}` throughout.
+
+This is not a new discovery — `Kononnable` raised it on the PR on 2026-08-08 ("the server would
+return a healthy status while being nonoperational") and `erwinzhang7` accepted it immediately:
+*"it's a defect this PR introduces … Either way the 'after: /health still ok' row in my description
+is wrong."* What did not exist until now is a **reproduction**, and this is one.
+
+It also sharpens F34's option analysis. The author's preferred option 1 fixes `/health` by exporting
+the latch query — *"the state already exists … it's just static. Needs a small exported query and a
+check so a failed endpoint reports 503."* That single change would fix the defect measured here
+**and** hand this project residual item #1. The two asks are the same ask.
+
+### The harness contaminated its own discriminator, and said so
+
+First run reported "2 accepted connections" and therefore correctly refused to conclude anything.
+Both were the harness's own `listening()` probes — `/dev/tcp` opens a real TCP connection, which
+`ggml-rpc-server` logs as an accept like any other. Each appeared as `Accepted client connection`
+followed instantly by `Client connection closed`, with no HELLO and no commands between, which is
+what a bare connect-and-close looks like. The count is now taken as a **delta** measured after all
+probing finishes, and the run prints both the total and the discount so the subtraction is visible.
+
+Worth recording for the same reason as F27, F28 and F33's two harness bugs: the instrument produced
+a number that *looked* like an answer to the question asked and was an answer to a different one.
+The only reason it did not become a published false negative is that the verdict had a third branch
+for "cannot separate these" instead of a binary yes/no.
+
+### Not established
+
+- **Which cache is responsible** — see above. Three candidates, none excluded.
+- **Whether a fresh `llama-server` process recovers.** Not tested; the interesting case is recovery
+  *without* a restart, and a restart obviously works because nothing persists across it.
+- **Graceful peer shutdown** is still untested, as in F25 and F33 — only `kill -9`.
+- **Loopback only.** A real network partition, where the socket neither closes nor delivers, is a
+  different failure and is where the absent `SO_RCVTIMEO`/`SO_SNDTIMEO` would bite.
+- **One model, one topology** (Qwen2.5-0.5B, 2 peers, `-ngl 99`). Whether a partially-local split
+  degrades instead of failing outright was not tested.
