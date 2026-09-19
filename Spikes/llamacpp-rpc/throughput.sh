@@ -75,27 +75,51 @@ CLI_COMMON=(-ngl 99 -c 4096 -st -no-cnv --ignore-eos -n "$NGEN" -v)
 # Ports are derived from the PID so two runs -- or a run following one whose sockets are still in
 # TIME_WAIT -- cannot collide. A fixed port range caused a silent single-peer measurement that was
 # reported as a two-peer result; see the correction in F27.
-PORT_BASE=$(( 50000 + (($$ * 7) % 9000) ))
+#
+# They must also sit BELOW the ephemeral range, which the first version got wrong: a base of 50000
+# is inside Linux's default ip_local_port_range (32768-60999), so llama-cli's own outbound RPC
+# connections could transiently hold the very port a later server tried to bind. That produced an
+# intermittent "Failed to create server socket" -- roughly one run in three -- and an intermittent
+# bind failure is the worst possible shape, because it silently yields a one-peer measurement. F33.
+EPHEMERAL_LO=$(awk '{print $1}' /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null || echo 32768)
+PORT_BASE=$(( 20000 + (($$ * 7) % 10000) ))
+if [ "$(( PORT_BASE + 64 ))" -ge "$EPHEMERAL_LO" ]; then
+    PORT_BASE=$(( EPHEMERAL_LO > 5000 ? EPHEMERAL_LO - 5000 : 10000 ))
+fi
 
 # Start a server AND prove it is listening. `sleep 2` and hope is what produced the bad row: the
 # process starts, prints its banner, fails to bind, and stays alive -- so a PID check says nothing.
 # ggml-rpc-server prints "Failed to create server socket" in that case and keeps running.
-serve() { # <port> <tag> -> pid on stdout, or exits the script
-    local port=$1 tag=$2 log="$OUT/srv-$2.log"
-    "$BIN/ggml-rpc-server" -H 127.0.0.1 -p "$port" > "$log" 2>&1 &
-    local pid=$!
-    for _ in $(seq 1 40); do
-        if grep -q "Failed to create server socket" "$log" 2>/dev/null; then
-            echo "server $tag failed to bind 127.0.0.1:$port -- see $log" >&2
-            kill -9 "$pid" 2>/dev/null; exit 1
-        fi
-        # /dev/tcp is a bash builtin, so this needs no extra tooling on the runner.
-        (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && { exec 3<&- 3>&-; echo "$pid"; return; }
-        sleep 0.25
+#
+# SERVE_PID/SERVE_PORT are globals rather than stdout, and that is the point. The obvious
+# `PL=$(serve ...)` runs the function in a SUBSHELL, where the guard's `exit 1` terminates only the
+# substitution -- the script continues with an empty PID and an unbound server. This function
+# carried a "or exits the script" comment while doing exactly that at all three call sites. F33.
+SERVE_PID=""; SERVE_PORT=""
+serve() { # <tag> -> sets SERVE_PID and SERVE_PORT, or exits the script
+    local tag=$1 log="$OUT/srv-$1.log" port pid attempt _
+    for attempt in 1 2 3 4 5; do
+        port=$PORT_NEXT; PORT_NEXT=$((PORT_NEXT + 1))
+        : > "$log"
+        "$BIN/ggml-rpc-server" -H 127.0.0.1 -p "$port" > "$log" 2>&1 &
+        pid=$!
+        for _ in $(seq 1 40); do
+            if grep -q "Failed to create server socket" "$log" 2>/dev/null; then
+                echo "  (server $tag could not bind 127.0.0.1:$port, retrying on $PORT_NEXT)" >&2
+                kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+                pid=""; break
+            fi
+            # /dev/tcp is a bash builtin, so this needs no extra tooling on the runner.
+            (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && {
+                exec 3<&- 3>&-; SERVE_PID=$pid; SERVE_PORT=$port; return 0; }
+            sleep 0.25
+        done
+        [ -n "$pid" ] && { kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; }
     done
-    echo "server $tag never listened on 127.0.0.1:$port -- see $log" >&2
-    kill -9 "$pid" 2>/dev/null; exit 1
+    echo "server $tag never listened after 5 attempts -- see $log" >&2
+    exit 1
 }
+PORT_NEXT=$PORT_BASE
 
 # llama-cli's last line is: [ Prompt: 174.3 t/s | Generation: 24.3 t/s ]
 # Wall clock is captured separately because it is the only thing that reflects model upload, which
@@ -203,18 +227,19 @@ if [ -n "$RPC_ENDPOINTS" ]; then
 
     # Bound to 127.0.0.1 deliberately: the local worker only ever needs to be reachable by the
     # client in this same process tree, and ggml-rpc-server has no authentication of any kind.
-    PL=$(serve $((PORT_BASE+4)) local-worker)
-    measure "split: local + remote" --rpc "127.0.0.1:$((PORT_BASE+4)),$RPC_ENDPOINTS"
+    serve local-worker; PL=$SERVE_PID; pl=$SERVE_PORT
+    measure "split: local + remote" --rpc "127.0.0.1:$pl,$RPC_ENDPOINTS"
     kill -9 "$PL" 2>/dev/null
 else
-    PA=$(serve $((PORT_BASE+0)) solo)
-    measure "1 peer, loopback" --rpc "127.0.0.1:$((PORT_BASE+0))"
+    serve solo; PA=$SERVE_PID; pa=$SERVE_PORT
+    measure "1 peer, loopback" --rpc "127.0.0.1:$pa"
     kill -9 "$PA" 2>/dev/null; sleep 1
 
     # Distinct tags: reusing one would overwrite the first server's log and lose the evidence that
     # both peers were actually serving.
-    PA=$(serve $((PORT_BASE+2)) pair-a); PB=$(serve $((PORT_BASE+3)) pair-b)
-    measure "2 peers, loopback" --rpc "127.0.0.1:$((PORT_BASE+2)),127.0.0.1:$((PORT_BASE+3))"
+    serve pair-a; PA=$SERVE_PID; pa=$SERVE_PORT
+    serve pair-b; PB=$SERVE_PID; pb=$SERVE_PORT
+    measure "2 peers, loopback" --rpc "127.0.0.1:$pa,127.0.0.1:$pb"
     kill -9 "$PA" "$PB" 2>/dev/null
 fi
 
