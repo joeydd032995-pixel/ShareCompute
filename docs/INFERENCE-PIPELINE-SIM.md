@@ -8,13 +8,16 @@ activation plumbing; Phase B (InferRing / MLX) is where real collectives land.
 
 | Layer | Status in this demo |
 |---|---|
-| UDP multicast discovery (`239.255.77.77:37777`, `sharecompute-pool`) | **Real** (reused from four-platform demo) |
+| UDP multicast discovery (`239.255.77.77:37777`, service `sharecompute-infer`) | **Real** (same transport as four-platform demo; distinct service id) |
 | TCP JOIN with platform + **role** (`frontend` / `worker`) + usable GB | **Real** multi-process |
+| Configured `--frontend-platform` enforced on JOIN (role/platform mismatch rejected) | **Real** |
 | StagePlanner-equivalent layer apportionment + epoch | **Real** (Python mirror of `plan_shards`) |
+| Plans that exceed aggregate or per-peer usable RAM are **rejected** | **Real** |
 | Peers **refuse data-plane** until plan epoch matches join ack | **Real** |
 | Separate TCP **activation pipeline** along shard ranks | **Real** sockets + framing |
+| Activation frames validated for planned `rank_from` / `rank_to` edges | **Real** |
 | Frontend (rank 0) owns prompt seed + final token results | **Real** ownership split |
-| Buffer budget derived from shard `estimated_gb` | **Real** (demo-scale caps) |
+| Buffer budget from shard `estimated_gb` enforced as activation size cap | **Real** (size/refuse) |
 | Missing seat / discovery fail / kill worker mid-run → **exit ≠ 0, no hang** | **Real** hard-fail paths |
 | MLX / Metal / InferRing collectives | **Not claimed** — checksum + sleep only |
 
@@ -44,11 +47,18 @@ python3 scripts/inference_pipeline_demo.py --fail-platform android
 python3 scripts/inference_pipeline_demo.py --omit-worker
 
 # Negative — SIGKILL a worker mid-run → exit 1 within timeout, no hang
+# (PASS only when kill evidence is recorded AND hub/run fails as expected)
 python3 scripts/inference_pipeline_demo.py --kill-worker mid
+
+# Negative — advertised RAM cannot fit the demo model → plan rejected → exit 1
+python3 scripts/inference_pipeline_demo.py --usable-gb 0.1
+
+# Argument error — non-positive token count → exit 1 before spawn
+python3 scripts/inference_pipeline_demo.py --token-count -1
 ```
 
-Optional knobs: `--timeout`, `--token-count`, `--frontend-platform`,
-`--discovery-port`.
+Optional knobs: `--timeout`, `--token-count` (must be > 0), `--frontend-platform`,
+`--discovery-port`, `--usable-gb` (override every peer's advertised RAM).
 
 ### Process roles (normally spawned by the orchestrator)
 
@@ -64,6 +74,7 @@ python3 scripts/inference_pipeline_demo.py --role peer --platform android \
 
 ```
                     UDP beacon 239.255.77.77:37777
+                    service=sharecompute-infer
                  ┌────────────────────────────────┐
                  │  Hub (control plane TCP)        │
                  │  JOIN(role, usableGB, dataPort) │
@@ -82,12 +93,20 @@ python3 scripts/inference_pipeline_demo.py --role peer --platform android \
 
 ### Control plane
 
-- Same discovery helpers as `scripts/four_platform_pool_lib.py`
+- Discovery helpers share the four-platform multicast group/port but announce and
+  accept only service id **`sharecompute-infer`** (not `sharecompute-pool`). Peers
+  validate the beacon service id before joining.
 - JOIN carries `role`, `data_host`, `data_port` in addition to platform / usable GB
+- Only `--frontend-platform` may JOIN with the frontend role; that platform must
+  JOIN as frontend (mismatched role/platform is rejected)
 - Hub forces the configured frontend platform to **rank 0**, workers follow
   sorted platform order for remaining ranks
+- Shard plan is rejected if aggregate usable capacity (after overhead) cannot fit
+  the model, or if any shard `estimated_gb` exceeds that peer's `usable_gb`
 - PLAN message includes epoch, token count, per-rank layer ranges, estimated GB,
   and data-plane addresses
+- Orchestrator wait covers the hub's full join (`timeout_s`) + pipeline
+  (`max(timeout_s, 15)`) budget
 
 ### Data plane
 
@@ -96,7 +115,12 @@ python3 scripts/inference_pipeline_demo.py --role peer --platform android \
   nbytes + epoch string + payload
 - Rank `r`: recv from `r-1` → `fake_compute` (SHA-256 fold + sleep × layers) →
   send to `r+1`; last rank returns to frontend
-- Peers abort with `pipeline-error` on epoch mismatch, broken pipe, or timeout
+- Receivers reject frames whose `rank_from` / `rank_to` do not match the planned
+  edge (predecessor → self; last → frontend)
+- `buffer_budget_bytes(estimated_gb)` is a hard cap: peers size activations to fit
+  and refuse oversized frames
+- Peers abort with `pipeline-error` on epoch mismatch, rank mismatch, buffer
+  overflow, broken pipe, or timeout
 
 ## Map to InferRing / MLX (Phase B)
 
@@ -122,8 +146,8 @@ it should not reinvent discovery/join/plan hard-fail semantics.
 | `scripts/inference_pipeline_orch.py` | Multi-process orchestrator + argparse |
 | `scripts/inference_pipeline_hub.py` | Control-plane hub + plan broadcast |
 | `scripts/inference_pipeline_peer.py` | Frontend / worker data-plane peers |
-| `scripts/inference_pipeline_lib.py` | Framing, planning, fake compute |
-| `scripts/four_platform_pool_lib.py` | Shared UDP discovery + TCP line framing |
+| `scripts/inference_pipeline_lib.py` | Framing, planning, fake compute, infer discovery |
+| `scripts/four_platform_pool_lib.py` | Shared UDP multicast transport + TCP line framing |
 
 Related: [`FOUR-PLATFORM-CONNECT.md`](FOUR-PLATFORM-CONNECT.md) (membership seats
 without the activation path).
