@@ -10,8 +10,11 @@ four-platform demo; adds a separate TCP activation pipeline along shard ranks.
     python3 scripts/inference_pipeline_demo.py --fail-platform android
     python3 scripts/inference_pipeline_demo.py --omit-worker
     python3 scripts/inference_pipeline_demo.py --kill-worker mid
+    python3 scripts/inference_pipeline_demo.py --usable-gb 0.1
+    python3 scripts/inference_pipeline_demo.py --token-count -1
 
-Hard fails (missing seat, discovery fail, kill worker mid-run) → non-zero exit, no hang.
+Hard fails (missing seat, discovery fail, kill worker mid-run, insufficient RAM)
+→ non-zero exit, no hang.
 This does **not** claim MLX/Metal works — compute is checksum + sleep scaled by layers.
 See docs/INFERENCE-PIPELINE-SIM.md.
 """
