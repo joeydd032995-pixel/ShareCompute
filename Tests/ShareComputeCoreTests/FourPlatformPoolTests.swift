@@ -1,37 +1,42 @@
-import Foundation
+import XCTest
 @testable import ShareComputeCore
-import Testing
 
-@Suite("Four-platform pool connect")
-struct FourPlatformPoolTests {
+final class FourPlatformPoolTests: XCTestCase {
 
-    @Test("simulated Windows/macOS/iOS/Android all connect")
-    func allFourConnect() {
+    func makePool(
+        dwell: TimeInterval = 0,
+        transport: RingTransport? = nil
+    ) -> (CrossPlatformPool, TestClock) {
         let clock = TestClock()
         let pool = CrossPlatformPool(
             clock: clock,
-            config: MembershipConfig(minimumEpochDwellTime: 0)
+            config: MembershipConfig(
+                leaseDuration: 60,
+                heartbeatInterval: 2,
+                missedHeartbeatsBeforeEviction: 3,
+                minimumEpochDwellTime: dwell
+            ),
+            transport: transport
         )
+        return (pool, clock)
+    }
 
+    func testSimulatedWindowsMacOSIOSAndroidAllConnect() {
+        let (pool, _) = makePool()
         let events = pool.connectAllSimulatedPlatforms()
 
-        #expect(pool.connectedPlatforms == PlatformKind.allRequired)
-        #expect(pool.missingPlatforms.isEmpty)
-        #expect(pool.hasAllRequiredPlatforms)
-        #expect(events.contains(.allRequiredPlatformsConnected(PlatformKind.allRequired)))
+        XCTAssertEqual(pool.connectedPlatforms, PlatformKind.allRequired)
+        XCTAssertTrue(pool.missingPlatforms.isEmpty)
+        XCTAssertTrue(pool.hasAllRequiredPlatforms)
+        XCTAssertTrue(events.contains(.allRequiredPlatformsConnected(PlatformKind.allRequired)))
 
         for platform in PlatformKind.allCases {
-            #expect(pool.nodeID(for: platform) != nil)
+            XCTAssertNotNil(pool.nodeID(for: platform), "missing seat for \(platform)")
         }
     }
 
-    @Test("RAM pool plan covers every platform seat")
-    func ramPoolPlan() throws {
-        let clock = TestClock()
-        let pool = CrossPlatformPool(
-            clock: clock,
-            config: MembershipConfig(minimumEpochDwellTime: 0)
-        )
+    func testRAMPoolPlanCoversEveryPlatformSeat() throws {
+        let (pool, clock) = makePool()
         _ = pool.connectAllSimulatedPlatforms()
         for nodeID in pool.membership.members.keys {
             pool.heartbeatSucceeded(from: nodeID)
@@ -45,30 +50,27 @@ struct FourPlatformPoolTests {
             perNodeOverheadBytes: 256 * 1024 * 1024
         )
 
-        let result = try #require(try pool.planRAMPool(model: model, estimatedStageDuration: 5, at: clock.now))
+        let result = try XCTUnwrap(
+            try pool.planRAMPool(model: model, estimatedStageDuration: 5, at: clock.now)
+        )
 
-        #expect(Set(result.platforms) == PlatformKind.allRequired)
-        #expect(result.plan.worldSize == 4)
-        #expect(result.plan.assignments.map(\.layerCount).reduce(0, +) == 32)
-        #expect(result.plan.assignments.first?.startLayer == 0)
-        #expect(result.plan.assignments.last?.endLayer == 32)
+        XCTAssertEqual(Set(result.platforms), PlatformKind.allRequired)
+        XCTAssertEqual(result.plan.worldSize, 4)
+        XCTAssertEqual(result.plan.assignments.map(\.layerCount).reduce(0, +), 32)
+        XCTAssertEqual(result.plan.assignments.first?.startLayer, 0)
+        XCTAssertEqual(result.plan.assignments.last?.endLayer, 32)
     }
 
-    @Test("missing a platform blocks the pool plan")
-    func missingPlatformBlocksPlan() throws {
-        let clock = TestClock()
-        let pool = CrossPlatformPool(
-            clock: clock,
-            config: MembershipConfig(minimumEpochDwellTime: 0)
-        )
+    func testMissingPlatformBlocksThePoolPlan() throws {
+        let (pool, clock) = makePool()
 
         _ = pool.connectSimulated(.windows)
         _ = pool.connectSimulated(.macos)
         _ = pool.connectSimulated(.ios)
         // Android deliberately absent
 
-        #expect(pool.missingPlatforms == [.android])
-        #expect(!pool.hasAllRequiredPlatforms)
+        XCTAssertEqual(pool.missingPlatforms, [.android])
+        XCTAssertFalse(pool.hasAllRequiredPlatforms)
 
         let model = ModelPlacementSpec(
             modelID: "test",
@@ -77,47 +79,40 @@ struct FourPlatformPoolTests {
             perNodeOverheadBytes: 64 * 1024 * 1024
         )
         let result = try pool.planRAMPool(model: model, at: clock.now)
-        #expect(result == nil)
+        XCTAssertNil(result)
     }
 
-    @Test("in-process transport records joins")
-    func transportRecordsJoins() {
-        let clock = TestClock()
+    func testInProcessTransportRecordsJoins() {
         let transport = InProcessRingTransport()
-        let pool = CrossPlatformPool(
-            clock: clock,
-            config: MembershipConfig(minimumEpochDwellTime: 0),
-            transport: transport
-        )
+        let (pool, _) = makePool(transport: transport)
 
         _ = pool.connectSimulated(.android)
-        #expect(!transport.broadcastLog.isEmpty)
-        if case let .join(platform, profile) = transport.broadcastLog.first {
-            #expect(platform == .android)
-            #expect(profile.nodeID == NodeID("sim-android"))
-        } else {
-            Issue.record("expected join broadcast")
+        XCTAssertFalse(transport.broadcastLog.isEmpty)
+
+        guard case let .join(platform, profile) = transport.broadcastLog.first else {
+            return XCTFail("expected join broadcast, got \(transport.broadcastLog)")
         }
+        XCTAssertEqual(platform, .android)
+        XCTAssertEqual(profile.nodeID, NodeID("sim-android"))
     }
 
-    @Test("SimulatedPlatformPeer profiles match platform capabilities")
-    func simulatedProfiles() {
+    func testSimulatedPlatformPeerProfilesMatchCapabilities() {
         let windows = SimulatedPlatformPeer.profile(for: .windows)
-        #expect(windows.connectivity == .coreDesktop)
-        #expect(windows.memory.reclaimModel == .windowsWorkingSetTrim)
-        #expect(windows.runtimeBackends.contains(.winmlDirectML))
+        XCTAssertEqual(windows.connectivity, .coreDesktop)
+        XCTAssertEqual(windows.memory.reclaimModel, .windowsWorkingSetTrim)
+        XCTAssertTrue(windows.runtimeBackends.contains(.winmlDirectML))
 
         let android = SimulatedPlatformPeer.profile(for: .android)
-        #expect(android.connectivity == .elasticMobile)
-        #expect(android.backgroundLink == .androidForegroundService)
-        #expect(android.runtimeBackends.contains(.liteRT))
+        XCTAssertEqual(android.connectivity, .elasticMobile)
+        XCTAssertEqual(android.backgroundLink, .androidForegroundService)
+        XCTAssertTrue(android.runtimeBackends.contains(.liteRT))
 
         let ios = SimulatedPlatformPeer.profile(for: .ios)
-        #expect(ios.backgroundLink == .iosSuspended)
-        #expect(ios.maximumSupportableLeaseDuration == 30)
+        XCTAssertEqual(ios.backgroundLink, .iosSuspended)
+        XCTAssertEqual(ios.maximumSupportableLeaseDuration, 30)
 
         let macos = SimulatedPlatformPeer.profile(for: .macos)
-        #expect(macos.connectivity == .coreDesktop)
-        #expect(macos.runtimeBackends.contains(.mlxMetal))
+        XCTAssertEqual(macos.connectivity, .coreDesktop)
+        XCTAssertTrue(macos.runtimeBackends.contains(.mlxMetal))
     }
 }
