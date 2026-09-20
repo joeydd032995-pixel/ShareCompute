@@ -42,6 +42,7 @@ def run_orchestrator(
     discovery_port: int = DISCOVERY_PORT,
     frontend_platform: str = DEFAULT_FRONTEND,
     token_count: int = DEFAULT_TOKEN_COUNT,
+    usable_gb: Optional[float] = None,
 ) -> int:
     fail_set = set(fail_platforms)
     for p in fail_set:
@@ -71,9 +72,12 @@ def run_orchestrator(
     print("Mode: UDP discovery + TCP control join + TCP activation pipeline")
     print(
         f"Discovery {DISCOVERY_MULTICAST_GROUP}:{discovery_port}  "
+        f"service={INFER_SERVICE_ID}  "
         f"hub TCP {host}:{port}  timeout={timeout_s:.1f}s  tokens={token_count}"
     )
     print(f"Frontend seat: {DISPLAY[frontend_platform]}")
+    if usable_gb is not None:
+        print(f"Peer usable GB override: {usable_gb}")
     if fail_discovery:
         print("Negative test: hub will NOT announce (--fail-discovery)")
     if fail_set:
@@ -92,6 +96,8 @@ def run_orchestrator(
     peer_meta: List[tuple] = []  # (proc, platform, role)
     discovery_failed_peers: List[str] = []
     discovery_lock = threading.Lock()
+    kill_evidence: List[str] = []
+    kill_lock = threading.Lock()
 
     def terminate_all() -> None:
         for proc in children:
@@ -173,21 +179,24 @@ def run_orchestrator(
                 )
                 continue
             role = "frontend" if platform == frontend_platform else "worker"
+            peer_cmd = [
+                py,
+                script_path,
+                "--role",
+                "peer",
+                "--platform",
+                platform,
+                "--peer-role",
+                role,
+                "--timeout",
+                str(timeout_s),
+                "--discovery-port",
+                str(discovery_port),
+            ]
+            if usable_gb is not None:
+                peer_cmd.extend(["--usable-gb", str(usable_gb)])
             proc = subprocess.Popen(
-                [
-                    py,
-                    script_path,
-                    "--role",
-                    "peer",
-                    "--platform",
-                    platform,
-                    "--peer-role",
-                    role,
-                    "--timeout",
-                    str(timeout_s),
-                    "--discovery-port",
-                    str(discovery_port),
-                ],
+                peer_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -232,6 +241,10 @@ def run_orchestrator(
                         target = (proc, platform)
                         break
                 if target is None:
+                    with kill_lock:
+                        kill_evidence.append(
+                            "no-worker-target: all workers omitted or already gone"
+                        )
                     return
                 proc, platform = target
                 if kill_worker == "start":
@@ -243,6 +256,11 @@ def run_orchestrator(
                     saw_progress = False
                     while time.monotonic() < deadline_k:
                         if proc.poll() is not None:
+                            with kill_lock:
+                                kill_evidence.append(
+                                    f"worker-{platform}-already-exited-before-kill "
+                                    f"(exit={proc.returncode})"
+                                )
                             return
                         with progress_lock:
                             # Prefer killing after at least one token started, else after plan.
@@ -258,27 +276,64 @@ def run_orchestrator(
                     if not saw_progress:
                         # Fallback: do not let the happy path finish first.
                         time.sleep(0.15)
+                if proc.poll() is not None:
+                    with kill_lock:
+                        kill_evidence.append(
+                            f"worker-{platform}-already-exited-before-kill "
+                            f"(exit={proc.returncode})"
+                        )
+                    return
+                print(
+                    f"\n  † orchestrator: SIGKILL worker {DISPLAY[platform]} (pid {proc.pid}) "
+                    f"--kill-worker {kill_worker}\n",
+                    flush=True,
+                )
+                try:
+                    proc.kill()  # SIGKILL on POSIX
+                except OSError as exc:
+                    with kill_lock:
+                        kill_evidence.append(f"kill-failed:{platform}:{exc}")
+                    return
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    with kill_lock:
+                        kill_evidence.append(
+                            f"kill-sent-but-still-alive:{platform}:pid={proc.pid}"
+                        )
+                    return
                 if proc.poll() is None:
-                    print(
-                        f"\n  † orchestrator: SIGKILL worker {DISPLAY[platform]} (pid {proc.pid}) "
-                        f"--kill-worker {kill_worker}\n",
-                        flush=True,
+                    with kill_lock:
+                        kill_evidence.append(
+                            f"kill-sent-but-still-alive:{platform}:pid={proc.pid}"
+                        )
+                    return
+                with kill_lock:
+                    kill_evidence.append(
+                        f"SIGKILL-ok:{platform}:pid={proc.pid}:exit={proc.returncode}"
                     )
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
+                print(
+                    f"  † orchestrator: kill evidence recorded for {DISPLAY[platform]} "
+                    f"(exit={proc.returncode})",
+                    flush=True,
+                )
 
             killer = threading.Thread(target=kill_loop, daemon=True)
             killer.start()
 
-        overall_timeout = timeout_s + (12.0 if kill_worker else 8.0)
+        # Hub may spend timeout_s on joins, then max(timeout_s, 15) on the pipeline.
+        # Cover the full join + pipeline budget plus a small margin (and kill margin).
+        pipe_budget = max(timeout_s, 15.0)
+        overall_timeout = timeout_s + pipe_budget + (12.0 if kill_worker else 5.0)
         try:
             returncode = hub.wait(timeout=overall_timeout)
         except subprocess.TimeoutExpired:
             print("error: hub hung past deadline (no hang tolerated)", file=sys.stderr)
             terminate_all()
             return 1
+
+        if killer is not None:
+            killer.join(timeout=2.0)
 
         for proc, _platform, _role in peer_meta:
             try:
@@ -306,15 +361,27 @@ def run_orchestrator(
             return 1
 
         if kill_worker:
+            with kill_lock:
+                evidence = list(kill_evidence)
+            ok_kill = any(e.startswith("SIGKILL-ok:") for e in evidence)
+            if not ok_kill:
+                print(
+                    "\nFAIL: --kill-worker did not record successful SIGKILL evidence "
+                    f"(got: {evidence or ['none']})",
+                    flush=True,
+                )
+                return 1
             # Hard-fail expectation: non-zero, no hang (already enforced by wait timeout).
             if int(returncode) == 0:
                 print(
-                    "\nFAIL: expected non-zero exit after --kill-worker, but hub returned 0",
+                    "\nFAIL: expected non-zero exit after --kill-worker, but hub returned 0 "
+                    f"(kill evidence: {evidence})",
                     flush=True,
                 )
                 return 1
             print(
-                f"\nPASS (negative): worker killed mid-run → hub exit {returncode} (no hang)",
+                f"\nPASS (negative): worker killed mid-run → hub exit {returncode} "
+                f"(kill evidence: {evidence[0]}; no hang)",
                 flush=True,
             )
             return 1
@@ -380,6 +447,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     demo_entry = os.path.join(here, "inference_pipeline_demo.py")
     script_path = demo_entry if os.path.isfile(demo_entry) else os.path.abspath(__file__)
 
+    if args.token_count <= 0:
+        print(
+            f"error: --token-count must be a positive integer (got {args.token_count})",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.role == "hub":
         if args.port <= 0:
             print("error: hub role requires --port", file=sys.stderr)
@@ -437,6 +511,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         discovery_port=args.discovery_port,
         frontend_platform=args.frontend_platform,
         token_count=args.token_count,
+        usable_gb=args.usable_gb,
     )
 
 
