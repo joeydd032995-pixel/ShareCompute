@@ -137,7 +137,9 @@ enum FourPlatformDemo {
                 if let platform = PlatformKind(rawValue: raw) {
                     result.insert(platform)
                 } else {
-                    fputs("warning: unknown platform '\(args[index + 1])'\n", stderr)
+                    // Avoid C `stderr` — not concurrency-safe under Swift 6 on Linux.
+                    let warning = Data("warning: unknown platform '\(args[index + 1])'\n".utf8)
+                    try? FileHandle.standardError.write(contentsOf: warning)
                 }
                 index += 2
                 continue
