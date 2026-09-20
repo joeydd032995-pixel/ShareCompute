@@ -18,7 +18,7 @@ This repository adds the membership layer that makes departure a planned event.
 | `Tests/ShareComputeCoreTests/` | 66+ tests, no network and no sleeping. |
 | `Apps/InferRing/` | The vendored infer-ring app, unmodified. The first adapter. |
 | `Patches/` | Patches to MLX, mlx-c and mlx-swift. Start at [`Patches/README.md`](Patches/README.md). |
-| `docs/FOUR-PLATFORM-CONNECT.md` | Windows / macOS / iOS / Android pool connect (TCP multi-process demo). |
+| `docs/FOUR-PLATFORM-CONNECT.md` | Windows / macOS / iOS / Android pool connect (UDP discovery + TCP multi-process demo). |
 | `findings.md` | Research log, including both spike results. Read this first. |
 | `task_plan.md` | Phase status and decisions. |
 | `progress.md` | Session log and test results. |
@@ -26,13 +26,15 @@ This repository adds the membership layer that makes departure a planned event.
 ## Four-platform pool connect
 
 `CrossPlatformPool` gives every platform an explicit seat (`PlatformKind`: windows, macos, ios,
-android). Simulated *runtimes* are enough to prove RAM shard planning; the Python demo uses a
-**real multi-process localhost TCP join** that fails the run if a platform cannot connect.
+android). Simulated *runtimes* are enough to prove RAM shard planning; the Python demo uses
+**LAN-style UDP multicast discovery** plus a **multi-process TCP join** that fails the run if
+discovery misses or a platform cannot connect.
 
 ```bash
 # Networked multi-process (recommended; no Swift toolchain):
 python3 scripts/four_platform_pool_demo.py
 python3 scripts/four_platform_pool_demo.py --fail-platform android   # exits 1
+python3 scripts/four_platform_pool_demo.py --fail-discovery          # exits 1 (no beacon)
 
 # Or with Swift 6.0+ (in-process; still supports --fail-platform):
 swift run FourPlatformDemo
@@ -53,7 +55,7 @@ Details, real-vs-simulated matrix, and remaining work for on-device pooling:
 | M2 Stage 1 — a departing peer fails instead of hanging | patch written, 16 harness checks |
 | M2 Stage 2 — the group can be torn down and rebuilt | patches written, 27 harness checks |
 | M2 Stage 3 — epoch re-formation in the app | code complete, **never run** |
-| Four-platform connect (TCP multi-process demo) | see `docs/FOUR-PLATFORM-CONNECT.md` |
+| Four-platform connect (UDP discovery + TCP multi-process demo) | see `docs/FOUR-PLATFORM-CONNECT.md` |
 
 None of the patches has been built as part of MLX or run on Apple hardware, and no ring has ever
 re-formed. Stage 3's core half is covered by tests; its adapter half type-checks in CI and nothing
@@ -152,7 +154,7 @@ the package into `Packages/ShareComputeCore` is not needed.
 - **`StagePlanner`** — replaces `ModelManager.assignShardMetadata`, fixing three defects (see below).
 - **`CrossPlatformPool` / `PlatformKind` / `RingTransport` / `TcpRingProtocol`** — explicit
   Windows/macOS/iOS/Android seats, host-provided control-plane transport, and framing helpers for
-  the localhost TCP hub used by the Python multi-process demo.
+  the TCP hub used by the Python multi-process demo (peers discover the hub via UDP multicast).
 
 ### Shard planning defects fixed
 
