@@ -26,7 +26,7 @@ from inference_pipeline_lib import (
     INFER_SERVICE_ID,
     PLATFORMS,
     InferPeer,
-    announce_beacon,
+    announce_infer_beacon,
     open_beacon_sender,
     plan_infer_shards,
     recv_line,
@@ -96,7 +96,7 @@ def run_hub(
             try:
                 while not stop_beacon.is_set():
                     try:
-                        announce_beacon(
+                        announce_infer_beacon(
                             sender,
                             host,
                             bound_port,
@@ -130,6 +130,38 @@ def run_hub(
             role = str(msg.get("role") or ("frontend" if platform == frontend_platform else "worker"))
             if role not in ("frontend", "worker"):
                 send_msg(conn, {"type": "error", "reason": "bad-role"})
+                return
+            # Only the configured frontend platform may JOIN as frontend; that
+            # platform must JOIN as frontend (reject role/platform mismatches).
+            if role == "frontend" and platform != frontend_platform:
+                print(
+                    f"  ✗ reject JOIN: {DISPLAY[platform]} claimed frontend "
+                    f"(reserved for {DISPLAY[frontend_platform]})",
+                    flush=True,
+                )
+                send_msg(
+                    conn,
+                    {
+                        "type": "error",
+                        "reason": "frontend-role-reserved",
+                        "frontend_platform": frontend_platform,
+                    },
+                )
+                return
+            if platform == frontend_platform and role != "frontend":
+                print(
+                    f"  ✗ reject JOIN: {DISPLAY[platform]} must JOIN as frontend "
+                    f"(got role={role})",
+                    flush=True,
+                )
+                send_msg(
+                    conn,
+                    {
+                        "type": "error",
+                        "reason": "frontend-must-join-as-frontend",
+                        "frontend_platform": frontend_platform,
+                    },
+                )
                 return
             node_id = str(msg.get("node_id") or f"sim-{platform}")
             usable_gb = float(msg.get("usable_gb", DEFAULT_USABLE_GB[platform]))
@@ -246,9 +278,23 @@ def run_hub(
         if len(frontends) != 1:
             print(f"\nFAIL: expected 1 frontend, got {len(frontends)}", flush=True)
             return 1
+        if frontends[0].platform != frontend_platform:
+            print(
+                f"\nFAIL: frontend seat is {frontends[0].platform}, "
+                f"expected {frontend_platform}",
+                flush=True,
+            )
+            return 1
 
         peers = list(connected.values())
-        shards = plan_infer_shards(peers)
+        try:
+            shards = plan_infer_shards(peers)
+        except ValueError as exc:
+            print(f"\nFAIL: shard plan rejected — {exc}", flush=True)
+            with lock:
+                conns_snapshot = list(client_conns.items())
+            _broadcast_shutdown(conns_snapshot, "plan-rejected")
+            return 1
         plan = shards_to_plan_dict(epoch, shards, token_count)
 
         print("\n  All seats joined. Broadcasting shard plan + epoch.\n", flush=True)
