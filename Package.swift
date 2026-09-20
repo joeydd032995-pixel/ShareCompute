@@ -9,6 +9,7 @@ let package = Package(
     ],
     products: [
         .library(name: "ShareComputeCore", targets: ["ShareComputeCore"]),
+        .executable(name: "FourPlatformDemo", targets: ["FourPlatformDemo"]),
     ],
     targets: [
         // Platform-neutral core. Deliberately has NO dependencies: not MLX, not UIKit,
@@ -18,6 +19,11 @@ let package = Package(
         // possible without an FFI layer.
         .target(
             name: "ShareComputeCore",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "FourPlatformDemo",
+            dependencies: ["ShareComputeCore"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
