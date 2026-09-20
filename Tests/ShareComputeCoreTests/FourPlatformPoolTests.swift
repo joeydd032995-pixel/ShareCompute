@@ -96,6 +96,38 @@ final class FourPlatformPoolTests: XCTestCase {
         XCTAssertEqual(profile.nodeID, NodeID("sim-android"))
     }
 
+    func testTcpRingTransportFailsWhenNotConnected() {
+        let transport = TcpRingTransport(isConnected: false)
+        XCTAssertThrowsError(try transport.broadcast(.heartbeat(NodeID("x")))) { error in
+            XCTAssertTrue(error is TcpRingTransport.TransportError)
+        }
+        transport.isConnected = true
+        XCTAssertNoThrow(try transport.broadcast(.heartbeat(NodeID("x"))))
+        XCTAssertEqual(transport.broadcasts.count, 1)
+    }
+
+    func testTcpRingProtocolJoinLineRoundTrip() throws {
+        let line = try TcpRingProtocol.encodeJoinLine(
+            platform: .android,
+            nodeID: "sim-android",
+            usableGB: 8
+        )
+        // Strip trailing newline for decode helper.
+        let stripped = line.dropLast()
+        let decoded = try TcpRingProtocol.decodeJoinLine(Data(stripped))
+        XCTAssertEqual(decoded.type, "join")
+        XCTAssertEqual(decoded.platform, .android)
+        XCTAssertEqual(decoded.nodeID, "sim-android")
+        XCTAssertEqual(decoded.usableGB, 8)
+        XCTAssertEqual(decoded.v, TcpRingProtocol.version)
+
+        // Wire keys must match the Python demo (`node_id`, `usable_gb`).
+        let json = try XCTUnwrap(String(data: Data(stripped), encoding: .utf8))
+        XCTAssertTrue(json.contains("\"node_id\""))
+        XCTAssertTrue(json.contains("\"usable_gb\""))
+        XCTAssertTrue(json.contains("\"platform\":\"android\""))
+    }
+
     func testSimulatedPlatformPeerProfilesMatchCapabilities() {
         let windows = SimulatedPlatformPeer.profile(for: .windows)
         XCTAssertEqual(windows.connectivity, .coreDesktop)
