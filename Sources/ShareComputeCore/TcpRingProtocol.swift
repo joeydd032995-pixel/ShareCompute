@@ -77,7 +77,7 @@ public final class TcpRingTransport: RingTransport {
 
     public enum TransportError: Error, CustomStringConvertible {
         case notConnected
-        var description: String { "TcpRingTransport is not connected" }
+        public var description: String { "TcpRingTransport is not connected" }
     }
 
     public init(isConnected: Bool = false) {
