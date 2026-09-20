@@ -15,6 +15,9 @@ public enum PoolWireMessage: Codable, Sendable, Equatable {
 /// Host-provided transport. The core never opens sockets — TCP, WebSocket, Bonjour, or an
 /// in-process queue are all adapter concerns. This keeps ShareComputeCore buildable on Linux
 /// and Windows without NIO or UIKit, matching the Package.swift contract.
+///
+/// See `TcpRingProtocol` for the localhost hub framing used by
+/// `scripts/four_platform_pool_demo.py`, and `TcpRingTransport` for a connect-gated scaffold.
 public protocol RingTransport: AnyObject {
     /// Deliver a control-plane message to one peer.
     func send(to nodeID: NodeID, message: PoolWireMessage) throws
