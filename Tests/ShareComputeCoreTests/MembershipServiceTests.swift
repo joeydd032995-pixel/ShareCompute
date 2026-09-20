@@ -289,6 +289,27 @@ final class MembershipServiceTests: XCTestCase {
         XCTAssertTrue(service.planningMembers.isEmpty)
     }
 
+    /// After eviction completes, the same NodeID must rejoin as active (not stay suspended).
+    func testSuspendedNodeRejoinsOnAppear() {
+        let service = makeService(
+            config: MembershipConfig(minimumEpochDwellTime: 0)
+        )
+        service.nodeAppeared(profile: .iPhone("phone"))
+        settle(service)
+
+        service.nodeAnnouncedDrain(NodeID("phone"))
+        clock.advance(1)
+        service.tick(at: clock.now)
+        XCTAssertEqual(service.record(for: NodeID("phone"))?.state, .suspended)
+        XCTAssertTrue(service.planningMembers.isEmpty)
+
+        let events = service.nodeAppeared(profile: .iPhone("phone"))
+        XCTAssertEqual(events, [.nodeJoined(NodeID("phone"))])
+        XCTAssertEqual(service.record(for: NodeID("phone"))?.state, .activeElastic)
+        XCTAssertEqual(service.planningMembers.map(\.nodeID), [NodeID("phone")])
+        XCTAssertNotNil(service.record(for: NodeID("phone"))?.lease)
+    }
+
     // MARK: - Integration with the planner
 
     /// End to end: a healthy two-node ring plans, the phone backgrounds, and the next plan covers

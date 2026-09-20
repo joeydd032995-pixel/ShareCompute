@@ -21,6 +21,15 @@ final class FourPlatformPoolTests: XCTestCase {
         return (pool, clock)
     }
 
+    func testModel() -> ModelPlacementSpec {
+        ModelPlacementSpec(
+            modelID: "test-32L",
+            layerCount: 32,
+            totalWeightBytes: 16 * gb,
+            perNodeOverheadBytes: 256 * 1024 * 1024
+        )
+    }
+
     func testSimulatedWindowsMacOSIOSAndroidAllConnect() {
         let (pool, _) = makePool()
         let events = pool.connectAllSimulatedPlatforms()
@@ -43,15 +52,8 @@ final class FourPlatformPoolTests: XCTestCase {
         }
         clock.advance(1)
 
-        let model = ModelPlacementSpec(
-            modelID: "test-32L",
-            layerCount: 32,
-            totalWeightBytes: 16 * gb,
-            perNodeOverheadBytes: 256 * 1024 * 1024
-        )
-
         let result = try XCTUnwrap(
-            try pool.planRAMPool(model: model, estimatedStageDuration: 5, at: clock.now)
+            try pool.planRAMPool(model: testModel(), estimatedStageDuration: 5, at: clock.now)
         )
 
         XCTAssertEqual(Set(result.platforms), PlatformKind.allRequired)
@@ -146,5 +148,152 @@ final class FourPlatformPoolTests: XCTestCase {
         let macos = SimulatedPlatformPeer.profile(for: .macos)
         XCTAssertEqual(macos.connectivity, .coreDesktop)
         XCTAssertTrue(macos.runtimeBackends.contains(.mlxMetal))
+    }
+
+    // MARK: - ReviewAgent finding coverage
+
+    /// Finding 1: deferred epoch → nil (do not plan new membership under old epoch).
+    func testPlanRAMPoolReturnsNilWhileEpochChangeDeferred() throws {
+        let (pool, clock) = makePool(dwell: 5)
+        _ = pool.connectAllSimulatedPlatforms()
+        for nodeID in pool.membership.members.keys {
+            pool.heartbeatSucceeded(from: nodeID)
+        }
+
+        let deferred = try pool.planRAMPool(
+            model: testModel(),
+            estimatedStageDuration: 5,
+            at: clock.now
+        )
+        XCTAssertNil(deferred, "must not plan while anti-flap dwell defers the epoch")
+
+        clock.advance(5)
+        let ready = try XCTUnwrap(
+            try pool.planRAMPool(model: testModel(), estimatedStageDuration: 5, at: clock.now)
+        )
+        XCTAssertEqual(Set(ready.platforms), PlatformKind.allRequired)
+    }
+
+    /// Finding 2: suspended reconnect → active + in planningMembers.
+    func testSuspendedPeerReconnectBecomesActiveAndPlans() {
+        let (pool, clock) = makePool(dwell: 0)
+        _ = pool.connectAllSimulatedPlatforms()
+        clock.advance(1)
+        _ = pool.tick(at: clock.now)
+
+        let phoneID = try! XCTUnwrap(pool.nodeID(for: .ios))
+        _ = pool.announceDrain(phoneID)
+        clock.advance(1)
+        let evictEvents = pool.tick(at: clock.now)
+        XCTAssertTrue(evictEvents.contains {
+            if case .peerEvicted(platform: .ios, nodeID: phoneID, reason: .drained) = $0 {
+                return true
+            }
+            return false
+        })
+        XCTAssertEqual(pool.membership.record(for: phoneID)?.state, .suspended)
+        XCTAssertFalse(pool.connectedPlatforms.contains(.ios))
+        XCTAssertFalse(pool.membership.planningMembers.map(\.nodeID).contains(phoneID))
+
+        let events = pool.connectSimulated(.ios)
+        XCTAssertTrue(events.contains {
+            if case .peerConnected(platform: .ios, nodeID: phoneID) = $0 { return true }
+            return false
+        })
+        XCTAssertEqual(pool.membership.record(for: phoneID)?.state, .activeElastic)
+        XCTAssertTrue(pool.membership.planningMembers.map(\.nodeID).contains(phoneID))
+        XCTAssertTrue(pool.connectedPlatforms.contains(.ios))
+    }
+
+    /// Finding 3: ineligible member excluded from reported totals / plan rejected.
+    func testIneligiblePeerCausesNilPlanRatherThanInflatedTotals() throws {
+        let (pool, clock) = makePool(dwell: 0)
+
+        _ = pool.connectSimulated(.windows)
+        _ = pool.connectSimulated(.macos)
+        _ = pool.connectSimulated(.android)
+
+        // iOS under power duress — seat is present but StagePlanner excludes it.
+        let hotPhone = CapabilityProfile(
+            nodeID: NodeID("sim-ios"),
+            connectivity: .elasticMobile,
+            backgroundLink: .iosSuspended,
+            memory: MemoryProfile(
+                totalBytes: 6 * gb,
+                usableBytes: 6 * gb,
+                reclaimModel: .iosJetsam
+            ),
+            runtimeBackends: [.mlxMetal, .coreMLANE],
+            power: PowerProfile(
+                isWallPowered: false,
+                batteryFraction: 0.05,
+                thermalState: .critical
+            ),
+            trust: .trustedCore,
+            declaresCanHostRequiredStage: true
+        )
+        _ = pool.connect(platform: .ios, profile: hotPhone)
+
+        for nodeID in pool.membership.members.keys {
+            pool.heartbeatSucceeded(from: nodeID)
+        }
+        clock.advance(1)
+
+        XCTAssertTrue(pool.hasAllRequiredPlatforms)
+        let result = try pool.planRAMPool(
+            model: testModel(),
+            estimatedStageDuration: 5,
+            at: clock.now
+        )
+        XCTAssertNil(result, "must reject when an assigned set omits a required platform")
+    }
+
+    /// Finding 4: pool strongly retains the injected transport.
+    func testPoolRetainsInjectedTransport() {
+        weak var weakTransport: InProcessRingTransport?
+        let pool: CrossPlatformPool = {
+            let transport = InProcessRingTransport()
+            weakTransport = transport
+            return CrossPlatformPool(
+                clock: TestClock(),
+                config: MembershipConfig(minimumEpochDwellTime: 0),
+                transport: transport
+            )
+        }()
+
+        XCTAssertNotNil(weakTransport, "pool must strongly retain the injected transport")
+        _ = pool.connectSimulated(.android)
+        XCTAssertFalse(
+            try! XCTUnwrap(weakTransport).broadcastLog.isEmpty,
+            "join must still broadcast after caller dropped its transport reference"
+        )
+        withExtendedLifetime(pool) {}
+    }
+
+    /// Finding 5: post-tick eviction of a required platform → nil.
+    func testPlanRAMPoolReturnsNilAfterTickEvictsRequiredPlatform() throws {
+        let (pool, clock) = makePool(dwell: 0)
+        _ = pool.connectAllSimulatedPlatforms()
+        for nodeID in pool.membership.members.keys {
+            pool.heartbeatSucceeded(from: nodeID)
+        }
+        clock.advance(1)
+        _ = pool.tick(at: clock.now)
+
+        let phoneID = try XCTUnwrap(pool.nodeID(for: .ios))
+        // iOS lease max is 30s; advance past it without renewing the phone.
+        clock.advance(35)
+        for nodeID in pool.membership.members.keys where nodeID != phoneID {
+            pool.heartbeatSucceeded(from: nodeID)
+        }
+
+        let result = try pool.planRAMPool(
+            model: testModel(),
+            estimatedStageDuration: 5,
+            at: clock.now
+        )
+        XCTAssertNil(result, "must return nil after tick evicts a required platform")
+        XCTAssertFalse(pool.hasAllRequiredPlatforms)
+        XCTAssertEqual(pool.missingPlatforms, [.ios])
     }
 }
