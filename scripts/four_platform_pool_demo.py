@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import select
 import signal
 import socket
 import subprocess
