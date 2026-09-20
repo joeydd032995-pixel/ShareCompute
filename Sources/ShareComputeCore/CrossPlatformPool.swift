@@ -31,7 +31,9 @@ public struct PoolPlanResult: Sendable, Equatable {
 /// node IDs. Peers may be real adapters or `SimulatedPlatformPeer` stand-ins.
 ///
 /// Still performs no I/O: the host calls `connect` / `heartbeatSucceeded` / `tick`, and optionally
-/// mirrors events onto a `RingTransport`.
+/// mirrors events onto a `RingTransport`. When a transport is injected, the pool **owns** it for
+/// the pool lifetime (strong reference) so join/heartbeat/drain/epoch notifications keep working
+/// after `init` returns.
 public final class CrossPlatformPool {
     public let localNodeID: NodeID
     public let membership: MembershipService
@@ -40,7 +42,9 @@ public final class CrossPlatformPool {
     private let clock: RingClock
     private var platformByNode: [NodeID: PlatformKind] = [:]
     private var nodeByPlatform: [PlatformKind: NodeID] = [:]
-    private weak var transport: RingTransport?
+    /// Strong ownership: callers may pass `CrossPlatformPool(…, transport: SocketTransport())`
+    /// without separately retaining the transport.
+    private let transport: RingTransport?
 
     public init(
         localNodeID: NodeID = NodeID("pool-hub"),
@@ -103,6 +107,8 @@ public final class CrossPlatformPool {
             _ = membership.nodeAppeared(profile: profile)
             events.append(.peerAlreadyPresent(platform: platform, nodeID: profile.nodeID))
         } else {
+            // MembershipService reactivates a previously suspended NodeID on appear; do that
+            // before restoring the platform seat so peerConnected implies planning membership.
             let joinEvents = membership.nodeAppeared(profile: profile)
             platformByNode[profile.nodeID] = platform
             nodeByPlatform[platform] = profile.nodeID
@@ -199,7 +205,9 @@ public final class CrossPlatformPool {
     // MARK: - RAM pooling
 
     /// When all four platforms are connected and the membership epoch is ready, produce a shard
-    /// plan that pools their usable RAM. Returns `nil` if platforms are still missing.
+    /// plan that pools their usable RAM. Returns `nil` if platforms are still missing, if the
+    /// pending membership change is still deferred by anti-flap dwell, or if any required
+    /// platform is ineligible for assignment.
     public func planRAMPool(
         model: ModelPlacementSpec,
         estimatedStageDuration: TimeInterval = 10,
@@ -209,7 +217,18 @@ public final class CrossPlatformPool {
 
         let instant = now ?? clock.now
         // Advance membership so the first epoch after the four joins can fire past anti-flap dwell.
-        _ = tick(at: instant)
+        let tickEvents = tick(at: instant)
+
+        // Anti-flap: never return a plan for new membership under the old epoch.
+        if tickEvents.contains(where: {
+            if case .epochChangeDeferred = $0 { return true }
+            return false
+        }) {
+            return nil
+        }
+
+        // Tick may have evicted a required seat (lease expiry / heartbeat loss).
+        guard hasAllRequiredPlatforms else { return nil }
 
         let members = membership.planningMembers
         guard !members.isEmpty else { return nil }
@@ -222,11 +241,26 @@ public final class CrossPlatformPool {
             estimatedStageDuration: estimatedStageDuration
         )
 
-        let platforms = members.compactMap { platformByNode[$0.nodeID] }.sorted()
-        let totalUsable = members.reduce(0) { $0 + $1.profile.memory.usableBytes }
+        // Report only members that actually received shards; reject incomplete four-platform sets.
+        let assignedIDs = Set(plan.assignments.map(\NodeID.init(assignment:)).compactMap { $0 })
+        // Prefer direct map from assignments — NodeID is already on ShardAssignment.
+        let assignedNodeIDs = Set(plan.assignments.map(\.nodeID))
+        let assignedMembers = members.filter { assignedNodeIDs.contains($0.nodeID) }
+        let platforms = assignedMembers.compactMap { platformByNode[$0.nodeID] }.sorted()
+        guard Set(platforms) == PlatformKind.allRequired else { return nil }
+
+        let totalUsable = assignedMembers.reduce(0) { $0 + $1.profile.memory.usableBytes }
+
+        // Silence unused if the helper above was left in by mistake — keep only assignedNodeIDs path.
+        _ = assignedIDs
 
         return PoolPlanResult(platforms: platforms, plan: plan, totalUsableBytes: totalUsable)
     }
+}
+
+private extension NodeID {
+    /// Unused helper placeholder removed — see planRAMPool assignedNodeIDs.
+    init?(assignment: ShardAssignment) { self = assignment.nodeID }
 }
 
 /// Stock capability profiles for simulated Windows / macOS / iOS / Android peers.
