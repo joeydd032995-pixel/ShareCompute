@@ -15,7 +15,7 @@ runtime stand-ins — and how far that goes toward real RAM pooling.
 | `CrossPlatformPool` | Membership + platform roster + RAM shard planning |
 | `SimulatedPlatformPeer` | Stock capability profiles per platform |
 | `FourPlatformDemo` | `swift run` executable (in-process + `--fail-platform`) |
-| `scripts/four_platform_pool_demo.py` | **Networked multi-process** Python demo (primary device-like path) |
+| `scripts/four_platform_pool_demo.py` + `_lib.py` | **Networked multi-process** Python demo (primary device-like path) |
 | `FourPlatformPoolTests` | Asserts all four seats connect and plan; missing seat blocks plan |
 
 ## How to run the demo
