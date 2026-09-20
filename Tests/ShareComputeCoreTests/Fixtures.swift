@@ -53,6 +53,54 @@ extension CapabilityProfile {
         )
     }
 
+    /// A wall-powered Windows desktop/laptop for cross-platform pool seats.
+    static func windows(
+        _ name: String = "windows",
+        usableGB: Int = 16,
+        trust: TrustLevel = .trustedCore,
+        power: PowerProfile = .wallPowered,
+        declaresCanHostRequiredStage: Bool = true
+    ) -> CapabilityProfile {
+        CapabilityProfile(
+            nodeID: NodeID(name),
+            connectivity: .coreDesktop,
+            backgroundLink: .desktopUnrestricted,
+            memory: MemoryProfile(
+                totalBytes: usableGB * gb,
+                usableBytes: usableGB * gb,
+                reclaimModel: .windowsWorkingSetTrim
+            ),
+            runtimeBackends: [.winmlDirectML, .onnxRuntime, .llamaCppCPU],
+            power: power,
+            trust: trust,
+            declaresCanHostRequiredStage: declaresCanHostRequiredStage
+        )
+    }
+
+    /// An Android device on a foreground service lease.
+    static func android(
+        _ name: String = "android",
+        usableGB: Int = 8,
+        trust: TrustLevel = .trustedCore,
+        power: PowerProfile = PowerProfile(isWallPowered: false, batteryFraction: 0.7),
+        declaresCanHostRequiredStage: Bool = true
+    ) -> CapabilityProfile {
+        CapabilityProfile(
+            nodeID: NodeID(name),
+            connectivity: .elasticMobile,
+            backgroundLink: .androidForegroundService,
+            memory: MemoryProfile(
+                totalBytes: usableGB * gb,
+                usableBytes: usableGB * gb,
+                reclaimModel: .linuxCgroupOOM
+            ),
+            runtimeBackends: [.liteRT, .llamaCppCPU, .onnxRuntime],
+            power: power,
+            trust: trust,
+            declaresCanHostRequiredStage: declaresCanHostRequiredStage
+        )
+    }
+
     /// A node we explicitly do not depend on.
     static func opportunistic(
         _ name: String = "tablet",

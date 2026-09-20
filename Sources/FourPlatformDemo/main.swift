@@ -5,6 +5,11 @@ import ShareComputeCore
 /// advance past anti-flap dwell, and print a RAM-pooled shard plan.
 ///
 ///     swift run FourPlatformDemo
+enum DemoFailure: Error, CustomStringConvertible {
+    case planUnavailable
+    var description: String { "pool did not produce a plan" }
+}
+
 @main
 enum FourPlatformDemo {
     static func main() throws {
@@ -32,7 +37,8 @@ enum FourPlatformDemo {
                 case let .peerConnected(platform, nodeID):
                     let profile = pool.membership.record(for: nodeID)!.profile
                     let gb = Double(profile.memory.usableBytes) / (1024 * 1024 * 1024)
-                    print("  ✓ \(platform.displayName) connected as \(nodeID) (\(String(format: \"%.0f\", gb)) GB usable)")
+                    let gbLabel = String(format: "%.0f", gb)
+                    print("  ✓ \(platform.displayName) connected as \(nodeID) (\(gbLabel) GB usable)")
                 case .allRequiredPlatformsConnected:
                     print("\n  All four platforms are in the pool.\n")
                 default:
@@ -57,21 +63,23 @@ enum FourPlatformDemo {
         )
 
         guard let result = try pool.planRAMPool(model: model, estimatedStageDuration: 5, at: clock.now) else {
-            fputs("error: pool did not produce a plan\n", stderr)
-            Foundation.exit(1)
+            throw DemoFailure.planUnavailable
         }
 
         let totalGB = Double(result.totalUsableBytes) / (1024 * 1024 * 1024)
-        print("RAM pool ready — \(String(format: \"%.1f\", totalGB)) GB across \(result.platforms.map(\.displayName).joined(separator: ", "))")
+        let totalLabel = String(format: "%.1f", totalGB)
+        let platformList = result.platforms.map(\.displayName).joined(separator: ", ")
+        print("RAM pool ready — \(totalLabel) GB across \(platformList)")
         print("Epoch \(result.plan.epoch.value)  model \(result.plan.modelID)  layers \(result.plan.layerCount)\n")
         print("Shard plan:")
         for assignment in result.plan.assignments {
             let platform = pool.platform(for: assignment.nodeID)?.displayName ?? "?"
             let gb = Double(assignment.estimatedBytes) / (1024 * 1024 * 1024)
+            let gbLabel = String(format: "%.2f", gb)
+            let padded = platform.padding(toLength: 7, withPad: " ", startingAt: 0)
             print(
-                "  rank \(assignment.rank)  \(platform.padding(toLength: 7, withPad: \" \", startingAt: 0))  "
-                + "\(assignment.nodeID)  layers [\(assignment.startLayer),\(assignment.endLayer))  "
-                + "~\(String(format: \"%.2f\", gb)) GB"
+                "  rank \(assignment.rank)  \(padded)  \(assignment.nodeID)  "
+                + "layers [\(assignment.startLayer),\(assignment.endLayer))  ~\(gbLabel) GB"
             )
         }
 

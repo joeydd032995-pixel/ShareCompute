@@ -15,12 +15,31 @@ This repository adds the membership layer that makes departure a planned event.
 | Path | What it is |
 |---|---|
 | `Sources/ShareComputeCore/` | Platform-neutral membership core. **Zero dependencies** — not MLX, not UIKit, not NIO. |
-| `Tests/ShareComputeCoreTests/` | 66 tests, no network and no sleeping. |
+| `Tests/ShareComputeCoreTests/` | 66+ tests, no network and no sleeping. |
 | `Apps/InferRing/` | The vendored infer-ring app, unmodified. The first adapter. |
 | `Patches/` | Patches to MLX, mlx-c and mlx-swift. Start at [`Patches/README.md`](Patches/README.md). |
+| `docs/FOUR-PLATFORM-CONNECT.md` | Windows / macOS / iOS / Android pool connect (simulated peers OK). |
 | `findings.md` | Research log, including both spike results. Read this first. |
 | `task_plan.md` | Phase status and decisions. |
 | `progress.md` | Session log and test results. |
+
+## Four-platform pool connect
+
+`CrossPlatformPool` gives every platform an explicit seat (`PlatformKind`: windows, macos, ios,
+android). Simulated peers are enough to prove connect + RAM shard planning; real Windows/Android
+clients still need non-MLX runtimes.
+
+```bash
+# No Swift toolchain required:
+python3 scripts/four_platform_pool_demo.py
+
+# Or with Swift 6.0+:
+swift run FourPlatformDemo
+swift test --filter FourPlatformPoolTests
+```
+
+Details, real-vs-simulated matrix, and remaining work for on-device pooling:
+[`docs/FOUR-PLATFORM-CONNECT.md`](docs/FOUR-PLATFORM-CONNECT.md).
 
 ## Status
 
@@ -32,6 +51,7 @@ This repository adds the membership layer that makes departure a planned event.
 | M2 Stage 1 — a departing peer fails instead of hanging | patch written, 16 harness checks |
 | M2 Stage 2 — the group can be torn down and rebuilt | patches written, 27 harness checks |
 | M2 Stage 3 — epoch re-formation in the app | code complete, **never run** |
+| Four-platform connect (sim peers) | see `docs/FOUR-PLATFORM-CONNECT.md` |
 
 None of the patches has been built as part of MLX or run on Apple hardware, and no ring has ever
 re-formed. Stage 3's core half is covered by tests; its adapter half type-checks in CI and nothing
@@ -128,6 +148,8 @@ the package into `Packages/ShareComputeCore` is not needed.
   no I/O and owns no timer: the host reports outcomes and calls `tick(at:)`, so failure detection
   is a pure function of injected time.
 - **`StagePlanner`** — replaces `ModelManager.assignShardMetadata`, fixing three defects (see below).
+- **`CrossPlatformPool` / `PlatformKind` / `RingTransport`** — explicit Windows/macOS/iOS/Android
+  seats and a host-provided control-plane transport (in-process for demos).
 
 ### Shard planning defects fixed
 
@@ -224,6 +246,7 @@ Requires Swift 6.0+. The core has no dependencies and builds on Linux, macOS and
 ```bash
 swift build
 swift test
+swift run FourPlatformDemo
 ```
 
 The Xcode project under `Apps/InferRing/` requires macOS and Apple Silicon and is not built by SPM.
