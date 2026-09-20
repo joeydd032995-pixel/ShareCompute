@@ -19,6 +19,7 @@ This repository adds the membership layer that makes departure a planned event.
 | `Apps/InferRing/` | The vendored infer-ring app, unmodified. The first adapter. |
 | `Patches/` | Patches to MLX, mlx-c and mlx-swift. Start at [`Patches/README.md`](Patches/README.md). |
 | `docs/FOUR-PLATFORM-CONNECT.md` | Windows / macOS / iOS / Android pool connect (UDP discovery + TCP multi-process demo). |
+| `docs/INFERENCE-PIPELINE-SIM.md` | Phase A: shard plan → fake activation pipeline (frontend + workers). |
 | `findings.md` | Research log, including both spike results. Read this first. |
 | `task_plan.md` | Phase status and decisions. |
 | `progress.md` | Session log and test results. |
@@ -45,6 +46,25 @@ swift test --filter FourPlatformPoolTests
 Details, real-vs-simulated matrix, and remaining work for on-device pooling:
 [`docs/FOUR-PLATFORM-CONNECT.md`](docs/FOUR-PLATFORM-CONNECT.md).
 
+## Inference pipeline simulation (Phase A)
+
+Wires the shard plan into an inference-like **activation data path**: one **frontend**
+(rank 0) owns the prompt / final output; **worker** peers supply RAM/compute seats.
+Discovery uses service id **`sharecompute-infer`** (distinct from the four-platform
+pool); compute is **fake-but-sized** (checksum + sleep) — this does not claim MLX/Metal.
+
+```bash
+python3 scripts/inference_pipeline_demo.py
+python3 scripts/inference_pipeline_demo.py --fail-discovery          # exits 1
+python3 scripts/inference_pipeline_demo.py --fail-platform android   # exits 1
+python3 scripts/inference_pipeline_demo.py --kill-worker mid         # exits 1, no hang
+python3 scripts/inference_pipeline_demo.py --usable-gb 0.1           # exits 1 (plan rejected)
+python3 scripts/inference_pipeline_demo.py --token-count -1          # exits 1 (arg error)
+```
+
+Design, hard-fail matrix, and Phase B (InferRing/MLX) mapping:
+[`docs/INFERENCE-PIPELINE-SIM.md`](docs/INFERENCE-PIPELINE-SIM.md).
+
 ## Status
 
 **Detection ships. Re-formation is written but has never run.**
@@ -56,6 +76,7 @@ Details, real-vs-simulated matrix, and remaining work for on-device pooling:
 | M2 Stage 2 — the group can be torn down and rebuilt | patches written, 27 harness checks |
 | M2 Stage 3 — epoch re-formation in the app | code complete, **never run** |
 | Four-platform connect (UDP discovery + TCP multi-process demo) | see `docs/FOUR-PLATFORM-CONNECT.md` |
+| Phase A inference pipeline sim (plan → activation TCP path) | see `docs/INFERENCE-PIPELINE-SIM.md` |
 
 None of the patches has been built as part of MLX or run on Apple hardware, and no ring has ever
 re-formed. Stage 3's core half is covered by tests; its adapter half type-checks in CI and nothing
