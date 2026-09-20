@@ -242,8 +242,6 @@ public final class CrossPlatformPool {
         )
 
         // Report only members that actually received shards; reject incomplete four-platform sets.
-        let assignedIDs = Set(plan.assignments.map(\NodeID.init(assignment:)).compactMap { $0 })
-        // Prefer direct map from assignments — NodeID is already on ShardAssignment.
         let assignedNodeIDs = Set(plan.assignments.map(\.nodeID))
         let assignedMembers = members.filter { assignedNodeIDs.contains($0.nodeID) }
         let platforms = assignedMembers.compactMap { platformByNode[$0.nodeID] }.sorted()
@@ -251,16 +249,8 @@ public final class CrossPlatformPool {
 
         let totalUsable = assignedMembers.reduce(0) { $0 + $1.profile.memory.usableBytes }
 
-        // Silence unused if the helper above was left in by mistake — keep only assignedNodeIDs path.
-        _ = assignedIDs
-
         return PoolPlanResult(platforms: platforms, plan: plan, totalUsableBytes: totalUsable)
     }
-}
-
-private extension NodeID {
-    /// Unused helper placeholder removed — see planRAMPool assignedNodeIDs.
-    init?(assignment: ShardAssignment) { self = assignment.nodeID }
 }
 
 /// Stock capability profiles for simulated Windows / macOS / iOS / Android peers.

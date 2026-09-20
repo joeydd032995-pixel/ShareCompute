@@ -113,6 +113,26 @@ public final class MembershipService {
         let now = clock.now
 
         if var existing = storage[profile.nodeID] {
+            // A suspended member (post-eviction / completed drain) must explicitly rejoin into an
+            // active state when it reappears with the same NodeID. Refreshing alone would leave
+            // it absent from planningMembers while adapters restore seats and emit connected.
+            if existing.state == .suspended {
+                let joinEvent = Self.joinEvent(for: profile)
+                NodeStateMachine.apply(joinEvent, to: &existing.state)
+                existing.profile = profile
+                existing.lastHeardFrom = now
+                existing.consecutiveMissedHeartbeats = 0
+                existing.stabilityScore = 1.0
+                existing.lease = issueLease(
+                    for: profile,
+                    state: existing.state,
+                    at: now,
+                    stabilityScore: existing.stabilityScore
+                )
+                storage[profile.nodeID] = existing
+                return [.nodeJoined(profile.nodeID)]
+            }
+
             // Refreshed profile from a node already present: adopt the new facts (thermal state
             // and battery move constantly) but do not resurrect a departing node here — it must
             // complete its drain and rejoin explicitly.
@@ -273,6 +293,17 @@ public final class MembershipService {
                 stabilityScore: record.stabilityScore
             )
             storage[nodeID] = record
+        }
+    }
+
+    private static func joinEvent(for profile: CapabilityProfile) -> NodeEvent {
+        switch NodeStateMachine.initialState(for: profile) {
+        case .activeCore:
+            return .joinedAsCore
+        case .activeElastic:
+            return .joinedAsElastic
+        case .opportunistic, .draining, .suspended:
+            return .joinedAsOpportunistic
         }
     }
 
