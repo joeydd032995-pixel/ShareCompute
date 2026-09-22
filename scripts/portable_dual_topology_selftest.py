@@ -20,6 +20,36 @@ def _fail(msg: str) -> None:
     raise SystemExit(1)
 
 
+def test_docs_exist_and_mention_commands() -> None:
+    candidates = [
+        os.path.normpath(os.path.join(HERE, "..", "docs", "PORTABLE-DUAL-TOPOLOGY-SIM.md")),
+        "docs/PORTABLE-DUAL-TOPOLOGY-SIM.md",
+    ]
+    path = next((c for c in candidates if os.path.isfile(c)), None)
+    if path is None:
+        _fail("docs/PORTABLE-DUAL-TOPOLOGY-SIM.md missing")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    for needle in (
+        "sharecompute-portable",
+        "SCPT",
+        "--topology both",
+        "--topology iphone-frontend",
+        "--topology windows-frontend",
+        "--fail-discovery",
+        "--fail-platform",
+        "--kill-worker mid",
+        "--kill-worker start",
+        "--usable-gb",
+        "--fail-role-mismatch",
+        "llama.cpp",
+        "portable_dual_topology_selftest.py",
+    ):
+        if needle not in text:
+            _fail(f"docs missing required needle: {needle}")
+    print("PASS: docs content")
+
+
 def test_lib_constants_and_topology() -> None:
     import portable_dual_topology_lib as lib
 
@@ -176,7 +206,7 @@ def test_hub_rejects_non_product_and_role_mismatch() -> None:
     assert bad.get("reason") == "non-product-platform"
 
     mm = join_once("windows", "frontend", 19002)
-    assert mm.get("type") == "error", f"expected role reject, got {mm}"
+    assert mm.get("type") == "error", f"expected error for role reject, got {mm}"
     assert mm.get("reason") == "frontend-role-reserved"
 
     mm2 = join_once("ios", "worker", 19003)
@@ -273,6 +303,7 @@ def test_peer_module_importable() -> None:
 
 
 def run_unit_tests() -> None:
+    test_docs_exist_and_mention_commands()
     test_lib_constants_and_topology()
     test_scpt_roundtrip_rejects_scin()
     test_plan_fits_two_seats_rejects_tiny_ram()
