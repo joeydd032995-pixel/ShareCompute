@@ -187,12 +187,91 @@ def test_hub_rejects_non_product_and_role_mismatch() -> None:
     print("PASS: hub reject checks")
 
 
+
+def test_hub_rejects_worker_done() -> None:
+    import threading
+    from portable_dual_topology_hub import run_hub
+    from portable_dual_topology_lib import (
+        DEFAULT_HOST,
+        PORTABLE_DEFAULT_USABLE_GB,
+        recv_line,
+        send_msg,
+    )
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind((DEFAULT_HOST, 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    result = {"rc": None}
+
+    def hub_thread() -> None:
+        result["rc"] = run_hub(
+            DEFAULT_HOST,
+            port,
+            ("ios", "windows"),
+            timeout_s=2.0,
+            frontend_platform="ios",
+            token_count=1,
+            enable_beacon=False,
+        )
+
+    t = threading.Thread(target=hub_thread, daemon=True)
+    t.start()
+    sockets = []
+    buffers = []
+    try:
+        time.sleep(0.1)
+        for platform, role, data_port in (
+            ("ios", "frontend", 19101),
+            ("windows", "worker", 19102),
+        ):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((DEFAULT_HOST, port))
+            s.setblocking(False)
+            sockets.append(s)
+            buf = bytearray()
+            buffers.append(buf)
+            send_msg(
+                s,
+                {
+                    "type": "join",
+                    "platform": platform,
+                    "node_id": f"sim-{platform}",
+                    "usable_gb": PORTABLE_DEFAULT_USABLE_GB[platform],
+                    "role": role,
+                    "data_host": DEFAULT_HOST,
+                    "data_port": data_port,
+                },
+            )
+            ack = recv_line(s, buf, time.monotonic() + 2.0)
+            assert ack and ack.get("type") == "ack", f"expected {platform} ack, got {ack}"
+
+        for platform, s, buf in zip(("ios", "windows"), sockets, buffers):
+            plan = recv_line(s, buf, time.monotonic() + 2.0)
+            assert plan and plan.get("type") == "plan", f"expected {platform} plan, got {plan}"
+
+        send_msg(sockets[1], {"type": "done", "tokens": 1})
+        t.join(timeout=5.0)
+        assert not t.is_alive(), "hub did not stop after worker done"
+        assert result["rc"] != 0, f"worker done incorrectly succeeded with rc={result['rc']}"
+    finally:
+        for s in sockets:
+            try:
+                s.close()
+            except OSError:
+                pass
+        if t.is_alive():
+            t.join(timeout=5.0)
+
+
 def run_unit_tests() -> None:
     test_lib_constants_and_topology()
     test_scpt_roundtrip_rejects_scin()
     test_plan_fits_two_seats_rejects_tiny_ram()
     test_beacon_service_filter()
     test_hub_rejects_non_product_and_role_mismatch()
+    test_hub_rejects_worker_done()
     print("PASS: lib unit checks")
 
 

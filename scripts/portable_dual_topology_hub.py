@@ -180,7 +180,14 @@ def run_hub(
                 return
             peer = PortablePeer(platform, node_id, usable_gb, role, data_host, data_port)
             with lock:
-                # One seat per platform for this demo.
+                # One seat per platform for this demo; never replace a live seat.
+                if platform in connected:
+                    print(
+                        f"  \u2717 reject JOIN: duplicate platform {platform!r}",
+                        flush=True,
+                    )
+                    send_msg(conn, {"type": "error", "reason": "duplicate-platform"})
+                    return
                 connected[platform] = peer
                 client_conns[platform] = (conn, buf)
                 print(
@@ -225,7 +232,21 @@ def run_hub(
                     continue
                 mtype = msg2.get("type")
                 if mtype == "done":
-                    print(f"  \u2713 frontend reported pipeline done ({msg2.get('tokens')} tokens)", flush=True)
+                    if platform == frontend_platform:
+                        print(
+                            f"  \u2713 frontend reported pipeline done ({msg2.get('tokens')} tokens)",
+                            flush=True,
+                        )
+                        pipeline_done.set()
+                        return
+                    reason = f"unexpected-done-from-{platform}"
+                    print(f"  \u2717 reject {platform} done: {reason}", flush=True)
+                    with lock:
+                        fail_reason.append(reason)
+                    try:
+                        send_msg(conn, {"type": "error", "reason": reason})
+                    except OSError:
+                        pass
                     pipeline_done.set()
                     return
                 if mtype == "pipeline-error":
@@ -244,7 +265,6 @@ def run_hub(
             # Connection kept open until shutdown broadcast below.
             pass
 
-    accept_threads: List[threading.Thread] = []
     try:
         while not all_joined.is_set():
             remaining = deadline - time.monotonic()
@@ -258,20 +278,19 @@ def run_hub(
             except BlockingIOError:
                 continue
             t = threading.Thread(target=handle_client, args=(conn, addr), daemon=True)
-            accept_threads.append(t)
             t.start()
 
         if not all_joined.is_set():
             missing = sorted(expected_set - set(connected.keys()))
             print("\nFAIL: platform(s) did not join within deadline:", flush=True)
             for platform in missing:
-                print(f"  \u2717 {PORTABLE_DISPLAY[platform]} \u2014 no TCP join", flush=True)
+                print(f"  \u2717 {PORTABLE_DISPLAY[platform]} — no TCP join", flush=True)
             joined = sorted(connected.keys())
             if joined:
                 print("Joined OK: " + ", ".join(PORTABLE_DISPLAY[p] for p in joined), flush=True)
             if not enable_beacon:
                 print(
-                    "\nDiscovery note: hub beacon was disabled \u2014 peers likely failed UDP discovery "
+                    "\nDiscovery note: hub beacon was disabled — peers likely failed UDP discovery "
                     f"on {DISCOVERY_MULTICAST_GROUP}:{discovery_port}.",
                     flush=True,
                 )
@@ -298,7 +317,7 @@ def run_hub(
         try:
             shards = plan_portable_shards(peers)
         except ValueError as exc:
-            print(f"\nFAIL: shard plan rejected \u2014 {exc}", flush=True)
+            print(f"\nFAIL: shard plan rejected — {exc}", flush=True)
             with lock:
                 conns_snapshot = list(client_conns.items())
             _broadcast_shutdown(conns_snapshot, "plan-rejected")
@@ -307,12 +326,12 @@ def run_hub(
 
         print("\n  All seats joined. Broadcasting shard plan + epoch.\n", flush=True)
         total_gb = sum(p.usable_gb for p in peers)
-        print(f"RAM pool ready \u2014 {total_gb:.1f} GB across " + ", ".join(PORTABLE_DISPLAY[p.platform] for p in peers))
+        print(f"RAM pool ready — {total_gb:.1f} GB across " + ", ".join(PORTABLE_DISPLAY[p.platform] for p in peers))
         print(f"Epoch {epoch}  model demo-{sum(s.end_layer - s.start_layer for s in shards)}L  tokens {token_count}\n")
         print("Shard plan (inference pipeline ranks):")
         for s in shards:
             print(
-                f"  rank {s.rank}  {PORTABLE_DISPLAY[s.platform].ljust(7)}  role={s.role.ljust(8)}  "
+                f"  rank {s.rank}  {PORTABLE_DISPLAY[s.platform].ljust(7)}  role={s.role.ljust(8)} "
                 f"{s.node_id}  layers [{s.start_layer},{s.end_layer})  "
                 f"~{s.estimated_gb:.2f} GB  data={s.data_host}:{s.data_port}"
             )
@@ -325,6 +344,7 @@ def run_hub(
                 send_msg(conn, plan)
             except OSError as exc:
                 print(f"  ! failed to send plan to {platform}: {exc}", file=sys.stderr, flush=True)
+                _broadcast_shutdown(conns_snapshot, "plan-send-failed")
                 return 1
 
         # Wait for frontend done or peer error / disconnect / overall deadline.
@@ -337,7 +357,7 @@ def run_hub(
             reasons = list(fail_reason)
 
         if reasons:
-            print(f"\nFAIL: pipeline error \u2014 {reasons[0]}", flush=True)
+            print(f"\nFAIL: pipeline error — {reasons[0]}", flush=True)
             _broadcast_shutdown(conns_snapshot, "pipeline-error")
             return 1
 
@@ -348,12 +368,12 @@ def run_hub(
 
         _broadcast_shutdown(conns_snapshot, "hub-complete")
         print(
-            "\nSuccess: discovery \u2192 join \u2192 shard plan \u2192 activation pipeline completed "
+            "\nSuccess: discovery → join → shard plan → activation pipeline completed "
             f"({token_count} tokens on frontend).",
             flush=True,
         )
         print(
-            "(Compute is fake-but-sized checksum+sleep \u2014 not MLX/Metal. "
+            "(Compute is fake-but-sized checksum+sleep — not MLX/Metal. "
             "Phase B portable dual-topology stub.)",
             flush=True,
         )
