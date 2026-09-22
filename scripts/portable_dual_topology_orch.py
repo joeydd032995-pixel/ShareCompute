@@ -419,12 +419,15 @@ def run_orchestrator(
     (never last-wins mask).
     """
     if topology == "both":
-        print("=== Topology A: iphone-frontend ===", flush=True)
+        print(
+            "=== Topology A: iphone-frontend (ios FE + windows worker) ===\n",
+            flush=True,
+        )
         rc_a = run_one_topology(
             script_path,
             "iphone-frontend",
             host,
-            port,
+            0,
             timeout_s,
             fail_platforms=fail_platforms,
             fail_discovery=fail_discovery,
@@ -434,15 +437,15 @@ def run_orchestrator(
             usable_gb=usable_gb,
             fail_role_mismatch=fail_role_mismatch,
         )
-        print(f"\n=== Topology A result: {rc_a} ===\n", flush=True)
-        # Fresh ephemeral port for second topology if auto-assigned.
-        port_b = 0 if port <= 0 else port
-        print("=== Topology B: windows-frontend ===", flush=True)
+        print(
+            "\n=== Topology B: windows-frontend (windows FE + ios worker) ===\n",
+            flush=True,
+        )
         rc_b = run_one_topology(
             script_path,
             "windows-frontend",
             host,
-            port_b,
+            0,
             timeout_s,
             fail_platforms=fail_platforms,
             fail_discovery=fail_discovery,
@@ -452,17 +455,15 @@ def run_orchestrator(
             usable_gb=usable_gb,
             fail_role_mismatch=fail_role_mismatch,
         )
-        print(f"\n=== Topology B result: {rc_b} ===", flush=True)
-        # Aggregate: exit 0 only if both exit 0 (never last-wins).
         if rc_a == 0 and rc_b == 0:
-            print("\nBOTH topologies PASS", flush=True)
+            print("\nPASS: both topologies succeeded", flush=True)
             return 0
         print(
-            f"\nFAIL: --topology both requires both runs exit 0 "
-            f"(iphone-frontend={rc_a}, windows-frontend={rc_b})",
+            f"\nFAIL: topology aggregate iphone-frontend={rc_a} "
+            f"windows-frontend={rc_b}",
             flush=True,
         )
-        return rc_a if rc_a != 0 else rc_b
+        return 1
 
     return run_one_topology(
         script_path,
