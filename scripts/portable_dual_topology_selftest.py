@@ -114,11 +114,85 @@ def test_beacon_service_filter() -> None:
     assert lib.parse_portable_beacon(bad) is None
 
 
+def test_hub_rejects_non_product_and_role_mismatch() -> None:
+    import socket
+    import threading
+    from portable_dual_topology_hub import run_hub
+    from portable_dual_topology_lib import (
+        DEFAULT_HOST,
+        PORTABLE_DEFAULT_USABLE_GB,
+        recv_line,
+        send_msg,
+    )
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind((DEFAULT_HOST, 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    result = {"rc": None}
+
+    def hub_thread() -> None:
+        result["rc"] = run_hub(
+            DEFAULT_HOST,
+            port,
+            ("ios", "windows"),
+            timeout_s=3.0,
+            frontend_platform="ios",
+            token_count=2,
+            enable_beacon=False,
+        )
+
+    t = threading.Thread(target=hub_thread, daemon=True)
+    t.start()
+    time.sleep(0.2)
+
+    def join_once(platform: str, role: str, data_port: int) -> dict:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((DEFAULT_HOST, port))
+        s.setblocking(False)
+        buf = bytearray()
+        send_msg(
+            s,
+            {
+                "type": "join",
+                "platform": platform,
+                "node_id": f"sim-{platform}",
+                "usable_gb": PORTABLE_DEFAULT_USABLE_GB.get(platform, 8.0),
+                "role": role,
+                "data_host": DEFAULT_HOST,
+                "data_port": data_port,
+            },
+        )
+        msg = recv_line(s, buf, time.monotonic() + 2.0)
+        try:
+            s.close()
+        except OSError:
+            pass
+        return msg or {}
+
+    bad = join_once("macos", "worker", 19001)
+    assert bad.get("type") == "error", f"expected error for macos, got {bad}"
+    assert bad.get("reason") == "non-product-platform"
+
+    mm = join_once("windows", "frontend", 19002)
+    assert mm.get("type") == "error", f"expected role reject, got {mm}"
+    assert mm.get("reason") == "frontend-role-reserved"
+
+    mm2 = join_once("ios", "worker", 19003)
+    assert mm2.get("type") == "error"
+    assert mm2.get("reason") == "frontend-must-join-as-frontend"
+
+    t.join(timeout=5.0)
+    print("PASS: hub reject checks")
+
+
 def run_unit_tests() -> None:
     test_lib_constants_and_topology()
     test_scpt_roundtrip_rejects_scin()
     test_plan_fits_two_seats_rejects_tiny_ram()
     test_beacon_service_filter()
+    test_hub_rejects_non_product_and_role_mismatch()
     print("PASS: lib unit checks")
 
 
