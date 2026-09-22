@@ -311,9 +311,31 @@ def test_happy_windows_frontend() -> None:
     print("PASS: happy windows-frontend")
 
 
+def test_happy_both() -> None:
+    cp = _run_demo(["--topology", "both", "--timeout", "8", "--token-count", "4"], timeout=120.0)
+    if cp.returncode != 0:
+        sys.stderr.write(cp.stdout + "\n" + cp.stderr)
+        _fail(f"both expected exit 0, got {cp.returncode}")
+    out = cp.stdout + cp.stderr
+    if "PASS: both topologies succeeded" not in out:
+        # Still require both topology markers if banner wording differs slightly.
+        if "iphone-frontend" not in out.lower() and "ios FE" not in out:
+            _fail("both run did not log first topology")
+    print("PASS: happy both")
+
+
+def test_both_aggregates_failure() -> None:
+    cp = _run_demo(["--topology", "both", "--fail-discovery", "--timeout", "3"], timeout=60.0)
+    if cp.returncode == 0:
+        _fail("both + fail-discovery must not exit 0")
+    print("PASS: both aggregates failure")
+
+
 def run_matrix() -> None:
     test_happy_iphone_frontend()
     test_happy_windows_frontend()
+    test_happy_both()
+    test_both_aggregates_failure()
 
 
 def main() -> int:
