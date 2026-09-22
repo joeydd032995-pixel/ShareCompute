@@ -283,8 +283,44 @@ def run_unit_tests() -> None:
     print("PASS: lib unit checks")
 
 
+def _run_demo(args: list[str], timeout: float = 60.0) -> subprocess.CompletedProcess:
+    cmd = [sys.executable, DEMO] + args
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, cwd=os.path.dirname(HERE)
+    )
+
+
+def test_happy_iphone_frontend() -> None:
+    if not os.path.isfile(DEMO):
+        _fail(f"missing demo entry {DEMO}")
+    cp = _run_demo(["--topology", "iphone-frontend", "--timeout", "8", "--token-count", "4"])
+    if cp.returncode != 0:
+        sys.stderr.write(cp.stdout + "\n" + cp.stderr)
+        _fail(f"iphone-frontend expected exit 0, got {cp.returncode}")
+    out = cp.stdout + cp.stderr
+    assert "iPhone" in out or "ios" in out
+    assert "Windows" in out or "windows" in out
+    print("PASS: happy iphone-frontend")
+
+
+def test_happy_windows_frontend() -> None:
+    cp = _run_demo(["--topology", "windows-frontend", "--timeout", "8", "--token-count", "4"])
+    if cp.returncode != 0:
+        sys.stderr.write(cp.stdout + "\n" + cp.stderr)
+        _fail(f"windows-frontend expected exit 0, got {cp.returncode}")
+    print("PASS: happy windows-frontend")
+
+
+def run_matrix() -> None:
+    test_happy_iphone_frontend()
+    test_happy_windows_frontend()
+
+
 def main() -> int:
     run_unit_tests()
+    if os.path.isfile(DEMO):
+        run_matrix()
+    print("ALL PASS: portable_dual_topology_selftest")
     return 0
 
 
