@@ -1,1 +1,1 @@
-PLACEHOLDER_LOAD_FROM_FILE
+@/workspace/portable-dual-topology-plan.md
