@@ -331,11 +331,92 @@ def test_both_aggregates_failure() -> None:
     print("PASS: both aggregates failure")
 
 
+
+def test_fail_discovery() -> None:
+    cp = _run_demo(["--topology", "iphone-frontend", "--fail-discovery", "--timeout", "3"])
+    if cp.returncode == 0:
+        _fail("fail-discovery must exit != 0")
+    print("PASS: fail-discovery")
+
+
+def test_fail_platform_missing_seat() -> None:
+    cp = _run_demo(["--topology", "iphone-frontend", "--fail-platform", "windows", "--timeout", "3"])
+    if cp.returncode == 0:
+        _fail("missing windows seat must exit != 0")
+    print("PASS: fail-platform")
+
+
+def test_fail_usable_gb() -> None:
+    cp = _run_demo(
+        ["--topology", "iphone-frontend", "--usable-gb", "0.1", "--timeout", "8", "--token-count", "2"]
+    )
+    if cp.returncode == 0:
+        _fail("usable-gb 0.1 must exit != 0")
+    print("PASS: usable-gb reject")
+
+
+def test_fail_role_mismatch() -> None:
+    cp = _run_demo(["--topology", "iphone-frontend", "--fail-role-mismatch", "--timeout", "5"])
+    if cp.returncode == 0:
+        _fail("role mismatch must exit != 0")
+    print("PASS: fail-role-mismatch")
+
+
+def test_fail_role_mismatch_windows_frontend() -> None:
+    cp = _run_demo(["--topology", "windows-frontend", "--fail-role-mismatch", "--timeout", "5"])
+    if cp.returncode == 0:
+        _fail("role mismatch on windows-frontend must exit != 0")
+    print("PASS: fail-role-mismatch windows-frontend")
+
+
+def test_kill_worker_mid() -> None:
+    cp = _run_demo(
+        ["--topology", "iphone-frontend", "--kill-worker", "mid", "--timeout", "12"],
+        timeout=90.0,
+    )
+    if cp.returncode == 0:
+        _fail("kill-worker mid must exit != 0")
+    out = cp.stdout + cp.stderr
+    if "SIGKILL-ok:" not in out:
+        sys.stderr.write(out)
+        _fail("kill-worker mid missing SIGKILL-ok evidence")
+    print("PASS: kill-worker mid")
+
+
+def test_kill_worker_start() -> None:
+    cp = _run_demo(
+        ["--topology", "windows-frontend", "--kill-worker", "start", "--timeout", "12"],
+        timeout=90.0,
+    )
+    if cp.returncode == 0:
+        _fail("kill-worker start must exit != 0")
+    out = cp.stdout + cp.stderr
+    if "SIGKILL-ok:" not in out:
+        sys.stderr.write(out)
+        _fail("kill-worker start missing SIGKILL-ok evidence")
+    print("PASS: kill-worker start")
+
+
+def test_bad_token_count() -> None:
+    cp = _run_demo(["--token-count", "-1"])
+    if cp.returncode == 0:
+        _fail("token-count -1 must exit != 0")
+    print("PASS: bad token-count")
+
+
 def run_matrix() -> None:
     test_happy_iphone_frontend()
     test_happy_windows_frontend()
     test_happy_both()
     test_both_aggregates_failure()
+    test_fail_discovery()
+    test_fail_platform_missing_seat()
+    test_fail_usable_gb()
+    test_fail_role_mismatch()
+    test_fail_role_mismatch_windows_frontend()
+    test_kill_worker_mid()
+    test_kill_worker_start()
+    test_bad_token_count()
 
 
 def main() -> int:
