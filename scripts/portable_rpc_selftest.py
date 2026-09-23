@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from unittest.mock import mock_open, patch
 
@@ -165,6 +166,35 @@ def test_parse_cli_status_detects_decode_fail() -> None:
     assert good.decode_failed is False and good.ok is True
     print("PASS: parse_cli_logs")
 
+
+def test_backend_rpc_missing_bin_exits_nonzero() -> None:
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    env = os.environ.copy()
+    env.pop("SHARECOMPUTE_LLAMA_BIN", None)
+    env.pop("BIN", None)
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "llamacpp-rpc",
+            "--topology",
+            "iphone-frontend",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        cwd=os.path.dirname(HERE),
+    )
+    if cp.returncode == 0:
+        _fail("llamacpp-rpc without BIN must exit != 0")
+    out = cp.stdout + cp.stderr
+    if "BIN" not in out and "llama" not in out.lower():
+        _fail("missing clear BIN error message")
+    print("PASS: missing BIN loud fail")
+
+
 def run_unit_tests() -> None:
     test_backend_constants()
     test_resolve_llama_bin_and_model()
@@ -175,6 +205,7 @@ def run_unit_tests() -> None:
     test_run_rpc_generate_requires_paired_server_args()
     test_probe_missing_bin_raises()
     test_parse_cli_status_detects_decode_fail()
+    test_backend_rpc_missing_bin_exits_nonzero()
 
 
 def main() -> int:

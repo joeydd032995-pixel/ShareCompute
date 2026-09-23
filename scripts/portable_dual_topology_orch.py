@@ -13,6 +13,8 @@ import time
 from typing import List, Optional, Sequence
 
 from portable_dual_topology_lib import (
+    BACKEND_CHOICES,
+    DEFAULT_BACKEND,
     DEFAULT_HOST,
     DEFAULT_TIMEOUT_S,
     DEFAULT_TOKEN_COUNT,
@@ -43,6 +45,7 @@ def run_one_topology(
     token_count: int = DEFAULT_TOKEN_COUNT,
     usable_gb: Optional[float] = None,
     fail_role_mismatch: bool = False,
+    backend: str = DEFAULT_BACKEND,
 ) -> int:
     fail_set = set(fail_platforms)
     for p in fail_set:
@@ -66,6 +69,7 @@ def run_one_topology(
     print("ShareCompute portable dual-topology sim (Phase B)")
     print("================================================")
     print(f"Topology: {topology}  (frontend={frontend_platform}, worker={worker_platform})")
+    print(f"Backend: {backend}")
     print("Mode: UDP discovery + TCP control join + TCP activation pipeline")
     print(
         f"Discovery {DISCOVERY_MULTICAST_GROUP}:{discovery_port}  "
@@ -412,6 +416,7 @@ def run_orchestrator(
     token_count: int = DEFAULT_TOKEN_COUNT,
     usable_gb: Optional[float] = None,
     fail_role_mismatch: bool = False,
+    backend: str = DEFAULT_BACKEND,
 ) -> int:
     """Run one topology, or both sequentially with aggregated exit codes.
 
@@ -436,6 +441,7 @@ def run_orchestrator(
             token_count=token_count,
             usable_gb=usable_gb,
             fail_role_mismatch=fail_role_mismatch,
+            backend=backend,
         )
         print(
             "\n=== Topology B: windows-frontend (windows FE + ios worker) ===\n",
@@ -454,6 +460,7 @@ def run_orchestrator(
             token_count=token_count,
             usable_gb=usable_gb,
             fail_role_mismatch=fail_role_mismatch,
+            backend=backend,
         )
         if rc_a == 0 and rc_b == 0:
             print("\nPASS: both topologies succeeded", flush=True)
@@ -478,6 +485,7 @@ def run_orchestrator(
         token_count=token_count,
         usable_gb=usable_gb,
         fail_role_mismatch=fail_role_mismatch,
+        backend=backend,
     )
 
 
@@ -531,6 +539,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--fail-role-mismatch",
         action="store_true",
         help="Swap JOIN roles (frontend<->worker) for negative role tests",
+    )
+    p.add_argument(
+        "--backend",
+        choices=BACKEND_CHOICES,
+        default=DEFAULT_BACKEND,
+        help="Data plane: stub (SCPT, default) or llamacpp-rpc (requires #26724 BIN)",
     )
     return p
 
@@ -593,6 +607,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             discovery_port=args.discovery_port,
         )
 
+    if args.role == "orchestrator" and args.backend == "llamacpp-rpc":
+        from portable_dual_topology_rpc import RpcProbeError, probe_llama_bin
+        from portable_dual_topology_lib import resolve_llama_bin
+
+        bin_dir = resolve_llama_bin()
+        if not bin_dir:
+            print(
+                "error: --backend llamacpp-rpc requires SHARECOMPUTE_LLAMA_BIN or BIN",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            probe_llama_bin(bin_dir)
+        except RpcProbeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
     return run_orchestrator(
         script_path,
         args.host,
@@ -606,6 +637,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         token_count=args.token_count,
         usable_gb=args.usable_gb,
         fail_role_mismatch=args.fail_role_mismatch,
+        backend=args.backend,
     )
 
 

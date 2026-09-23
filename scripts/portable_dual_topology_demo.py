@@ -4,6 +4,8 @@
     python3 scripts/portable_dual_topology_demo.py
     python3 scripts/portable_dual_topology_demo.py --topology iphone-frontend
     python3 scripts/portable_dual_topology_demo.py --topology windows-frontend
+    python3 scripts/portable_dual_topology_demo.py --backend stub
+    python3 scripts/portable_dual_topology_demo.py --backend llamacpp-rpc
     python3 scripts/portable_dual_topology_demo.py --fail-discovery
     python3 scripts/portable_dual_topology_demo.py --fail-platform ios
     python3 scripts/portable_dual_topology_demo.py --kill-worker mid
