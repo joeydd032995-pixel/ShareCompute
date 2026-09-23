@@ -89,11 +89,14 @@ def _run_rpc_generate_with_optional_kill(
     """Start RPC server, optionally SIGKILL it (start|mid), run generate.
 
     Returns (result, srv_proc, rpc_port, kill_evidence).
+    If generate raises before return, the server started here is stopped so
+    orch never orphans ggml-rpc-server on the happy-path exception path.
     """
     from portable_dual_topology_rpc import (
         RpcRunResult,
         run_rpc_generate,
         start_rpc_server,
+        stop_proc,
     )
 
     kill_evidence: List[str] = []
@@ -103,21 +106,8 @@ def _run_rpc_generate_with_optional_kill(
     # for ordinary happy-path generation.
     n_tokens = min(token_count, 64 if kill_worker else 32)
 
-    if not do_kill or not kill_worker:
-        result, srv_proc, rpc_port = run_rpc_generate(
-            bin_dir=bin_dir,
-            n_tokens=n_tokens,
-            timeout_s=timeout_s,
-            rpc_server_proc=srv_proc,
-            rpc_port=rpc_port,
-        )
-        return result, srv_proc, rpc_port, kill_evidence
-
-    if kill_worker == "start":
-        # Kill shortly after listen, before/at client start.
-        time.sleep(0.25)
-        _sigkill_rpc_server(srv_proc, kill_evidence)
-        try:
+    try:
+        if not do_kill or not kill_worker:
             result, srv_proc, rpc_port = run_rpc_generate(
                 bin_dir=bin_dir,
                 n_tokens=n_tokens,
@@ -125,83 +115,100 @@ def _run_rpc_generate_with_optional_kill(
                 rpc_server_proc=srv_proc,
                 rpc_port=rpc_port,
             )
-        except Exception as exc:  # noqa: BLE001
+            return result, srv_proc, rpc_port, kill_evidence
+
+        if kill_worker == "start":
+            # Kill shortly after listen, before/at client start.
+            time.sleep(0.25)
+            _sigkill_rpc_server(srv_proc, kill_evidence)
+            try:
+                result, srv_proc, rpc_port = run_rpc_generate(
+                    bin_dir=bin_dir,
+                    n_tokens=n_tokens,
+                    timeout_s=timeout_s,
+                    rpc_server_proc=srv_proc,
+                    rpc_port=rpc_port,
+                )
+            except Exception as exc:  # noqa: BLE001
+                result = RpcRunResult(
+                    ok=False,
+                    detail=f"generate after start-kill: {exc}",
+                    client_rc=None,
+                    decode_failed=True,
+                    http_status=None,
+                )
+            return result, srv_proc, rpc_port, kill_evidence
+
+        # mid: run generate in a thread; kill once client is likely mid-flight.
+        holder: dict = {}
+
+        def _gen() -> None:
+            try:
+                holder["out"] = run_rpc_generate(
+                    bin_dir=bin_dir,
+                    n_tokens=n_tokens,
+                    timeout_s=timeout_s,
+                    rpc_server_proc=srv_proc,
+                    rpc_port=rpc_port,
+                )
+            except Exception as exc:  # noqa: BLE001
+                holder["exc"] = exc
+
+        gen_thread = threading.Thread(target=_gen, daemon=True)
+        gen_thread.start()
+
+        deadline_k = time.monotonic() + min(45.0, timeout_s + 5.0)
+        saw_client = False
+        while time.monotonic() < deadline_k:
+            if srv_proc.poll() is not None:
+                break
+            try:
+                import glob as _glob
+
+                logs = _glob.glob(f"/tmp/sharecompute-llama-server-{os.getpid()}-*.log")
+                for lp in logs:
+                    try:
+                        if os.path.getsize(lp) > 64:
+                            saw_client = True
+                            break
+                    except OSError:
+                        pass
+            except Exception:  # noqa: BLE001
+                pass
+            if saw_client:
+                time.sleep(0.75)
+                break
+            if not gen_thread.is_alive() and ("out" in holder or "exc" in holder):
+                break
+            time.sleep(0.1)
+        if not saw_client and gen_thread.is_alive():
+            time.sleep(1.0)
+
+        _sigkill_rpc_server(srv_proc, kill_evidence)
+
+        gen_thread.join(timeout=max(30.0, timeout_s + 10.0))
+        if "out" in holder:
+            result, srv_proc, rpc_port = holder["out"]
+        elif "exc" in holder:
             result = RpcRunResult(
                 ok=False,
-                detail=f"generate after start-kill: {exc}",
+                detail=f"generate after mid-kill: {holder['exc']}",
+                client_rc=None,
+                decode_failed=True,
+                http_status=None,
+            )
+        else:
+            result = RpcRunResult(
+                ok=False,
+                detail="generate thread did not finish after mid-kill",
                 client_rc=None,
                 decode_failed=True,
                 http_status=None,
             )
         return result, srv_proc, rpc_port, kill_evidence
-
-    # mid: run generate in a thread; kill once client is likely mid-flight.
-    holder: dict = {}
-
-    def _gen() -> None:
-        try:
-            holder["out"] = run_rpc_generate(
-                bin_dir=bin_dir,
-                n_tokens=n_tokens,
-                timeout_s=timeout_s,
-                rpc_server_proc=srv_proc,
-                rpc_port=rpc_port,
-            )
-        except Exception as exc:  # noqa: BLE001
-            holder["exc"] = exc
-
-    gen_thread = threading.Thread(target=_gen, daemon=True)
-    gen_thread.start()
-
-    deadline_k = time.monotonic() + min(45.0, timeout_s + 5.0)
-    saw_client = False
-    while time.monotonic() < deadline_k:
-        if srv_proc.poll() is not None:
-            break
-        try:
-            import glob as _glob
-
-            logs = _glob.glob(f"/tmp/sharecompute-llama-server-{os.getpid()}-*.log")
-            for lp in logs:
-                try:
-                    if os.path.getsize(lp) > 64:
-                        saw_client = True
-                        break
-                except OSError:
-                    pass
-        except Exception:  # noqa: BLE001
-            pass
-        if saw_client:
-            time.sleep(0.75)
-            break
-        if not gen_thread.is_alive() and ("out" in holder or "exc" in holder):
-            break
-        time.sleep(0.1)
-    if not saw_client and gen_thread.is_alive():
-        time.sleep(1.0)
-
-    _sigkill_rpc_server(srv_proc, kill_evidence)
-
-    gen_thread.join(timeout=max(30.0, timeout_s + 10.0))
-    if "out" in holder:
-        result, srv_proc, rpc_port = holder["out"]
-    elif "exc" in holder:
-        result = RpcRunResult(
-            ok=False,
-            detail=f"generate after mid-kill: {holder['exc']}",
-            client_rc=None,
-            decode_failed=True,
-            http_status=None,
-        )
-    else:
-        result = RpcRunResult(
-            ok=False,
-            detail="generate thread did not finish after mid-kill",
-            client_rc=None,
-            decode_failed=True,
-            http_status=None,
-        )
-    return result, srv_proc, rpc_port, kill_evidence
+    except Exception:
+        stop_proc(srv_proc)
+        raise
 
 
 def _run_llamacpp_rpc_topology(
@@ -589,6 +596,9 @@ def run_one_topology(
     py = sys.executable
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # Do not inherit a polluted parent SHARECOMPUTE_PORTABLE_BACKEND=llamacpp-rpc
+    # or stub peers will skip SCPT.
+    env["SHARECOMPUTE_PORTABLE_BACKEND"] = "stub"
     children: List[subprocess.Popen] = []
     peer_meta: List[tuple] = []  # (proc, platform, role)
     discovery_failed_peers: List[str] = []
@@ -1024,7 +1034,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--kill-worker",
         choices=("mid", "start"),
         default=None,
-        help="SIGKILL a worker mid/start run -> expect exit 1, no hang",
+        help=(
+            "SIGKILL worker mid/start: stub exits !=0 with no restart; "
+            "RPC kills ggml-rpc-server and restarts once (attempt-2 may exit 0)"
+        ),
     )
     p.add_argument(
         "--skip-discovery",

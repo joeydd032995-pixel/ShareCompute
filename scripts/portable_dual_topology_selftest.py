@@ -47,6 +47,7 @@ def test_docs_exist_and_mention_commands() -> None:
         "SHARECOMPUTE_LLAMA_BIN",
         "llama.cpp",
         "portable_dual_topology_selftest.py",
+        "portable_dual_topology_rpc.py",
     ):
         if needle not in text:
             _fail(f"docs missing required needle: {needle}")

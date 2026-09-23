@@ -203,7 +203,8 @@ disconnects to a non-zero run result.
 | `scripts/portable_dual_topology_demo.py` | Public CLI entry point |
 | `scripts/portable_dual_topology_orch.py` | Multi-process orchestration, topology selection, failure injection, exit aggregation |
 | `scripts/portable_dual_topology_hub.py` | UDP beacon, TCP JOIN validation, shard plan, PLAN broadcast, completion/error handling |
-| `scripts/portable_dual_topology_peer.py` | Frontend and worker peers; SCPT activation path |
+| `scripts/portable_dual_topology_peer.py` | Frontend and worker peers; stub SCPT activation, or RPC-mode wait (skip SCPT) |
+| `scripts/portable_dual_topology_rpc.py` | Same-host llamacpp-rpc adapter: probe, `ggml-rpc-server`, client generate, stop |
 | `scripts/portable_dual_topology_lib.py` | Constants, discovery, planning, framing, fake compute |
 | `scripts/portable_dual_topology_selftest.py` | Stub unit checks plus subprocess success/failure matrix |
 | `scripts/portable_rpc_selftest.py` | RPC unit checks plus BIN-gated same-host matrix |

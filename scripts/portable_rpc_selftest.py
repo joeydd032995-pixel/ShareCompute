@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from unittest.mock import mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -351,6 +351,79 @@ def test_rpc_kill_start_restarts_once() -> None:
         return
     print(f"PASS: rpc kill start loud fail after kill (exit {cp.returncode})")
 
+
+def test_rpc_helper_stops_server_when_generate_raises() -> None:
+    """Happy-path exception must stop the ggml-rpc-server started in the helper."""
+    import portable_dual_topology_orch as orch
+
+    fake_proc = MagicMock()
+    fake_proc.poll.return_value = None
+    fake_proc.pid = 4242
+
+    with (
+        patch(
+            "portable_dual_topology_rpc.start_rpc_server",
+            return_value=(fake_proc, 18000),
+        ),
+        patch(
+            "portable_dual_topology_rpc.run_rpc_generate",
+            side_effect=RuntimeError("boom-generate"),
+        ),
+        patch("portable_dual_topology_rpc.stop_proc") as stop,
+    ):
+        try:
+            orch._run_rpc_generate_with_optional_kill(
+                kill_worker=None,
+                do_kill=False,
+                token_count=8,
+                timeout_s=5.0,
+                bin_dir="/tmp/fake-llama-bin",
+            )
+        except RuntimeError as exc:
+            assert "boom-generate" in str(exc)
+        else:
+            _fail("expected RuntimeError from run_rpc_generate")
+        stop.assert_called_once_with(fake_proc)
+    print("PASS: helper stops server on generate raise")
+
+
+def test_stub_child_env_isolates_polluted_rpc_backend() -> None:
+    """Stub orch must set SHARECOMPUTE_PORTABLE_BACKEND=stub for children."""
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    env = os.environ.copy()
+    env["SHARECOMPUTE_PORTABLE_BACKEND"] = "llamacpp-rpc"
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "stub",
+            "--topology",
+            "iphone-frontend",
+            "--timeout",
+            "12",
+            "--token-count",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        cwd=os.path.dirname(HERE),
+    )
+    out = cp.stdout + cp.stderr
+    if cp.returncode != 0:
+        sys.stderr.write(out)
+        _fail(
+            "stub with polluted parent llamacpp-rpc env must still exit 0 "
+            f"(got {cp.returncode})"
+        )
+    if "skip SCPT" in out:
+        sys.stderr.write(out)
+        _fail("stub peers must not skip SCPT under polluted parent backend env")
+    print("PASS: stub isolates polluted RPC backend env")
+
 def run_unit_tests() -> None:
     test_backend_constants()
     test_resolve_llama_bin_and_model()
@@ -361,11 +434,13 @@ def run_unit_tests() -> None:
     test_run_rpc_generate_requires_paired_server_args()
     test_probe_missing_bin_raises()
     test_parse_cli_status_detects_decode_fail()
+    test_rpc_helper_stops_server_when_generate_raises()
 
 
 def main() -> int:
     run_unit_tests()
     test_backend_rpc_missing_bin_exits_nonzero()
+    test_stub_child_env_isolates_polluted_rpc_backend()
     if _have_rpc_env():
         test_rpc_happy_iphone_frontend()
         test_rpc_happy_windows_frontend()
