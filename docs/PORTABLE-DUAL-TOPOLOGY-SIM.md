@@ -18,7 +18,9 @@ inference.
 | Default `--topology both` runs both rows and exits 0 only when both succeed | **Real** |
 | StagePlanner-equivalent shard plan, epoch, and RAM-fit rejection | **Real** |
 | TCP activation framing with magic `SCPT` along shard ranks | **Real** |
-| Missing seat, discovery failure, role mismatch, and killed worker exit non-zero | **Real** |
+| Missing seat, discovery failure, and role mismatch exit non-zero | **Real** |
+| Stub `--kill-worker`: killed worker exits non-zero; no restart | **Real** |
+| RPC `--kill-worker`: SIGKILL `ggml-rpc-server`, restart once, then report retry outcome | **Real when the probe passes** |
 | Same-host `llamacpp-rpc` client + one worker endpoint (opt-in) | **Real when the probe passes** |
 | LAN iPhone↔Windows inference | **Not claimed** |
 
@@ -53,13 +55,15 @@ Before selecting `llamacpp-rpc`:
   `the device is now unusable`; a missing marker or missing executable fails the
   RPC run. There is no silent fallback to `stub`.
 
-Kill and restart policy differs by backend. For `stub`, `--kill-worker start|mid`
-kills the simulated worker; the run must exit non-zero and does not restart. For
-`llamacpp-rpc`, the same options SIGKILL `ggml-rpc-server` and must emit
-`SIGKILL-ok:rpc-server:` evidence. The failed attempt is torn down and the full
-same-host topology is restarted once with fresh processes and ports. A successful
-retry completes that topology; a second failure exits non-zero. This is a full
-restart, not in-process RPC peer re-attachment.
+Kill and restart policy differs by backend:
+
+- **Stub `--kill-worker start|mid`:** kills the simulated worker. Attempt 1 must
+  exit non-zero and there is no restart.
+- **RPC `--kill-worker start|mid`:** SIGKILLs `ggml-rpc-server` and must emit
+  `SIGKILL-ok:rpc-server:` evidence. Attempt 1 is torn down, then the full
+  same-host topology restarts once with fresh processes and ports. If attempt 2
+  succeeds, the overall run exits 0; if attempt 2 fails, the overall run exits
+  non-zero. This is a full restart, not in-process RPC peer re-attachment.
 
 ## How to run
 
@@ -89,10 +93,21 @@ python3 scripts/portable_dual_topology_demo.py --fail-discovery
 python3 scripts/portable_dual_topology_demo.py --fail-platform ios
 python3 scripts/portable_dual_topology_demo.py --fail-platform windows
 
-# Negative — SIGKILL the worker at startup or during the activation pipeline
-# Each run must exit != 0 and include SIGKILL-ok:<platform>:pid=...:exit=...
-python3 scripts/portable_dual_topology_demo.py --kill-worker mid
-python3 scripts/portable_dual_topology_demo.py --kill-worker start
+# Stub negative — kill the simulated worker; no restart, exit != 0
+# Each run includes SIGKILL-ok:<platform>:pid=...:exit=...
+python3 scripts/portable_dual_topology_demo.py --backend stub --kill-worker mid
+python3 scripts/portable_dual_topology_demo.py --backend stub --kill-worker start
+
+# RPC — kill ggml-rpc-server; restart the topology once
+# Attempt 2 success => exit 0; attempt 2 failure => exit != 0
+SHARECOMPUTE_LLAMA_BIN=/path/to/bin \
+SHARECOMPUTE_LLAMA_MODEL=/path/to/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  python3 scripts/portable_dual_topology_demo.py --backend llamacpp-rpc \
+    --topology iphone-frontend --kill-worker mid
+SHARECOMPUTE_LLAMA_BIN=/path/to/bin \
+SHARECOMPUTE_LLAMA_MODEL=/path/to/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  python3 scripts/portable_dual_topology_demo.py --backend llamacpp-rpc \
+    --topology windows-frontend --kill-worker start
 
 # Negative — advertised RAM cannot fit the model; shard plan is rejected
 python3 scripts/portable_dual_topology_demo.py --usable-gb 0.1
@@ -110,9 +125,10 @@ python3 scripts/portable_dual_topology_selftest.py
 python3 scripts/portable_rpc_selftest.py
 ```
 
-For a negative command, a non-zero exit is the expected result. A kill test is
-only valid when the combined output contains `SIGKILL-ok:` evidence; a timeout or
-silent process disappearance is a failure of the test itself. Use `--timeout` to
+For a negative command other than an RPC kill retry, a non-zero exit is the
+expected result. A kill test is only valid when the combined output contains
+`SIGKILL-ok:` evidence; a timeout or silent process disappearance is a failure of
+the test itself. Use `--timeout` to
 bound discovery and pipeline waits, `--token-count N` for a positive token count,
 `--discovery-port PORT` to choose the multicast port, and `--usable-gb GB` to
 override every peer's advertised capacity. The peer-role `--skip-discovery` mode is available when invoking the `hub` and
@@ -177,8 +193,8 @@ string, token ID, `rank_from`, `rank_to`, payload size, and payload. Receivers
 reject bad magic, epoch mismatches, unexpected rank edges, oversized payloads, and
 broken or timed-out channels. The frontend sends a fake activation to rank 1;
 the worker computes and returns the final activation to rank 0. The hub reports
-`done` only from the configured frontend and converts peer errors or disconnects
-to a non-zero run result.
+`done` only from the configured frontend and converts unrecovered peer errors or
+disconnects to a non-zero run result.
 
 ## Files
 
