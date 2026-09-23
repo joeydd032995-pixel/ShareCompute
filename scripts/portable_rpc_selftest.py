@@ -292,19 +292,17 @@ def test_rpc_kill_mid_restarts_once() -> None:
     if "FAIL: kill attempt silently succeeded" in out:
         sys.stderr.write(out)
         _fail("rpc kill mid: attempt 1 silently succeeded")
-    restarted = "restarting topology" in out
+    restart_count = out.count("restarting topology")
+    if restart_count != 1:
+        sys.stderr.write(out)
+        _fail(
+            "rpc kill mid expected exactly one restart log "
+            f"(got {restart_count})"
+        )
     if cp.returncode == 0:
-        if not restarted:
-            sys.stderr.write(out)
-            _fail("rpc kill mid exit 0 without restart log")
         print("PASS: rpc kill mid restarts once (exit 0)")
         return
     # Loud final fail after kill+restart is acceptable
-    if not restarted and "FAIL: missing SIGKILL-ok evidence" not in out:
-        # Must not be a silent non-kill failure path
-        if "SIGKILL-ok:rpc-server:" not in out:
-            sys.stderr.write(out)
-            _fail("rpc kill mid exit !=0 without rpc-server kill evidence")
     print(f"PASS: rpc kill mid loud fail after kill (exit {cp.returncode})")
 
 
@@ -341,16 +339,16 @@ def test_rpc_kill_start_restarts_once() -> None:
     if "FAIL: kill attempt silently succeeded" in out:
         sys.stderr.write(out)
         _fail("rpc kill start: attempt 1 silently succeeded")
-    restarted = "restarting topology" in out
+    restart_count = out.count("restarting topology")
+    if restart_count != 1:
+        sys.stderr.write(out)
+        _fail(
+            "rpc kill start expected exactly one restart log "
+            f"(got {restart_count})"
+        )
     if cp.returncode == 0:
-        if not restarted:
-            sys.stderr.write(out)
-            _fail("rpc kill start exit 0 without restart log")
         print("PASS: rpc kill start restarts once (exit 0)")
         return
-    if "SIGKILL-ok:rpc-server:" not in out:
-        sys.stderr.write(out)
-        _fail("rpc kill start exit !=0 without rpc-server kill evidence")
     print(f"PASS: rpc kill start loud fail after kill (exit {cp.returncode})")
 
 def run_unit_tests() -> None:
