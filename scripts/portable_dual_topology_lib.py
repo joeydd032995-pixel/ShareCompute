@@ -476,14 +476,20 @@ def resolve_llama_model() -> Optional[str]:
 
 
 def rpc_port_base(pid: int) -> int:
-    """Spike-compatible: ports below host ephemeral range."""
+    """Return a deterministic 65-port block below the host ephemeral range."""
     ephemeral_lo = 32768
     try:
         with open("/proc/sys/net/ipv4/ip_local_port_range", encoding="utf-8") as fh:
             ephemeral_lo = int(fh.read().split()[0])
-    except OSError:
+    except (OSError, IndexError, ValueError):
         pass
-    base = 20000 + ((pid * 7) % 10000)
-    if base + 64 >= ephemeral_lo:
-        base = max(10000, ephemeral_lo - 5000)
-    return base
+
+    candidate = 20000 + ((pid * 7) % 10000)
+    # Keep the normal Linux choice unchanged, but do not let a hard floor
+    # push the block into a low configured ephemeral range.
+    highest_base = ephemeral_lo - 65
+    if highest_base < 1024:
+        # A very low range cannot fit a complete unprivileged block; use the
+        # highest positive block that still satisfies the strict invariant.
+        highest_base = max(1, highest_base)
+    return min(candidate, highest_base)
