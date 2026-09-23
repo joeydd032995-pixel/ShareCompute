@@ -98,7 +98,10 @@ def _run_rpc_generate_with_optional_kill(
 
     kill_evidence: List[str] = []
     srv_proc, rpc_port = start_rpc_server(bin_dir)
-    n_tokens = min(token_count, 32)
+    # Kill runs need the widened window set by run_one_topology so a mid-kill
+    # cannot finish before the RPC server is terminated. Keep the shorter cap
+    # for ordinary happy-path generation.
+    n_tokens = min(token_count, 64 if kill_worker else 32)
 
     if not do_kill or not kill_worker:
         result, srv_proc, rpc_port = run_rpc_generate(
