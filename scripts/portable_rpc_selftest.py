@@ -11,6 +11,11 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 
+def _fail(msg: str) -> None:
+    print(f"FAIL: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
 def test_backend_constants() -> None:
     import portable_dual_topology_lib as lib
 
@@ -100,12 +105,43 @@ def test_rpc_port_base_rejects_empty_ephemeral() -> None:
     print("PASS: rpc_port_base rejects empty ephemeral")
 
 
+
+def test_probe_missing_bin_raises() -> None:
+    from portable_dual_topology_rpc import RpcProbeError, probe_llama_bin
+
+    try:
+        probe_llama_bin("/tmp/sharecompute-missing-llama-bin")
+        _fail("probe must raise for missing bin")
+    except RpcProbeError:
+        pass
+    print("PASS: probe missing bin")
+
+
+def test_parse_cli_status_detects_decode_fail() -> None:
+    from portable_dual_topology_rpc import parse_cli_logs
+
+    bad = parse_cli_logs(
+        "llama_decode: failed to decode, ret = -3\n",
+        "Explain gravity\nGravity is...\n",
+        client_rc=0,
+    )
+    assert bad.decode_failed is True and bad.ok is False
+    good = parse_cli_logs(
+        "assigned to device RPC0\n",
+        "Explain gravity\nGravity is a force.\n",
+        client_rc=0,
+    )
+    assert good.decode_failed is False and good.ok is True
+    print("PASS: parse_cli_logs")
+
 def run_unit_tests() -> None:
     test_backend_constants()
     test_resolve_llama_bin_and_model()
     test_rpc_port_base_below_ephemeral()
     test_rpc_port_base_rejects_too_low_ephemeral()
     test_rpc_port_base_rejects_empty_ephemeral()
+    test_probe_missing_bin_raises()
+    test_parse_cli_status_detects_decode_fail()
 
 
 def main() -> int:
