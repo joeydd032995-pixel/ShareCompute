@@ -31,6 +31,476 @@ from portable_dual_topology_hub import run_hub
 from portable_dual_topology_peer import run_peer
 
 
+def _allocate_ephemeral_port(host: str) -> int:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind((host, 0))
+    allocated = probe.getsockname()[1]
+    probe.close()
+    return int(allocated)
+
+
+def _sigkill_rpc_server(srv_proc: subprocess.Popen, kill_evidence: List[str]) -> None:
+    """SIGKILL ggml-rpc-server and record SIGKILL-ok:rpc-server evidence."""
+    if srv_proc.poll() is not None:
+        kill_evidence.append(
+            f"rpc-server-already-exited-before-kill (exit={srv_proc.returncode})"
+        )
+        return
+    print(
+        f"\n  + orchestrator: SIGKILL ggml-rpc-server "
+        f"(pid {srv_proc.pid}) --kill-worker\n",
+        flush=True,
+    )
+    try:
+        srv_proc.kill()
+    except OSError as exc:
+        kill_evidence.append(f"kill-failed:rpc-server:{exc}")
+        return
+    try:
+        srv_proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        kill_evidence.append(
+            f"kill-sent-but-still-alive:rpc-server:pid={srv_proc.pid}"
+        )
+        return
+    if srv_proc.poll() is None:
+        kill_evidence.append(
+            f"kill-sent-but-still-alive:rpc-server:pid={srv_proc.pid}"
+        )
+        return
+    kill_evidence.append(
+        f"SIGKILL-ok:rpc-server:pid={srv_proc.pid}:exit={srv_proc.returncode}"
+    )
+    print(
+        f"  + orchestrator: kill evidence recorded for ggml-rpc-server "
+        f"(exit={srv_proc.returncode})",
+        flush=True,
+    )
+
+
+def _run_rpc_generate_with_optional_kill(
+    *,
+    kill_worker: Optional[str],
+    do_kill: bool,
+    token_count: int,
+    timeout_s: float,
+    bin_dir: str,
+) -> tuple:
+    """Start RPC server, optionally SIGKILL it (start|mid), run generate.
+
+    Returns (result, srv_proc, rpc_port, kill_evidence).
+    """
+    from portable_dual_topology_rpc import (
+        RpcRunResult,
+        run_rpc_generate,
+        start_rpc_server,
+    )
+
+    kill_evidence: List[str] = []
+    srv_proc, rpc_port = start_rpc_server(bin_dir)
+    n_tokens = min(token_count, 32)
+
+    if not do_kill or not kill_worker:
+        result, srv_proc, rpc_port = run_rpc_generate(
+            bin_dir=bin_dir,
+            n_tokens=n_tokens,
+            timeout_s=timeout_s,
+            rpc_server_proc=srv_proc,
+            rpc_port=rpc_port,
+        )
+        return result, srv_proc, rpc_port, kill_evidence
+
+    if kill_worker == "start":
+        # Kill shortly after listen, before/at client start.
+        time.sleep(0.25)
+        _sigkill_rpc_server(srv_proc, kill_evidence)
+        try:
+            result, srv_proc, rpc_port = run_rpc_generate(
+                bin_dir=bin_dir,
+                n_tokens=n_tokens,
+                timeout_s=timeout_s,
+                rpc_server_proc=srv_proc,
+                rpc_port=rpc_port,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result = RpcRunResult(
+                ok=False,
+                detail=f"generate after start-kill: {exc}",
+                client_rc=None,
+                decode_failed=True,
+                http_status=None,
+            )
+        return result, srv_proc, rpc_port, kill_evidence
+
+    # mid: run generate in a thread; kill once client is likely mid-flight.
+    holder: dict = {}
+
+    def _gen() -> None:
+        try:
+            holder["out"] = run_rpc_generate(
+                bin_dir=bin_dir,
+                n_tokens=n_tokens,
+                timeout_s=timeout_s,
+                rpc_server_proc=srv_proc,
+                rpc_port=rpc_port,
+            )
+        except Exception as exc:  # noqa: BLE001
+            holder["exc"] = exc
+
+    gen_thread = threading.Thread(target=_gen, daemon=True)
+    gen_thread.start()
+
+    deadline_k = time.monotonic() + min(45.0, timeout_s + 5.0)
+    saw_client = False
+    while time.monotonic() < deadline_k:
+        if srv_proc.poll() is not None:
+            break
+        try:
+            import glob as _glob
+
+            logs = _glob.glob(f"/tmp/sharecompute-llama-server-{os.getpid()}-*.log")
+            for lp in logs:
+                try:
+                    if os.path.getsize(lp) > 64:
+                        saw_client = True
+                        break
+                except OSError:
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        if saw_client:
+            time.sleep(0.75)
+            break
+        if not gen_thread.is_alive() and ("out" in holder or "exc" in holder):
+            break
+        time.sleep(0.1)
+    if not saw_client and gen_thread.is_alive():
+        time.sleep(1.0)
+
+    _sigkill_rpc_server(srv_proc, kill_evidence)
+
+    gen_thread.join(timeout=max(30.0, timeout_s + 10.0))
+    if "out" in holder:
+        result, srv_proc, rpc_port = holder["out"]
+    elif "exc" in holder:
+        result = RpcRunResult(
+            ok=False,
+            detail=f"generate after mid-kill: {holder['exc']}",
+            client_rc=None,
+            decode_failed=True,
+            http_status=None,
+        )
+    else:
+        result = RpcRunResult(
+            ok=False,
+            detail="generate thread did not finish after mid-kill",
+            client_rc=None,
+            decode_failed=True,
+            http_status=None,
+        )
+    return result, srv_proc, rpc_port, kill_evidence
+
+
+def _run_llamacpp_rpc_topology(
+    script_path: str,
+    topology: str,
+    host: str,
+    port: int,
+    timeout_s: float,
+    *,
+    fail_platforms: Sequence[str] = (),
+    fail_discovery: bool = False,
+    kill_worker: Optional[str] = None,
+    discovery_port: int = DISCOVERY_PORT,
+    token_count: int = DEFAULT_TOKEN_COUNT,
+    usable_gb: Optional[float] = None,
+    fail_role_mismatch: bool = False,
+    frontend_platform: str,
+    worker_platform: str,
+) -> int:
+    """RPC data plane: plan then generate; kill targets ggml-rpc-server + one restart."""
+    from portable_dual_topology_lib import resolve_llama_bin
+    from portable_dual_topology_rpc import stop_proc
+
+    fail_set = set(fail_platforms)
+    bin_dir = resolve_llama_bin()
+    if not bin_dir:
+        print(
+            "error: --backend llamacpp-rpc requires SHARECOMPUTE_LLAMA_BIN or BIN",
+            file=sys.stderr,
+        )
+        return 1
+
+    max_attempts = 2 if kill_worker else 1
+    py = sys.executable
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    env["SHARECOMPUTE_PORTABLE_BACKEND"] = "llamacpp-rpc"
+
+    for attempt in range(1, max_attempts + 1):
+        # Fresh hub TCP port each attempt (restart must not reuse stale listeners).
+        if attempt == 1 and port > 0:
+            attempt_port = port
+        else:
+            attempt_port = _allocate_ephemeral_port(host)
+
+        children: List[subprocess.Popen] = []
+        peer_meta: List[tuple] = []
+        discovery_failed_peers: List[str] = []
+        discovery_lock = threading.Lock()
+        progress_events: List[str] = []
+        progress_lock = threading.Lock()
+        srv_proc = None
+
+        def terminate_all() -> None:
+            for proc in children:
+                if proc.poll() is None:
+                    try:
+                        proc.send_signal(signal.SIGTERM)
+                    except OSError:
+                        pass
+            end = time.monotonic() + 2.0
+            for proc in children:
+                try:
+                    proc.wait(timeout=max(0.0, end - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+
+        try:
+            hub_cmd = [
+                py,
+                script_path,
+                "--role",
+                "hub",
+                "--host",
+                host,
+                "--port",
+                str(attempt_port),
+                "--timeout",
+                str(timeout_s),
+                "--expect",
+                "ios,windows",
+                "--frontend-platform",
+                frontend_platform,
+                "--token-count",
+                str(token_count),
+                "--discovery-port",
+                str(discovery_port),
+            ]
+            if fail_discovery:
+                hub_cmd.append("--no-beacon")
+
+            hub = subprocess.Popen(
+                hub_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+            children.append(hub)
+
+            hub_ready = False
+            ready_deadline = time.monotonic() + min(5.0, timeout_s + 1.0)
+            assert hub.stdout is not None
+            while time.monotonic() < ready_deadline:
+                line = hub.stdout.readline()
+                if not line and hub.poll() is not None:
+                    break
+                if line:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    if line.startswith(HUB_READY_PREFIX):
+                        hub_ready = True
+                        break
+            if not hub_ready:
+                print("error: hub did not become ready", file=sys.stderr)
+                terminate_all()
+                return 1
+
+            if not fail_discovery:
+                time.sleep(0.15)
+
+            seats = [(frontend_platform, "frontend"), (worker_platform, "worker")]
+            if fail_role_mismatch:
+                seats = [(frontend_platform, "worker"), (worker_platform, "frontend")]
+                print(
+                    "Negative test: --fail-role-mismatch (swapped JOIN roles)",
+                    flush=True,
+                )
+            for platform, role in seats:
+                if platform in fail_set:
+                    print(
+                        f"  * skipping peer for {PORTABLE_DISPLAY[platform]} "
+                        "(--fail-platform)",
+                        flush=True,
+                    )
+                    continue
+                peer_cmd = [
+                    py,
+                    script_path,
+                    "--role",
+                    "peer",
+                    "--platform",
+                    platform,
+                    "--peer-role",
+                    role,
+                    "--timeout",
+                    str(timeout_s),
+                    "--discovery-port",
+                    str(discovery_port),
+                    "--frontend-platform",
+                    frontend_platform,
+                ]
+                if usable_gb is not None:
+                    peer_cmd.extend(["--usable-gb", str(usable_gb)])
+                proc = subprocess.Popen(
+                    peer_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    env=env,
+                )
+                children.append(proc)
+                peer_meta.append((proc, platform, role))
+
+            def drain(proc: subprocess.Popen, label: str) -> None:
+                if proc.stdout is None:
+                    return
+                for line in proc.stdout:
+                    sys.stdout.write(line if label == "hub" else f"[{label}] {line}")
+                    sys.stdout.flush()
+                    if "discovery failed" in line or "discovery fail" in line:
+                        with discovery_lock:
+                            if label not in discovery_failed_peers:
+                                discovery_failed_peers.append(label)
+                    if (
+                        "accepted plan" in line
+                        or "token 0" in line
+                        or "Broadcasting shard plan" in line
+                    ):
+                        with progress_lock:
+                            progress_events.append(line.strip())
+
+            threads = [threading.Thread(target=drain, args=(hub, "hub"), daemon=True)]
+            for proc, platform, _role in peer_meta:
+                threads.append(
+                    threading.Thread(target=drain, args=(proc, platform), daemon=True)
+                )
+            for t in threads:
+                t.start()
+
+            plan_wait_deadline = time.monotonic() + timeout_s + 5.0
+            saw_plan = False
+            while time.monotonic() < plan_wait_deadline:
+                with progress_lock:
+                    if any(
+                        ("accepted plan" in e) or ("Broadcasting shard plan" in e)
+                        for e in progress_events
+                    ):
+                        saw_plan = True
+                        break
+                if hub.poll() is not None:
+                    break
+                time.sleep(0.05)
+
+            with discovery_lock:
+                failed = list(discovery_failed_peers)
+            if fail_discovery or failed:
+                names = (
+                    ", ".join(PORTABLE_DISPLAY.get(p, p) for p in failed)
+                    if failed
+                    else "all peers"
+                )
+                print(
+                    f"\nFAIL: discovery failed - no {PORTABLE_SERVICE_ID} beacon "
+                    f"heard by: {names}",
+                    flush=True,
+                )
+                print(
+                    f"(expected multicast {DISCOVERY_MULTICAST_GROUP}:{discovery_port}; "
+                    "hub beacon disabled or wrong discovery port)",
+                    flush=True,
+                )
+                terminate_all()
+                return 1
+
+            if not saw_plan:
+                print(
+                    "error: plan never accepted; not starting llama",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                terminate_all()
+                return 1
+
+            do_kill = bool(kill_worker) and attempt == 1
+            try:
+                result, srv_proc, rpc_port, kill_evidence = (
+                    _run_rpc_generate_with_optional_kill(
+                        kill_worker=kill_worker,
+                        do_kill=do_kill,
+                        token_count=token_count,
+                        timeout_s=timeout_s,
+                        bin_dir=bin_dir,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"error: run_rpc_generate failed: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                stop_proc(srv_proc)
+                terminate_all()
+                return 1
+
+            print("backend=llamacpp-rpc", flush=True)
+            print(f"frontend={frontend_platform}", flush=True)
+            print(f"worker={worker_platform}", flush=True)
+            print(f"rpc_endpoint=127.0.0.1:{rpc_port}", flush=True)
+            print(f"rpc_result ok={result.ok} detail={result.detail}", flush=True)
+            if kill_evidence:
+                print(f"kill_evidence={kill_evidence}", flush=True)
+
+            if kill_worker and attempt == 1:
+                if result.ok:
+                    print("FAIL: kill attempt silently succeeded", flush=True)
+                    stop_proc(srv_proc)
+                    terminate_all()
+                    return 1
+                if not any(e.startswith("SIGKILL-ok:") for e in kill_evidence):
+                    print("FAIL: missing SIGKILL-ok evidence", flush=True)
+                    stop_proc(srv_proc)
+                    terminate_all()
+                    return 1
+                print(
+                    "rpc attempt 1 failed after kill; restarting topology",
+                    flush=True,
+                )
+                stop_proc(srv_proc)
+                terminate_all()
+                time.sleep(0.35)
+                continue
+
+            stop_proc(srv_proc)
+            terminate_all()
+            return 0 if result.ok else 1
+        except KeyboardInterrupt:
+            stop_proc(srv_proc)
+            terminate_all()
+            return 130
+        finally:
+            stop_proc(srv_proc)
+            terminate_all()
+
+    return 1
+
+
 def run_one_topology(
     script_path: str,
     topology: str,
@@ -87,14 +557,35 @@ def run_one_topology(
             + ", ".join(PORTABLE_DISPLAY[p] for p in sorted(fail_set))
         )
     if kill_worker:
-        print(f"Negative test: will SIGKILL a worker ({kill_worker}-run)")
+        if backend == "llamacpp-rpc":
+            print(
+                f"Negative test: will SIGKILL ggml-rpc-server ({kill_worker}-run)"
+            )
+        else:
+            print(f"Negative test: will SIGKILL a worker ({kill_worker}-run)")
     print()
+
+    if backend == "llamacpp-rpc":
+        return _run_llamacpp_rpc_topology(
+            script_path,
+            topology,
+            host,
+            port,
+            timeout_s,
+            fail_platforms=fail_platforms,
+            fail_discovery=fail_discovery,
+            kill_worker=kill_worker,
+            discovery_port=discovery_port,
+            token_count=token_count,
+            usable_gb=usable_gb,
+            fail_role_mismatch=fail_role_mismatch,
+            frontend_platform=frontend_platform,
+            worker_platform=worker_platform,
+        )
 
     py = sys.executable
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
-    if backend == "llamacpp-rpc":
-        env["SHARECOMPUTE_PORTABLE_BACKEND"] = "llamacpp-rpc"
     children: List[subprocess.Popen] = []
     peer_meta: List[tuple] = []  # (proc, platform, role)
     discovery_failed_peers: List[str] = []
@@ -328,74 +819,6 @@ def run_one_topology(
 
             killer = threading.Thread(target=kill_loop, daemon=True)
             killer.start()
-
-        if backend == "llamacpp-rpc":
-            # Happy path (Task 4): wait for join+plan, then judge via RPC adapter.
-            # Hub SCPT "done" is not required for exit 0.
-            plan_wait_deadline = time.monotonic() + timeout_s + 5.0
-            saw_plan = False
-            while time.monotonic() < plan_wait_deadline:
-                with progress_lock:
-                    if any(
-                        ("accepted plan" in e) or ("Broadcasting shard plan" in e)
-                        for e in progress_events
-                    ):
-                        saw_plan = True
-                        break
-                if hub.poll() is not None:
-                    break
-                time.sleep(0.05)
-
-            with discovery_lock:
-                failed = list(discovery_failed_peers)
-            if fail_discovery or failed:
-                names = (
-                    ", ".join(PORTABLE_DISPLAY.get(p, p) for p in failed)
-                    if failed
-                    else "all peers"
-                )
-                print(
-                    f"\nFAIL: discovery failed - no {PORTABLE_SERVICE_ID} beacon heard by: {names}",
-                    flush=True,
-                )
-                print(
-                    f"(expected multicast {DISCOVERY_MULTICAST_GROUP}:{discovery_port}; "
-                    "hub beacon disabled or wrong discovery port)",
-                    flush=True,
-                )
-                terminate_all()
-                return 1
-
-            if not saw_plan:
-                print(
-                    "error: plan never accepted; not starting llama",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                terminate_all()
-                return 1
-
-            from portable_dual_topology_rpc import run_rpc_generate, stop_proc
-
-            try:
-                result, srv_proc, rpc_port = run_rpc_generate(
-                    n_tokens=min(token_count, 32),
-                    timeout_s=timeout_s,
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"error: run_rpc_generate failed: {exc}", file=sys.stderr, flush=True)
-                terminate_all()
-                return 1
-
-            print(f"backend=llamacpp-rpc", flush=True)
-            print(f"frontend={frontend_platform}", flush=True)
-            print(f"worker={worker_platform}", flush=True)
-            print(f"rpc_endpoint=127.0.0.1:{rpc_port}", flush=True)
-            print(f"rpc_result ok={result.ok} detail={result.detail}", flush=True)
-
-            stop_proc(srv_proc)
-            terminate_all()
-            return 0 if result.ok else 1
 
         # Hub may spend timeout_s on joins, then max(timeout_s, 15) on the pipeline.
         # Cover the full join + pipeline budget plus a small margin (and kill margin).

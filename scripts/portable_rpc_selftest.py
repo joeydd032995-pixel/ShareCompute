@@ -241,6 +241,100 @@ def test_rpc_happy_iphone_frontend() -> None:
     print("PASS: rpc happy iphone-frontend")
 
 
+def test_rpc_kill_mid_restarts_once() -> None:
+    """BIN-gated: kill ggml-rpc-server mid-run -> SIGKILL-ok + one restart."""
+    if not _have_rpc_env():
+        print("SKIP: rpc kill mid (no BIN/model)")
+        return
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "llamacpp-rpc",
+            "--topology",
+            "iphone-frontend",
+            "--kill-worker",
+            "mid",
+            "--timeout",
+            "120",
+            "--token-count",
+            "32",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        cwd=os.path.dirname(HERE),
+    )
+    out = cp.stdout + cp.stderr
+    if "SIGKILL-ok:" not in out:
+        sys.stderr.write(out)
+        _fail("rpc kill mid missing SIGKILL-ok evidence")
+    if "FAIL: kill attempt silently succeeded" in out:
+        sys.stderr.write(out)
+        _fail("rpc kill mid: attempt 1 silently succeeded")
+    restarted = "restarting topology" in out
+    if cp.returncode == 0:
+        if not restarted:
+            sys.stderr.write(out)
+            _fail("rpc kill mid exit 0 without restart log")
+        print("PASS: rpc kill mid restarts once (exit 0)")
+        return
+    # Loud final fail after kill+restart is acceptable
+    if not restarted and "FAIL: missing SIGKILL-ok evidence" not in out:
+        # Must not be a silent non-kill failure path
+        if "SIGKILL-ok:rpc-server:" not in out:
+            sys.stderr.write(out)
+            _fail("rpc kill mid exit !=0 without rpc-server kill evidence")
+    print(f"PASS: rpc kill mid loud fail after kill (exit {cp.returncode})")
+
+
+def test_rpc_kill_start_restarts_once() -> None:
+    """BIN-gated: kill ggml-rpc-server at start -> SIGKILL-ok + one restart."""
+    if not _have_rpc_env():
+        print("SKIP: rpc kill start (no BIN/model)")
+        return
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "llamacpp-rpc",
+            "--topology",
+            "windows-frontend",
+            "--kill-worker",
+            "start",
+            "--timeout",
+            "120",
+            "--token-count",
+            "32",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        cwd=os.path.dirname(HERE),
+    )
+    out = cp.stdout + cp.stderr
+    if "SIGKILL-ok:" not in out:
+        sys.stderr.write(out)
+        _fail("rpc kill start missing SIGKILL-ok evidence")
+    if "FAIL: kill attempt silently succeeded" in out:
+        sys.stderr.write(out)
+        _fail("rpc kill start: attempt 1 silently succeeded")
+    restarted = "restarting topology" in out
+    if cp.returncode == 0:
+        if not restarted:
+            sys.stderr.write(out)
+            _fail("rpc kill start exit 0 without restart log")
+        print("PASS: rpc kill start restarts once (exit 0)")
+        return
+    if "SIGKILL-ok:rpc-server:" not in out:
+        sys.stderr.write(out)
+        _fail("rpc kill start exit !=0 without rpc-server kill evidence")
+    print(f"PASS: rpc kill start loud fail after kill (exit {cp.returncode})")
+
 def run_unit_tests() -> None:
     test_backend_constants()
     test_resolve_llama_bin_and_model()
@@ -253,6 +347,8 @@ def run_unit_tests() -> None:
     test_parse_cli_status_detects_decode_fail()
     test_backend_rpc_missing_bin_exits_nonzero()
     test_rpc_happy_iphone_frontend()
+    test_rpc_kill_mid_restarts_once()
+    test_rpc_kill_start_restarts_once()
 
 
 def main() -> int:
