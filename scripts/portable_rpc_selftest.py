@@ -106,6 +106,37 @@ def test_rpc_port_base_rejects_empty_ephemeral() -> None:
 
 
 
+def test_port_candidates_exhausts_valid_ports() -> None:
+    from portable_dual_topology_rpc import _port_candidates
+
+    assert _port_candidates(65530, count=5) == [65530, 65531, 65532, 65533, 65534]
+    try:
+        _port_candidates(65535, count=2)
+    except ValueError as exc:
+        assert "ports" in str(exc).lower()
+    else:
+        raise AssertionError("expected ValueError when port candidates are exhausted")
+    print("PASS: port candidates are bounded")
+
+
+def test_run_rpc_generate_requires_paired_server_args() -> None:
+    import portable_dual_topology_rpc as rpc
+
+    for kwargs in (
+        {"rpc_server_proc": object()},
+        {"rpc_port": 12345},
+    ):
+        with patch.object(rpc, "start_rpc_server") as start_server:
+            try:
+                rpc.run_rpc_generate(**kwargs)
+            except ValueError as exc:
+                assert "together" in str(exc).lower()
+            else:
+                raise AssertionError("expected ValueError for unpaired server args")
+            start_server.assert_not_called()
+    print("PASS: paired RPC server args")
+
+
 def test_probe_missing_bin_raises() -> None:
     from portable_dual_topology_rpc import RpcProbeError, probe_llama_bin
 
@@ -140,6 +171,8 @@ def run_unit_tests() -> None:
     test_rpc_port_base_below_ephemeral()
     test_rpc_port_base_rejects_too_low_ephemeral()
     test_rpc_port_base_rejects_empty_ephemeral()
+    test_port_candidates_exhausts_valid_ports()
+    test_run_rpc_generate_requires_paired_server_args()
     test_probe_missing_bin_raises()
     test_parse_cli_status_detects_decode_fail()
 

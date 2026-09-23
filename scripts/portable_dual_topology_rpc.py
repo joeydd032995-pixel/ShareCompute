@@ -119,10 +119,14 @@ def _rpc_env(bin_dir: str) -> dict:
 def _port_candidates(start: int, count: int = 5) -> list[int]:
     out: list[int] = []
     port = start
-    while len(out) < count:
+    while len(out) < count and port <= 65535:
         if port != _DISCOVERY_PORT and 1 <= port <= 65535:
             out.append(port)
         port += 1
+    if len(out) < count:
+        raise ValueError(
+            f"not enough valid ports from start {start} for count {count}"
+        )
     return out
 
 
@@ -450,6 +454,11 @@ def run_rpc_generate(
     rpc_port: Optional[int] = None,
 ) -> tuple[RpcRunResult, Popen, int]:
     """Probe, ensure one RPC server, run llama-server or llama-cli generate."""
+    if (rpc_server_proc is None) != (rpc_port is None):
+        raise ValueError(
+            "rpc_server_proc and rpc_port must be provided together or neither"
+        )
+
     resolved_bin = bin_dir or resolve_llama_bin()
     if not resolved_bin:
         raise RpcProbeError("BIN not set (SHARECOMPUTE_LLAMA_BIN / BIN)")
