@@ -197,6 +197,50 @@ def test_backend_rpc_missing_bin_exits_nonzero() -> None:
     print("PASS: missing BIN loud fail")
 
 
+
+def _have_rpc_env() -> bool:
+    from portable_dual_topology_lib import resolve_llama_bin, resolve_llama_model
+    from portable_dual_topology_rpc import RpcProbeError, probe_llama_bin
+
+    b, m = resolve_llama_bin(), resolve_llama_model()
+    if not b or not m or not os.path.isfile(m):
+        return False
+    try:
+        probe_llama_bin(b)
+        return True
+    except RpcProbeError:
+        return False
+
+
+def test_rpc_happy_iphone_frontend() -> None:
+    if not _have_rpc_env():
+        print("SKIP: rpc happy (no BIN/model)")
+        return
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "llamacpp-rpc",
+            "--topology",
+            "iphone-frontend",
+            "--timeout",
+            "120",
+            "--token-count",
+            "16",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=os.path.dirname(HERE),
+    )
+    if cp.returncode != 0:
+        sys.stderr.write(cp.stdout + "\n" + cp.stderr)
+        _fail(f"rpc iphone-frontend expected 0, got {cp.returncode}")
+    print("PASS: rpc happy iphone-frontend")
+
+
 def run_unit_tests() -> None:
     test_backend_constants()
     test_resolve_llama_bin_and_model()
@@ -208,6 +252,7 @@ def run_unit_tests() -> None:
     test_probe_missing_bin_raises()
     test_parse_cli_status_detects_decode_fail()
     test_backend_rpc_missing_bin_exits_nonzero()
+    test_rpc_happy_iphone_frontend()
 
 
 def main() -> int:

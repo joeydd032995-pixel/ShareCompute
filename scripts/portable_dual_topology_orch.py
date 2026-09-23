@@ -93,6 +93,8 @@ def run_one_topology(
     py = sys.executable
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    if backend == "llamacpp-rpc":
+        env["SHARECOMPUTE_PORTABLE_BACKEND"] = "llamacpp-rpc"
     children: List[subprocess.Popen] = []
     peer_meta: List[tuple] = []  # (proc, platform, role)
     discovery_failed_peers: List[str] = []
@@ -326,6 +328,74 @@ def run_one_topology(
 
             killer = threading.Thread(target=kill_loop, daemon=True)
             killer.start()
+
+        if backend == "llamacpp-rpc":
+            # Happy path (Task 4): wait for join+plan, then judge via RPC adapter.
+            # Hub SCPT "done" is not required for exit 0.
+            plan_wait_deadline = time.monotonic() + timeout_s + 5.0
+            saw_plan = False
+            while time.monotonic() < plan_wait_deadline:
+                with progress_lock:
+                    if any(
+                        ("accepted plan" in e) or ("Broadcasting shard plan" in e)
+                        for e in progress_events
+                    ):
+                        saw_plan = True
+                        break
+                if hub.poll() is not None:
+                    break
+                time.sleep(0.05)
+
+            with discovery_lock:
+                failed = list(discovery_failed_peers)
+            if fail_discovery or failed:
+                names = (
+                    ", ".join(PORTABLE_DISPLAY.get(p, p) for p in failed)
+                    if failed
+                    else "all peers"
+                )
+                print(
+                    f"\nFAIL: discovery failed - no {PORTABLE_SERVICE_ID} beacon heard by: {names}",
+                    flush=True,
+                )
+                print(
+                    f"(expected multicast {DISCOVERY_MULTICAST_GROUP}:{discovery_port}; "
+                    "hub beacon disabled or wrong discovery port)",
+                    flush=True,
+                )
+                terminate_all()
+                return 1
+
+            if not saw_plan:
+                print(
+                    "error: plan never accepted; not starting llama",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                terminate_all()
+                return 1
+
+            from portable_dual_topology_rpc import run_rpc_generate, stop_proc
+
+            try:
+                result, srv_proc, rpc_port = run_rpc_generate(
+                    n_tokens=min(token_count, 32),
+                    timeout_s=timeout_s,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"error: run_rpc_generate failed: {exc}", file=sys.stderr, flush=True)
+                terminate_all()
+                return 1
+
+            print(f"backend=llamacpp-rpc", flush=True)
+            print(f"frontend={frontend_platform}", flush=True)
+            print(f"worker={worker_platform}", flush=True)
+            print(f"rpc_endpoint=127.0.0.1:{rpc_port}", flush=True)
+            print(f"rpc_result ok={result.ok} detail={result.detail}", flush=True)
+
+            stop_proc(srv_proc)
+            terminate_all()
+            return 0 if result.ok else 1
 
         # Hub may spend timeout_s on joins, then max(timeout_s, 15) on the pipeline.
         # Cover the full join + pipeline budget plus a small margin (and kill margin).
