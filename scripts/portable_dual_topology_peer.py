@@ -4,7 +4,7 @@ Discover hub via UDP -> JOIN over TCP with role + data port -> wait for PLAN mat
 epoch -> run activation data-plane along shard ranks (refuse until epoch matches).
 """
 from __future__ import annotations
-import select,socket,sys,threading,time
+import os,select,socket,sys,threading,time
 from portable_dual_topology_lib import (
  PORTABLE_SEATS, PORTABLE_DISPLAY, PORTABLE_SERVICE_ID, PORTABLE_DEFAULT_USABLE_GB,
  ROLES, DEFAULT_ACTIVATION_BYTES, DEFAULT_HOST,
@@ -198,6 +198,21 @@ def run_peer(
         flush=True
     )
     pipe_deadline = time.monotonic() + max(timeout_s, 20.0)
+    if os.environ.get("SHARECOMPUTE_PORTABLE_BACKEND") == "llamacpp-rpc":
+        # Wait until orch tears us down; do not run SCPT.
+        print(
+            f"p {PORTABLE_DISPLAY[platform]}: accepted plan (rpc; skip SCPT)",
+            flush=True,
+        )
+        try:
+            while time.monotonic() < pipe_deadline:
+                msg = recv_line(ctrl, buf, min(pipe_deadline, time.monotonic() + 0.5))
+                if msg and msg.get("type") in ("error", "shutdown"):
+                    return 1 if msg.get("type") == "error" else 0
+                time.sleep(0.05)
+            return 0
+        finally:
+            _cleanup(ctrl, data_sock)
     try:
         if my.role == "frontend" or my.rank == 0:
             rc = _run_frontend(

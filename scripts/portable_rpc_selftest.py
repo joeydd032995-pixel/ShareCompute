@@ -1,0 +1,457 @@
+#!/usr/bin/env python3
+"""Unit + optional BIN-gated tests for portable llamacpp-rpc backend."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from unittest.mock import MagicMock, mock_open, patch
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+
+def _fail(msg: str) -> None:
+    print(f"FAIL: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def test_backend_constants() -> None:
+    import portable_dual_topology_lib as lib
+
+    assert lib.BACKEND_CHOICES == ("stub", "llamacpp-rpc")
+    assert lib.DEFAULT_BACKEND == "stub"
+    assert lib.DEFAULT_RPC_MODEL_NAME == "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+    print("PASS: backend constants")
+
+
+def test_resolve_llama_bin_and_model() -> None:
+    import portable_dual_topology_lib as lib
+
+    keys = (
+        "SHARECOMPUTE_LLAMA_BIN",
+        "BIN",
+        "SHARECOMPUTE_LLAMA_MODEL",
+        "MODEL",
+    )
+    saved = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            os.environ.pop(key, None)
+        assert lib.resolve_llama_bin() is None
+        assert lib.resolve_llama_model() is None
+        os.environ["BIN"] = "/tmp/fake-bin"
+        os.environ["MODEL"] = "/tmp/fake.gguf"
+        assert lib.resolve_llama_bin() == "/tmp/fake-bin"
+        assert lib.resolve_llama_model() == "/tmp/fake.gguf"
+        os.environ["SHARECOMPUTE_LLAMA_BIN"] = "/tmp/sc-bin"
+        os.environ["SHARECOMPUTE_LLAMA_MODEL"] = "/tmp/sc.gguf"
+        assert lib.resolve_llama_bin() == "/tmp/sc-bin"
+        assert lib.resolve_llama_model() == "/tmp/sc.gguf"
+        print("PASS: resolve bin/model")
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_rpc_port_base_below_ephemeral() -> None:
+    import portable_dual_topology_lib as lib
+
+    base = lib.rpc_port_base(12345)
+    assert 10000 <= base <= 30000
+    assert base + 64 < 32768
+    with patch("builtins.open", mock_open(read_data="10064 60999\n")):
+        low_ephemeral_base = lib.rpc_port_base(12345)
+    assert low_ephemeral_base + 64 < 10064
+    assert not (low_ephemeral_base <= 37777 <= low_ephemeral_base + 64)
+    print("PASS: rpc_port_base")
+
+
+def test_rpc_port_base_rejects_too_low_ephemeral() -> None:
+    import portable_dual_topology_lib as lib
+
+    for proc_value in ("65 60999\n", "1 60999\n", "0 60999\n", "-1 60999\n"):
+        with patch("builtins.open", mock_open(read_data=proc_value)):
+            try:
+                lib.rpc_port_base(12345)
+            except ValueError as exc:
+                assert "65-port" in str(exc)
+            else:
+                raise AssertionError(f"expected ValueError for {proc_value!r}")
+    with patch("builtins.open", mock_open(read_data="not-a-port-range\n")):
+        try:
+            lib.rpc_port_base(12345)
+        except ValueError as exc:
+            assert "invalid ephemeral" in str(exc)
+        else:
+            raise AssertionError("expected ValueError for malformed ephemeral range")
+    print("PASS: rpc_port_base rejects too-low ephemeral")
+
+
+def test_rpc_port_base_rejects_empty_ephemeral() -> None:
+    import portable_dual_topology_lib as lib
+
+    for proc_value in ("", "   \n", "\t\n"):
+        with patch("builtins.open", mock_open(read_data=proc_value)):
+            try:
+                lib.rpc_port_base(12345)
+            except ValueError as exc:
+                assert "invalid ephemeral" in str(exc)
+            else:
+                raise AssertionError(f"expected ValueError for {proc_value!r}")
+    print("PASS: rpc_port_base rejects empty ephemeral")
+
+
+
+def test_port_candidates_exhausts_valid_ports() -> None:
+    from portable_dual_topology_rpc import _port_candidates
+
+    assert _port_candidates(65530, count=5) == [65530, 65531, 65532, 65533, 65534]
+    try:
+        _port_candidates(65535, count=2)
+    except ValueError as exc:
+        assert "ports" in str(exc).lower()
+    else:
+        raise AssertionError("expected ValueError when port candidates are exhausted")
+    print("PASS: port candidates are bounded")
+
+
+def test_run_rpc_generate_requires_paired_server_args() -> None:
+    import portable_dual_topology_rpc as rpc
+
+    for kwargs in (
+        {"rpc_server_proc": object()},
+        {"rpc_port": 12345},
+    ):
+        with patch.object(rpc, "start_rpc_server") as start_server:
+            try:
+                rpc.run_rpc_generate(**kwargs)
+            except ValueError as exc:
+                assert "together" in str(exc).lower()
+            else:
+                raise AssertionError("expected ValueError for unpaired server args")
+            start_server.assert_not_called()
+    print("PASS: paired RPC server args")
+
+
+def test_probe_missing_bin_raises() -> None:
+    from portable_dual_topology_rpc import RpcProbeError, probe_llama_bin
+
+    try:
+        probe_llama_bin("/tmp/sharecompute-missing-llama-bin")
+        _fail("probe must raise for missing bin")
+    except RpcProbeError:
+        pass
+    print("PASS: probe missing bin")
+
+
+def test_parse_cli_status_detects_decode_fail() -> None:
+    from portable_dual_topology_rpc import parse_cli_logs
+
+    bad = parse_cli_logs(
+        "llama_decode: failed to decode, ret = -3\n",
+        "Explain gravity\nGravity is...\n",
+        client_rc=0,
+    )
+    assert bad.decode_failed is True and bad.ok is False
+    good = parse_cli_logs(
+        "assigned to device RPC0\n",
+        "Explain gravity\nGravity is a force.\n",
+        client_rc=0,
+    )
+    assert good.decode_failed is False and good.ok is True
+    print("PASS: parse_cli_logs")
+
+
+def test_backend_rpc_missing_bin_exits_nonzero() -> None:
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    env = os.environ.copy()
+    env.pop("SHARECOMPUTE_LLAMA_BIN", None)
+    env.pop("BIN", None)
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "llamacpp-rpc",
+            "--topology",
+            "iphone-frontend",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        cwd=os.path.dirname(HERE),
+    )
+    if cp.returncode != 1:
+        _fail(f"llamacpp-rpc without BIN must exit 1 (got {cp.returncode})")
+    out = cp.stdout + cp.stderr
+    if "SHARECOMPUTE_LLAMA_BIN" not in out and not (
+        "requires" in out and "BIN" in out
+    ):
+        _fail("missing clear BIN error message")
+    print("PASS: missing BIN loud fail")
+
+
+
+def _have_rpc_env() -> bool:
+    from portable_dual_topology_lib import resolve_llama_bin, resolve_llama_model
+    from portable_dual_topology_rpc import RpcProbeError, probe_llama_bin
+
+    b, m = resolve_llama_bin(), resolve_llama_model()
+    if not b or not m or not os.path.isfile(m):
+        return False
+    try:
+        probe_llama_bin(b)
+        return True
+    except RpcProbeError:
+        return False
+
+
+def _run_rpc_happy_topology(topology: str, label: str) -> None:
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "llamacpp-rpc",
+            "--topology",
+            topology,
+            "--timeout",
+            "120",
+            "--token-count",
+            "16",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        cwd=os.path.dirname(HERE),
+    )
+    if cp.returncode != 0:
+        sys.stderr.write(cp.stdout + "\n" + cp.stderr)
+        _fail(f"rpc {label} expected 0, got {cp.returncode}")
+    print(f"PASS: rpc happy {label}")
+
+
+def test_rpc_happy_iphone_frontend() -> None:
+    if not _have_rpc_env():
+        print("SKIP: rpc happy iphone-frontend (no BIN/model)")
+        return
+    _run_rpc_happy_topology("iphone-frontend", "iphone-frontend")
+
+
+def test_rpc_happy_windows_frontend() -> None:
+    if not _have_rpc_env():
+        print("SKIP: rpc happy windows-frontend (no BIN/model)")
+        return
+    _run_rpc_happy_topology("windows-frontend", "windows-frontend")
+
+
+def test_rpc_happy_both() -> None:
+    if not _have_rpc_env():
+        print("SKIP: rpc happy both (no BIN/model)")
+        return
+    _run_rpc_happy_topology("both", "both")
+
+
+def test_rpc_kill_mid_restarts_once() -> None:
+    """BIN-gated: kill ggml-rpc-server mid-run -> SIGKILL-ok + one restart."""
+    if not _have_rpc_env():
+        print("SKIP: rpc kill mid (no BIN/model)")
+        return
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "llamacpp-rpc",
+            "--topology",
+            "iphone-frontend",
+            "--kill-worker",
+            "mid",
+            "--timeout",
+            "120",
+            "--token-count",
+            "32",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        cwd=os.path.dirname(HERE),
+    )
+    out = cp.stdout + cp.stderr
+    if "SIGKILL-ok:" not in out:
+        sys.stderr.write(out)
+        _fail("rpc kill mid missing SIGKILL-ok evidence")
+    if "FAIL: kill attempt silently succeeded" in out:
+        sys.stderr.write(out)
+        _fail("rpc kill mid: attempt 1 silently succeeded")
+    restart_count = out.count("restarting topology")
+    if restart_count != 1:
+        sys.stderr.write(out)
+        _fail(
+            "rpc kill mid expected exactly one restart log "
+            f"(got {restart_count})"
+        )
+    if cp.returncode == 0:
+        print("PASS: rpc kill mid restarts once (exit 0)")
+        return
+    # Loud final fail after kill+restart is acceptable
+    print(f"PASS: rpc kill mid loud fail after kill (exit {cp.returncode})")
+
+
+def test_rpc_kill_start_restarts_once() -> None:
+    """BIN-gated: kill ggml-rpc-server at start -> SIGKILL-ok + one restart."""
+    if not _have_rpc_env():
+        print("SKIP: rpc kill start (no BIN/model)")
+        return
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "llamacpp-rpc",
+            "--topology",
+            "windows-frontend",
+            "--kill-worker",
+            "start",
+            "--timeout",
+            "120",
+            "--token-count",
+            "32",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        cwd=os.path.dirname(HERE),
+    )
+    out = cp.stdout + cp.stderr
+    if "SIGKILL-ok:" not in out:
+        sys.stderr.write(out)
+        _fail("rpc kill start missing SIGKILL-ok evidence")
+    if "FAIL: kill attempt silently succeeded" in out:
+        sys.stderr.write(out)
+        _fail("rpc kill start: attempt 1 silently succeeded")
+    restart_count = out.count("restarting topology")
+    if restart_count != 1:
+        sys.stderr.write(out)
+        _fail(
+            "rpc kill start expected exactly one restart log "
+            f"(got {restart_count})"
+        )
+    if cp.returncode == 0:
+        print("PASS: rpc kill start restarts once (exit 0)")
+        return
+    print(f"PASS: rpc kill start loud fail after kill (exit {cp.returncode})")
+
+
+def test_rpc_helper_stops_server_when_generate_raises() -> None:
+    """Happy-path exception must stop the ggml-rpc-server started in the helper."""
+    import portable_dual_topology_orch as orch
+
+    fake_proc = MagicMock()
+    fake_proc.poll.return_value = None
+    fake_proc.pid = 4242
+
+    with (
+        patch(
+            "portable_dual_topology_rpc.start_rpc_server",
+            return_value=(fake_proc, 18000),
+        ),
+        patch(
+            "portable_dual_topology_rpc.run_rpc_generate",
+            side_effect=RuntimeError("boom-generate"),
+        ),
+        patch("portable_dual_topology_rpc.stop_proc") as stop,
+    ):
+        try:
+            orch._run_rpc_generate_with_optional_kill(
+                kill_worker=None,
+                do_kill=False,
+                token_count=8,
+                timeout_s=5.0,
+                bin_dir="/tmp/fake-llama-bin",
+            )
+        except RuntimeError as exc:
+            assert "boom-generate" in str(exc)
+        else:
+            _fail("expected RuntimeError from run_rpc_generate")
+        stop.assert_called_once_with(fake_proc)
+    print("PASS: helper stops server on generate raise")
+
+
+def test_stub_child_env_isolates_polluted_rpc_backend() -> None:
+    """Stub orch must set SHARECOMPUTE_PORTABLE_BACKEND=stub for children."""
+    demo = os.path.join(HERE, "portable_dual_topology_demo.py")
+    env = os.environ.copy()
+    env["SHARECOMPUTE_PORTABLE_BACKEND"] = "llamacpp-rpc"
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    cp = subprocess.run(
+        [
+            sys.executable,
+            demo,
+            "--backend",
+            "stub",
+            "--topology",
+            "iphone-frontend",
+            "--timeout",
+            "12",
+            "--token-count",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        cwd=os.path.dirname(HERE),
+    )
+    out = cp.stdout + cp.stderr
+    if cp.returncode != 0:
+        sys.stderr.write(out)
+        _fail(
+            "stub with polluted parent llamacpp-rpc env must still exit 0 "
+            f"(got {cp.returncode})"
+        )
+    if "skip SCPT" in out:
+        sys.stderr.write(out)
+        _fail("stub peers must not skip SCPT under polluted parent backend env")
+    print("PASS: stub isolates polluted RPC backend env")
+
+def run_unit_tests() -> None:
+    test_backend_constants()
+    test_resolve_llama_bin_and_model()
+    test_rpc_port_base_below_ephemeral()
+    test_rpc_port_base_rejects_too_low_ephemeral()
+    test_rpc_port_base_rejects_empty_ephemeral()
+    test_port_candidates_exhausts_valid_ports()
+    test_run_rpc_generate_requires_paired_server_args()
+    test_probe_missing_bin_raises()
+    test_parse_cli_status_detects_decode_fail()
+    test_rpc_helper_stops_server_when_generate_raises()
+
+
+def main() -> int:
+    run_unit_tests()
+    test_backend_rpc_missing_bin_exits_nonzero()
+    test_stub_child_env_isolates_polluted_rpc_backend()
+    if _have_rpc_env():
+        test_rpc_happy_iphone_frontend()
+        test_rpc_happy_windows_frontend()
+        test_rpc_happy_both()
+        test_rpc_kill_mid_restarts_once()
+        test_rpc_kill_start_restarts_once()
+    else:
+        print("SKIP: BIN-gated rpc matrix (set SHARECOMPUTE_LLAMA_BIN + MODEL)")
+    print("ALL PASS: portable_rpc_selftest")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
