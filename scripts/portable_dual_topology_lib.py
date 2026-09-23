@@ -480,16 +480,22 @@ def rpc_port_base(pid: int) -> int:
     ephemeral_lo = 32768
     try:
         with open("/proc/sys/net/ipv4/ip_local_port_range", encoding="utf-8") as fh:
-            ephemeral_lo = int(fh.read().split()[0])
-    except (OSError, IndexError, ValueError):
-        pass
+            fields = fh.read().split()
+    except OSError:
+        fields = []
+
+    if fields:
+        try:
+            ephemeral_lo = int(fields[0])
+        except (IndexError, ValueError) as exc:
+            raise ValueError("invalid ephemeral port lower bound") from exc
+    if ephemeral_lo <= 65:
+        raise ValueError(
+            f"ephemeral port lower bound {ephemeral_lo} cannot fit a 65-port RPC block"
+        )
 
     candidate = 20000 + ((pid * 7) % 10000)
     # Keep the normal Linux choice unchanged, but do not let a hard floor
     # push the block into a low configured ephemeral range.
     highest_base = ephemeral_lo - 65
-    if highest_base < 1024:
-        # A very low range cannot fit a complete unprivileged block; use the
-        # highest positive block that still satisfies the strict invariant.
-        highest_base = max(1, highest_base)
     return min(candidate, highest_base)
