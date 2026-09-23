@@ -212,10 +212,7 @@ def _have_rpc_env() -> bool:
         return False
 
 
-def test_rpc_happy_iphone_frontend() -> None:
-    if not _have_rpc_env():
-        print("SKIP: rpc happy (no BIN/model)")
-        return
+def _run_rpc_happy_topology(topology: str, label: str) -> None:
     demo = os.path.join(HERE, "portable_dual_topology_demo.py")
     cp = subprocess.run(
         [
@@ -224,7 +221,7 @@ def test_rpc_happy_iphone_frontend() -> None:
             "--backend",
             "llamacpp-rpc",
             "--topology",
-            "iphone-frontend",
+            topology,
             "--timeout",
             "120",
             "--token-count",
@@ -232,13 +229,34 @@ def test_rpc_happy_iphone_frontend() -> None:
         ],
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=600,
         cwd=os.path.dirname(HERE),
     )
     if cp.returncode != 0:
         sys.stderr.write(cp.stdout + "\n" + cp.stderr)
-        _fail(f"rpc iphone-frontend expected 0, got {cp.returncode}")
-    print("PASS: rpc happy iphone-frontend")
+        _fail(f"rpc {label} expected 0, got {cp.returncode}")
+    print(f"PASS: rpc happy {label}")
+
+
+def test_rpc_happy_iphone_frontend() -> None:
+    if not _have_rpc_env():
+        print("SKIP: rpc happy iphone-frontend (no BIN/model)")
+        return
+    _run_rpc_happy_topology("iphone-frontend", "iphone-frontend")
+
+
+def test_rpc_happy_windows_frontend() -> None:
+    if not _have_rpc_env():
+        print("SKIP: rpc happy windows-frontend (no BIN/model)")
+        return
+    _run_rpc_happy_topology("windows-frontend", "windows-frontend")
+
+
+def test_rpc_happy_both() -> None:
+    if not _have_rpc_env():
+        print("SKIP: rpc happy both (no BIN/model)")
+        return
+    _run_rpc_happy_topology("both", "both")
 
 
 def test_rpc_kill_mid_restarts_once() -> None:
@@ -345,15 +363,20 @@ def run_unit_tests() -> None:
     test_run_rpc_generate_requires_paired_server_args()
     test_probe_missing_bin_raises()
     test_parse_cli_status_detects_decode_fail()
-    test_backend_rpc_missing_bin_exits_nonzero()
-    test_rpc_happy_iphone_frontend()
-    test_rpc_kill_mid_restarts_once()
-    test_rpc_kill_start_restarts_once()
 
 
 def main() -> int:
     run_unit_tests()
-    print("ALL PASS: portable_rpc_selftest (units)")
+    test_backend_rpc_missing_bin_exits_nonzero()
+    if _have_rpc_env():
+        test_rpc_happy_iphone_frontend()
+        test_rpc_happy_windows_frontend()
+        test_rpc_happy_both()
+        test_rpc_kill_mid_restarts_once()
+        test_rpc_kill_start_restarts_once()
+    else:
+        print("SKIP: BIN-gated rpc matrix (set SHARECOMPUTE_LLAMA_BIN + MODEL)")
+    print("ALL PASS: portable_rpc_selftest")
     return 0
 
 
