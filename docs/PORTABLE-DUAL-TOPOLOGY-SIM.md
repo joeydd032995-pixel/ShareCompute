@@ -1,8 +1,10 @@
-# Portable dual-topology simulation (Phase B stub)
+# Portable dual-topology simulation (stub and same-host RPC gate)
 
 Pre-device product gate: prove **both** role directions on one portable control and
-data plane with `ios` and `windows` seats only. Compute is fake-but-sized: this
-simulation is not `llama.cpp`, ggml-rpc, InferRing, or MLX.
+data plane with `ios` and `windows` seats only. The default backend is a
+fake-but-sized stub; the opt-in `llamacpp-rpc` backend is a same-host gate for
+the probed `llama.cpp` RPC binaries. Neither mode claims LAN iPhone↔Windows
+inference.
 
 ## What it proves
 
@@ -17,22 +19,64 @@ simulation is not `llama.cpp`, ggml-rpc, InferRing, or MLX.
 | StagePlanner-equivalent shard plan, epoch, and RAM-fit rejection | **Real** |
 | TCP activation framing with magic `SCPT` along shard ranks | **Real** |
 | Missing seat, discovery failure, role mismatch, and killed worker exit non-zero | **Real** |
-| Real ggml-rpc / `llama.cpp` / LAN iPhone↔Windows inference | **Not claimed** |
+| Same-host `llamacpp-rpc` client + one worker endpoint (opt-in) | **Real when the probe passes** |
+| LAN iPhone↔Windows inference | **Not claimed** |
 
-The default demo model is a 32-layer, approximately 12 GB fake model. The planner
-reserves 0.5 GB overhead per peer and fits the default advertised capacities:
-`ios=6.0 GB` and `windows=16.0 GB`. Fake compute is a checksum fold plus a small
-sleep proportional to assigned layers; no model weights or tokenizer are loaded.
+With `--backend stub` (the default), the demo model is a 32-layer, approximately
+12 GB fake model. The planner reserves 0.5 GB overhead per peer and fits the
+default advertised capacities: `ios=6.0 GB` and `windows=16.0 GB`. Stub compute
+is a checksum fold plus a small sleep proportional to assigned layers; no model
+weights or tokenizer are loaded. The RPC backend instead requires the BIN/model
+environment described below and runs one loopback RPC worker endpoint.
+
+## Backends and same-host RPC boundary
+
+The CLI accepts `--backend stub` (the default) or `--backend llamacpp-rpc`.
+`stub` keeps the deterministic SCPT fake activation path and needs no llama.cpp
+installation. `llamacpp-rpc` replaces that data-plane step with one
+`ggml-rpc-server` worker endpoint and a llama.cpp client, while retaining the same
+seat, topology, plan, and bounded-wait checks.
+
+The RPC gate is **same-host only**: the orchestrator, client, and RPC worker run on
+the same host and the worker endpoint is bound to loopback. It has **no
+authentication or TLS**; do not expose it beyond the host. Each topology run uses
+one worker RPC endpoint, not a multi-worker or LAN deployment.
+
+Before selecting `llamacpp-rpc`:
+
+- Set `SHARECOMPUTE_LLAMA_BIN` (preferred) or `BIN` to a llama.cpp build directory
+  containing an executable `ggml-rpc-server` and a client (`llama-server` or
+  `llama-cli`).
+- Set `SHARECOMPUTE_LLAMA_MODEL` (preferred) or `MODEL` to the GGUF model path.
+- The build must include the peer-death handling from `ggml-org/llama.cpp#26724`
+  (or an equivalent landed patch). The capability probe requires the marker
+  `the device is now unusable`; a missing marker or missing executable fails the
+  RPC run. There is no silent fallback to `stub`.
+
+Kill and restart policy differs by backend. For `stub`, `--kill-worker start|mid`
+kills the simulated worker; the run must exit non-zero and does not restart. For
+`llamacpp-rpc`, the same options SIGKILL `ggml-rpc-server` and must emit
+`SIGKILL-ok:rpc-server:` evidence. The failed attempt is torn down and the full
+same-host topology is restarted once with fresh processes and ports. A successful
+retry completes that topology; a second failure exits non-zero. This is a full
+restart, not in-process RPC peer re-attachment.
 
 ## How to run
 
 Run from the repository root. The orchestrator starts one hub and two peer
-processes per topology, then cleans them up on success or failure.
+processes per topology, then cleans them up on success or failure. The explicit
+`--backend stub` command below is equivalent to the default when the flag is
+omitted.
 
 ```bash
-# Success — both topologies (the default; exit 0 only if both pass)
-python3 scripts/portable_dual_topology_demo.py
-python3 scripts/portable_dual_topology_demo.py --topology both
+# Stub backend — both topologies (default backend; exit 0 only if both pass)
+python3 scripts/portable_dual_topology_demo.py --backend stub
+python3 scripts/portable_dual_topology_demo.py --backend stub --topology both
+
+# Same-host RPC backend — requires a probe-passing #26724 build and GGUF
+SHARECOMPUTE_LLAMA_BIN=/path/to/bin \
+SHARECOMPUTE_LLAMA_MODEL=/path/to/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  python3 scripts/portable_dual_topology_demo.py --backend llamacpp-rpc --topology both
 
 # Success — single topology (exit 0)
 python3 scripts/portable_dual_topology_demo.py --topology iphone-frontend
@@ -59,8 +103,11 @@ python3 scripts/portable_dual_topology_demo.py --fail-role-mismatch
 # Argument error — token count must be positive; exit != 0 before spawning peers
 python3 scripts/portable_dual_topology_demo.py --token-count -1
 
-# Automated unit, protocol, happy-path, and failure-matrix gate
+# Stub unit, protocol, happy-path, and failure-matrix gate
 python3 scripts/portable_dual_topology_selftest.py
+
+# RPC unit checks always run; RPC subprocess matrix runs when BIN + MODEL are set
+python3 scripts/portable_rpc_selftest.py
 ```
 
 For a negative command, a non-zero exit is the expected result. A kill test is
@@ -68,9 +115,10 @@ only valid when the combined output contains `SIGKILL-ok:` evidence; a timeout o
 silent process disappearance is a failure of the test itself. Use `--timeout` to
 bound discovery and pipeline waits, `--token-count N` for a positive token count,
 `--discovery-port PORT` to choose the multicast port, and `--usable-gb GB` to
-override every peer's advertised capacity. The peer-role `--skip-discovery` mode
-is available when invoking the `hub` and `peer` roles directly with `--host` and
-`--port`.
+override every peer's advertised capacity. The peer-role `--skip-discovery` mode is available when invoking the `hub` and
+`peer` roles directly with `--host` and `--port`. The RPC selftest prints a
+`SKIP` for its BIN-gated matrix when the required environment is absent; that
+does not skip its always-on unit checks.
 
 ## Architecture
 
@@ -141,30 +189,17 @@ to a non-zero run result.
 | `scripts/portable_dual_topology_hub.py` | UDP beacon, TCP JOIN validation, shard plan, PLAN broadcast, completion/error handling |
 | `scripts/portable_dual_topology_peer.py` | Frontend and worker peers; SCPT activation path |
 | `scripts/portable_dual_topology_lib.py` | Constants, discovery, planning, framing, fake compute |
-| `scripts/portable_dual_topology_selftest.py` | Unit checks plus subprocess success/failure matrix |
+| `scripts/portable_dual_topology_selftest.py` | Stub unit checks plus subprocess success/failure matrix |
+| `scripts/portable_rpc_selftest.py` | RPC unit checks plus BIN-gated same-host matrix |
 | `scripts/four_platform_pool_lib.py` | Shared multicast transport and TCP line framing |
 
 The Phase A sibling remains unchanged: [`INFERENCE-PIPELINE-SIM.md`](INFERENCE-PIPELINE-SIM.md).
 Do not use this stub as evidence that MLX/Metal, real model weights, authentication,
 production discovery, or cross-device reliability work.
 
-## Next: RPC handoff (real `llama.cpp` — not this stub)
+## Next: LAN Windows↔iPhone after this gate
 
-Keep the product boundary and test contract: the two seats, both topology rows,
-hub role rules, epoch validation, RAM-fit planning, bounded waits, and the
-requirement that `--topology both` succeeds only when both directions succeed.
-
-Replace only the fake `SCPT` activation/compute path with the
-[`Spikes/llamacpp-rpc`](../Spikes/llamacpp-rpc) implementation. The RPC adapter
-must translate a planned shard and activation into the selected `llama.cpp`
-server/client request, then report explicit compute and transport status back to
-this control plane. A process exiting successfully is not sufficient evidence:
-judge the handoff by `llama_decode` / compute status and returned data, with
-bounded RPC timeouts and a surfaced worker loss.
-
-The RPC spike documents hazards around request framing, partial writes,
-concurrent requests, server readiness, and exit-status ambiguity. Resolve those
-hazards before replacing the deterministic stub. This document intentionally does
-not claim that RPC, ggml-rpc, `llama.cpp`, InferRing, or MLX is already wired.
-See the spike README and `findings.md` (F15, F25–F27, F33–F35) for the next
-implementation boundary.
+This same-host RPC gate keeps the existing two-seat control-plane contract while
+checking the selected llama.cpp RPC path, its `#26724` probe, and kill/restart
+handling. The next topology is LAN Windows↔iPhone after this gate. LAN transport,
+remote discovery, and device-to-device security are not covered here.
