@@ -10,6 +10,7 @@ Uses a distinct discovery service id (`sharecompute-portable`) and data-plane ma
 from __future__ import annotations
 
 import hashlib
+import os
 import json
 import select
 import socket
@@ -451,3 +452,38 @@ def connect_with_deadline(host: str, port: int, deadline: float) -> socket.socke
                 pass
             time.sleep(0.05)
     raise ConnectionError(f"connect {host}:{port} failed before deadline: {last_err}")
+
+
+BACKEND_CHOICES = ("stub", "llamacpp-rpc")
+DEFAULT_BACKEND = "stub"
+DEFAULT_RPC_MODEL_NAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+
+def resolve_llama_bin() -> Optional[str]:
+    for key in ("SHARECOMPUTE_LLAMA_BIN", "BIN"):
+        val = os.environ.get(key)
+        if val:
+            return val
+    return None
+
+
+def resolve_llama_model() -> Optional[str]:
+    for key in ("SHARECOMPUTE_LLAMA_MODEL", "MODEL"):
+        val = os.environ.get(key)
+        if val:
+            return val
+    return None
+
+
+def rpc_port_base(pid: int) -> int:
+    """Spike-compatible: ports below host ephemeral range."""
+    ephemeral_lo = 32768
+    try:
+        with open("/proc/sys/net/ipv4/ip_local_port_range", encoding="utf-8") as fh:
+            ephemeral_lo = int(fh.read().split()[0])
+    except OSError:
+        pass
+    base = 20000 + ((pid * 7) % 10000)
+    if base + 64 >= ephemeral_lo:
+        base = max(10000, ephemeral_lo - 5000)
+    return base
