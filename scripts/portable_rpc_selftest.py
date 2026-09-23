@@ -86,11 +86,26 @@ def test_rpc_port_base_rejects_too_low_ephemeral() -> None:
     print("PASS: rpc_port_base rejects too-low ephemeral")
 
 
+def test_rpc_port_base_rejects_empty_ephemeral() -> None:
+    import portable_dual_topology_lib as lib
+
+    for proc_value in ("", "   \n", "\t\n"):
+        with patch("builtins.open", mock_open(read_data=proc_value)):
+            try:
+                lib.rpc_port_base(12345)
+            except ValueError as exc:
+                assert "invalid ephemeral" in str(exc)
+            else:
+                raise AssertionError(f"expected ValueError for {proc_value!r}")
+    print("PASS: rpc_port_base rejects empty ephemeral")
+
+
 def run_unit_tests() -> None:
     test_backend_constants()
     test_resolve_llama_bin_and_model()
     test_rpc_port_base_below_ephemeral()
     test_rpc_port_base_rejects_too_low_ephemeral()
+    test_rpc_port_base_rejects_empty_ephemeral()
 
 
 def main() -> int:

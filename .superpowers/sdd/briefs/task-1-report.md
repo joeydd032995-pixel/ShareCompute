@@ -167,3 +167,24 @@ git diff --check                                   PASS
 ```
 
 Task 2 was not started.
+
+
+## Important-finding follow-up: empty ephemeral range rejection
+
+### TDD RED
+
+Added regression coverage for empty and whitespace-only `/proc/sys/net/ipv4/ip_local_port_range` content. Before the implementation fix, `python3 scripts/portable_rpc_selftest.py` failed because empty content fell back to `32768`.
+
+### Fix
+
+`rpc_port_base` now distinguishes an `OSError` (which retains the allowed `32768` fallback) from successfully read but empty/whitespace-only content, which raises `ValueError`.
+
+### GREEN
+
+```text
+python3 scripts/portable_rpc_selftest.py             PASS
+python3 scripts/portable_dual_topology_selftest.py   PASS
+git diff --check                                   PASS
+```
+
+Task 2 was not started.

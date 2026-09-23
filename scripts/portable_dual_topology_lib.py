@@ -482,9 +482,11 @@ def rpc_port_base(pid: int) -> int:
         with open("/proc/sys/net/ipv4/ip_local_port_range", encoding="utf-8") as fh:
             fields = fh.read().split()
     except OSError:
-        fields = []
+        fields = None
 
-    if fields:
+    if fields is not None:
+        if not fields:
+            raise ValueError("invalid ephemeral port range")
         try:
             ephemeral_lo = int(fields[0])
         except (IndexError, ValueError) as exc:
