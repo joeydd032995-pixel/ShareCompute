@@ -187,10 +187,12 @@ def test_backend_rpc_missing_bin_exits_nonzero() -> None:
         timeout=30,
         cwd=os.path.dirname(HERE),
     )
-    if cp.returncode == 0:
-        _fail("llamacpp-rpc without BIN must exit != 0")
+    if cp.returncode != 1:
+        _fail(f"llamacpp-rpc without BIN must exit 1 (got {cp.returncode})")
     out = cp.stdout + cp.stderr
-    if "BIN" not in out and "llama" not in out.lower():
+    if "SHARECOMPUTE_LLAMA_BIN" not in out and not (
+        "requires" in out and "BIN" in out
+    ):
         _fail("missing clear BIN error message")
     print("PASS: missing BIN loud fail")
 
