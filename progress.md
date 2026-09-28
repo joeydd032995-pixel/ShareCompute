@@ -658,3 +658,12 @@ residual item #1. One change, both problems.
 |---|---|---|
 | **The harness counted its own probes as the evidence** | 1 | Everything turns on how many connections the restarted peer accepts, and `listening()`'s `/dev/tcp` check *is* a connection that `ggml-rpc-server` logs identically. First run reported 2 and **correctly refused to conclude** — the third verdict branch ("cannot separate these") is the only reason it did not publish a false negative. Both were the harness; each showed as an accept followed instantly by a close, with no HELLO between. Count is now a delta taken after probing ends, with the discount printed |
 | **Claimed a mechanism the evidence did not support** | 1 | The verdict read "the client short-circuited before touching the socket, which is the latch and not the dead buffers". The server log refutes it: request 3 emits six `send failed (bytes_sent=0)` before `graph_compute` reports −1 — the client *does* write, to the stale socket it already holds. Checked task ids (25 = post-kill, 28 = post-restart) rather than assuming the lines belonged to the right request. Corrected to "no reconnection", which is what was actually measured; latch vs `reg_map` vs buffers stays unisolated |
+
+## 2026-09-28 — Native three-device model split
+
+Restored the native implementation after temporary workspace loss and saved it to
+`feature/three-device-model-split` / PR #25 before further validation. Closed the
+superseded gateway PR #24 without merging. Linux real-model and fault-injection
+matrix passes, as do five authentication/proof validation tests. Native Android and
+iOS targets, the foreground Swift compute worker, and platform CI were added.
+Physical-device validation remains an operator step; see the three-device guide.

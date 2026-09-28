@@ -36,6 +36,7 @@ jobs:
           path: |
             build/desktop/bin/
             build/desktop/runtime-revision.txt
+            build/desktop/THIRD_PARTY_NOTICES.txt
             split-runs/ci/*/report.json
             split-runs/ci/*/*.log
   android:
@@ -53,6 +54,7 @@ jobs:
           path: |
             build/android/bin/
             build/android/runtime-revision.txt
+            build/android/THIRD_PARTY_NOTICES.txt
   ios:
     strategy:
       fail-fast: false
@@ -97,5 +99,6 @@ jobs:
           path: |
             build/ShareCompute-unsigned.ipa
             build/${{ matrix.platform }}/runtime-revision.txt
+            build/${{ matrix.platform }}/THIRD_PARTY_NOTICES.txt
             split-runs/ios-simulator/report.json
             split-runs/ios-simulator/*.log

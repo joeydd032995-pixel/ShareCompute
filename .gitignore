@@ -17,3 +17,6 @@ __pycache__/
 split-runs/
 Apps/ComputeWorker/ComputeWorker.xcodeproj/
 Apps/ComputeWorker/Info.plist
+/android.json
+/iphone.json
+/laptop.json

@@ -25,7 +25,7 @@ def main():
         assert not report['physical_devices']
         if name == 'worker-death': assert report.get('fault_trigger', {}).get('graph_calls_before_kill', 0) > 0, report
         if name == 'memory-refusal':
-            logs = '\n'.join(p.read_text() for p in out.glob('*-worker.log'))
+            logs = '\n'.join(p.read_text(encoding='utf-8') for p in out.glob('*-worker.log'))
             assert 'buffer budget exceeded' in logs, logs[-2000:]
         print(f'VERIFIED {name}', flush=True)
 

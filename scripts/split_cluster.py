@@ -218,7 +218,7 @@ class Worker:
         with socket.socket() as sock: sock.bind(('127.0.0.1', 0)); self.port = sock.getsockname()[1]
         tasks = []; writer = None
         self.log.parent.mkdir(parents=True, exist_ok=True)
-        with self.log.open('w') as log:
+        with self.log.open('w', encoding='utf-8') as log:
             try:
                 self.proc = await asyncio.create_subprocess_exec(self.binary, str(self.port), str(self.pair['budget_mib']), '2',
                                                                  stdout=asyncio.subprocess.PIPE, stderr=log)
@@ -275,7 +275,7 @@ async def probe(binary, config, out, name, timeout, relay=None):
             (out / f'{name}.log').write_bytes(output)
             raise RuntimeError(relay.reason if failed and failed in done else f'{name} timed out')
         output, _ = communicate.result(); text = output.decode(errors='replace')
-        (out / f'{name}.log').write_text(text)
+        (out / f'{name}.log').write_text(text, encoding='utf-8')
         if proc.returncode != 0: raise RuntimeError(f'{name} inference exited {proc.returncode}')
         records = [json.loads(line[10:]) for line in text.splitlines() if line.startswith('SC_RESULT ')]
         if len(records) != 1 or not records[0].get('ok') or not records[0].get('token_ids'):

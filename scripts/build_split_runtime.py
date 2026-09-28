@@ -51,6 +51,14 @@ def main():
     targets = ['sc-worker-core'] if ios else ['sc-rpc-worker', 'sc-split-probe']
     run('cmake', '--build', out, '--config', 'Release', '--parallel', a.jobs, '--target', *targets)
     (out / 'runtime-revision.txt').write_text(REV + '\n')
+    license_text = (source / 'LICENSE').read_text(encoding='utf-8')
+    notices = 'llama.cpp / ggml\n' + license_text
+    notices += '\nJSON for Modern C++\nCopyright (c) 2013-2025 Niels Lohmann <https://nlohmann.me>\n\n'
+    notices += license_text[license_text.index('Permission is hereby granted'):]
+    # CPU builds may use this MIT-licensed kernel. Preserve its complete notice.
+    kernel = (source / 'ggml/src/ggml-cpu/llamafile/sgemm.cpp').read_text(encoding='utf-8')
+    notices += '\nllamafile CPU kernel\n' + kernel[:kernel.index('#include')]
+    (out / 'THIRD_PARTY_NOTICES.txt').write_text(notices, encoding='utf-8')
     if ios:
         (out / 'RuntimeRevision.swift').write_text(f'let runtimeRevision = "{REV}"\n')
 

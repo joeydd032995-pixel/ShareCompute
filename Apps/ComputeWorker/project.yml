@@ -9,6 +9,8 @@ targets:
     sources:
       - Sources
       - path: ${SC_NATIVE_DIR}/RuntimeRevision.swift
+      - path: ${SC_NATIVE_DIR}/THIRD_PARTY_NOTICES.txt
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sharecompute.compute-worker

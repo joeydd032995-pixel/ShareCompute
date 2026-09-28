@@ -2207,3 +2207,33 @@ for "cannot separate these" instead of a binary yes/no.
   different failure and is where the absent `SO_RCVTIMEO`/`SO_SNDTIMEO` would bite.
 - **One model, one topology** (Qwen2.5-0.5B, 2 peers, `-ngl 99`). Whether a partially-local split
   degrades instead of failing outright was not tested.
+
+## F36 — One real model executes across three native CPU workers over pinned TLS
+
+Date: 2026-09-28. Implementation: `native/split`, `scripts/split_cluster.py`, and
+`Apps/ComputeWorker`. Runtime: llama.cpp `4da6337767f973e2b4d0797e5b323d77d8565e4a`
+with the checked-in RPC buffer-budget and native graph-counter patch.
+
+The operator clarified the target as a 4 GB laptop, an 8 GB Android phone, and an
+8 GB iPhone, with no owned Mac. This supersedes the two-PC-only direction. GitHub
+hosted macOS can build the standalone iOS app; Windows/Linux signing and sideloading
+are separate operator steps. PR #24's independent-backend gateway did not meet the
+model-splitting requirement and was closed in favor of #25.
+
+Executed on Linux with actual Qwen2.5-0.5B Q4_K_M weights and three native workers:
+24 generated tokens exactly match the local baseline, with disjoint layer placement
+0–4 / 5–16 / 17–24, positive allocations, bidirectional tunnel traffic, and 24 completed
+native graphs on each worker. The matrix also kills a worker only after native graph
+execution is observed and confirms the generation fails; a 64 MiB budget test refuses
+allocation and fails model loading. Evidence and reproduction commands are in
+`docs/evidence/three-device-split/`.
+
+The supervisor uses a fresh bounded inference process. This contains the upstream
+abort behavior and stale endpoint state; it does not claim in-process re-formation.
+The paired laptop is trusted. Raw RPC is loopback-only and the LAN path uses pinned
+TLS with unique worker credentials, not an exposed experimental RPC listener.
+
+This proves multi-process model splitting, not yet physical three-device execution,
+and not the ability to fit a model larger than a single device. Android/iOS build and
+native iOS simulator execution are separate CI gates. The final acceptance report
+must come from the operator's actual laptop, Android, and iPhone.
