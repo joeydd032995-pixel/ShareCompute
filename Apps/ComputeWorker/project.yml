@@ -1,0 +1,28 @@
+name: ComputeWorker
+options:
+  deploymentTarget:
+    iOS: '16.0'
+targets:
+  ComputeWorker:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - path: ${SC_NATIVE_DIR}/RuntimeRevision.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sharecompute.compute-worker
+        SWIFT_VERSION: '5.0'
+        SWIFT_OBJC_BRIDGING_HEADER: Worker-Bridging-Header.h
+        LIBRARY_SEARCH_PATHS: ['$(inherited)', '${SC_NATIVE_DIR}/lib']
+        OTHER_LDFLAGS: ['$(inherited)', '-lsc-worker-core', '-lggml', '-lggml-rpc', '-lggml-cpu', '-lggml-base', '-lc++']
+        TARGETED_DEVICE_FAMILY: '1,2'
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: ShareCompute Worker
+        NSLocalNetworkUsageDescription: Connect to your paired laptop to compute assigned model layers.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]

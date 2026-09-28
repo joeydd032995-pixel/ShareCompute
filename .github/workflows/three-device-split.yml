@@ -1,0 +1,101 @@
+name: Native three-device model split
+on:
+  pull_request:
+    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'scripts/*split*', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
+  push:
+    branches: [main]
+    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'scripts/*split*', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: split-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography==46.0.0
+      - run: python scripts/test_split_cluster.py -v
+      - run: python scripts/build_split_runtime.py --jobs 3
+      - run: python scripts/download_split_model.py
+      - run: python scripts/verify_split_runtime.py --bin-dir build/desktop/bin --model models/split-proof.gguf --out split-runs/ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: split-${{ matrix.os }}
+          path: |
+            build/desktop/bin/
+            build/desktop/runtime-revision.txt
+            split-runs/ci/*/report.json
+            split-runs/ci/*/*.log
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/build_split_runtime.py --platform android --ndk "$ANDROID_NDK_HOME" --jobs 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: split-android-arm64
+          path: |
+            build/android/bin/
+            build/android/runtime-revision.txt
+  ios:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ios, ios-simulator]
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography==46.0.0
+      - run: python scripts/build_split_runtime.py --platform ${{ matrix.platform }} --jobs 3
+      - name: Generate Xcode project
+        run: |
+          command -v xcodegen || brew install xcodegen
+          export SC_NATIVE_DIR="$PWD/build/${{ matrix.platform }}"
+          xcodegen generate --spec Apps/ComputeWorker/project.yml
+      - name: Build native iOS application
+        run: |
+          SDK=iphoneos
+          if [ '${{ matrix.platform }}' = ios-simulator ]; then SDK=iphonesimulator; fi
+          xcodebuild -project Apps/ComputeWorker/ComputeWorker.xcodeproj -scheme ComputeWorker -configuration Release -sdk "$SDK" -derivedDataPath build/app ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned device app
+        if: matrix.platform == 'ios'
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/app/Build/Products/Release-iphoneos/ComputeWorker.app build/ipa/Payload/
+          cd build/ipa
+          zip -qr ../ShareCompute-unsigned.ipa Payload
+      - name: Execute native iOS simulator computation
+        if: matrix.platform == 'ios-simulator'
+        run: |
+          python scripts/build_split_runtime.py --jobs 3
+          python scripts/download_split_model.py
+          python scripts/verify_ios_simulator.py --app build/app/Build/Products/Release-iphonesimulator/ComputeWorker.app --bin-dir build/desktop/bin --model models/split-proof.gguf --out split-runs/ios-simulator
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: split-${{ matrix.platform }}
+          path: |
+            build/ShareCompute-unsigned.ipa
+            build/${{ matrix.platform }}/runtime-revision.txt
+            split-runs/ios-simulator/report.json
+            split-runs/ios-simulator/*.log
