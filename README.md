@@ -1,5 +1,23 @@
 # ShareCompute
 
+## Run on a 4 GB laptop, 8 GB Android, and 8 GB iPhone (no Mac)
+
+The [three-device setup](docs/THREE-DEVICE-SETUP.md) is the practical path for
+these devices. A lightweight Python gateway runs on the laptop; a mobile web
+page works on both phones; a small llama.cpp model can run on Android or the
+laptop. Choose one compute backend for each request. This is working gateway
+code with a fake-backend integration check, but has not been run on the user's
+physical devices. **The devices' RAM is not combined by this mode.** The
+MLX/Xcode app below remains an Apple-hardware research branch, and the portable
+pool and RPC demos below are experiments rather than three-device inference.
+
+```bash
+python3 scripts/test_device_gateway.py
+# Start at least one llama-server backend, then configure its URL:
+SHARECOMPUTE_LAPTOP_URL=http://127.0.0.1:8080 \
+  python3 scripts/device_gateway.py --host YOUR_LAPTOP_LAN_IP
+```
+
 Elastic ring membership for [infer-ring](Apps/InferRing/README.md) — the first milestone of the
 *Distributed Heterogeneous Inference Framework* specification.
 

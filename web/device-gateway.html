@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ShareCompute · Device gateway</title>
+<style>
+  :root { color-scheme: dark; font: 16px/1.45 system-ui,sans-serif; background:#0b1220; color:#e8eef7 }
+  * { box-sizing:border-box } body { margin:0; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom) }
+  main { max-width:700px; margin:auto; padding:18px }
+  h1 { font-size:1.5rem; margin:0 0 4px } .hint { color:#a9b7ca; font-size:.9rem; margin:0 0 22px }
+  label { display:block; margin:14px 0 6px; font-weight:600 }
+  input,select,textarea,button { width:100%; border:1px solid #44536b; border-radius:10px; background:#172336; color:inherit; padding:12px; font:inherit }
+  button { background:#365de2; border:0; font-weight:700; cursor:pointer; margin-top:12px }
+  button:disabled { opacity:.55; cursor:wait } .row { display:flex; gap:10px } .row button { width:auto; padding:8px 14px; background:#293e62 }
+  #conversation { min-height:180px; max-height:48vh; overflow:auto; margin:20px 0; border:1px solid #314159; border-radius:12px; padding:12px }
+  .msg { white-space:pre-wrap; overflow-wrap:anywhere; margin:0 0 14px; padding:12px; border-radius:10px; background:#20314a }
+  .msg b { display:block; color:#a7c7ff; margin-bottom:4px } .user { background:#293656 }
+  .status { min-height:1.5em; color:#a9b7ca } .error { color:#ffadad }
+</style>
+<main>
+  <h1>ShareCompute</h1>
+  <p class="hint">Your laptop hosts this page. Choose one inference device per request. Device memory is not pooled yet.</p>
+  <label for="token">Access code from laptop</label>
+  <input id="token" type="password" autocomplete="off" placeholder="Paste the code printed by the gateway">
+  <div class="row"><button id="connect">Check devices</button><button id="clear">Clear chat</button></div>
+  <label for="backend">Inference device</label>
+  <select id="backend" aria-label="Inference device"></select>
+  <div id="status" class="status" role="status"></div>
+  <section id="conversation" aria-label="Conversation" aria-live="polite"></section>
+  <label for="prompt">Message</label>
+  <textarea id="prompt" rows="3" maxlength="4000" placeholder="Ask a question"></textarea>
+  <button id="send">Send</button>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  let messages = [];
+  const note = (s, bad=false) => { $('status').textContent=s; $('status').className=bad?'status error':'status'; };
+  async function api(path, payload) {
+    const options={headers:{'X-ShareCompute-Token':$('token').value.trim()}};
+    if (payload) {options.method='POST'; options.headers['Content-Type']='application/json'; options.body=JSON.stringify(payload)}
+    const response=await fetch(path,options);
+    const body=await response.json();
+    if (!response.ok) throw Error(body.error || 'Request failed');
+    return body;
+  }
+  $('connect').onclick=async()=>{
+    try {
+      note('Checking devices…');
+      const data=await api('/api/status');
+      const current=$('backend').value;
+      $('backend').replaceChildren();
+      for (const [name,state] of Object.entries(data.backends)) {
+        const option=new Option(`${name} · ${state.ready?'ready':state.detail}`,name);
+        option.disabled=!state.ready;
+        $('backend').add(option);
+      }
+      if ([...$('backend').options].some(o=>o.value===current&&!o.disabled)) $('backend').value=current;
+      else $('backend').selectedIndex=[...$('backend').options].findIndex(o=>!o.disabled);
+      note(data.mode);
+    } catch(e) { note(e.message,true) }
+  };
+  $('clear').onclick=()=>{messages=[];$('conversation').replaceChildren();note('Chat cleared.');};
+  function append(role,content) {
+    const p=document.createElement('p');p.className='msg '+(role==='user'?'user':'');
+    const label=document.createElement('b');label.textContent=role==='user'?'You':'ShareCompute';
+    p.append(label,document.createTextNode(content));$('conversation').append(p);
+    $('conversation').scrollTop=$('conversation').scrollHeight;
+  }
+  $('send').onclick=async()=>{
+    const content=$('prompt').value.trim(),backend=$('backend').value;
+    if (!content || !backend) {note('Enter a message and connect to a ready device.',true);return}
+    $('send').disabled=true;note(`Waiting for ${backend}…`);
+    try {
+      const next=[...messages,{role:'user',content}].slice(-16);
+      const data=await api('/api/chat',{backend,messages:next,max_tokens:128});
+      messages=[...next,{role:'assistant',content:data.answer}].slice(-16);
+      append('user',content);append('assistant',data.answer);
+      $('prompt').value='';note(`Answered by ${data.backend}.`);
+    } catch(e) {note(e.message,true)}
+    finally {$('send').disabled=false}
+  };
+</script>
+</html>
