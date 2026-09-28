@@ -151,6 +151,7 @@ final class WorkerModel: ObservableObject {
     }
 
     func stop(_ message: String) {
+        print("SC_IOS \(message)")
         epoch = UUID(); running = false; status = message
         runner?.cancel(); heartbeat?.cancel()
         for task in channels.values { task.cancel() }
@@ -186,6 +187,7 @@ final class WorkerModel: ObservableObject {
         let ack = try await control.receiveJSON()
         guard ack["ok"] as? Bool == true else { throw WorkerError.protocolError }
         status = "Connected — waiting for model layers"
+        print("SC_IOS connected; native worker ready")
         heartbeat = Task { [weak self] in
             guard let self else { return }
             do {

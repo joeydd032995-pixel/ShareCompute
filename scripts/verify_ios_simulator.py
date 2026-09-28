@@ -9,7 +9,9 @@ import subprocess
 import sys
 import time
 
-def run(*args): return subprocess.run(args, check=True)
+def run(*args):
+    print(' '.join(args), flush=True)
+    return subprocess.run(args, check=True, timeout=180)
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--app', type=Path, required=True)
     p.add_argument('--bin-dir', type=Path, required=True); p.add_argument('--model', type=Path, required=True)
@@ -31,11 +33,16 @@ def main():
             time.sleep(.1)
         pair = (a.out/'pairing/iphone.json').read_bytes()
         env = dict(os.environ, SIMCTL_CHILD_SC_PAIRING_B64=base64.b64encode(pair).decode())
-        subprocess.run(['xcrun','simctl','launch','--terminate-running-process',udid,'com.sharecompute.compute-worker'], env=env, check=True)
-        if proc.wait(timeout=720) != 0: raise RuntimeError('Native iOS simulator split failed')
-        report = json.loads((a.out/'report.json').read_text())
-        assert report['status'] == 'PASS' and not report['physical_devices']
-        assert report['workers']['iphone']['platform'] == 'ios' and report['workers']['iphone']['simulator']
+        with (a.out/'ios-app.log').open('wb') as log:
+            app = subprocess.Popen(['xcrun','simctl','launch','--console','--terminate-running-process',udid,
+                                    'com.sharecompute.compute-worker'], env=env, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                if proc.wait(timeout=720) != 0: raise RuntimeError('Native iOS simulator split failed')
+                report = json.loads((a.out/'report.json').read_text())
+                assert report['status'] == 'PASS' and not report['physical_devices']
+                assert report['workers']['iphone']['platform'] == 'ios' and report['workers']['iphone']['simulator']
+            finally:
+                if app.poll() is None: app.terminate(); app.wait(timeout=10)
     finally:
         if proc.poll() is None: proc.terminate(); proc.wait(timeout=10)
         subprocess.run(['xcrun','simctl','terminate',udid,'com.sharecompute.compute-worker'], check=False)

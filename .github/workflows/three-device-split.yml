@@ -86,12 +86,15 @@ jobs:
           cp -R build/app/Build/Products/Release-iphoneos/ComputeWorker.app build/ipa/Payload/
           cd build/ipa
           zip -qr ../ShareCompute-unsigned.ipa Payload
+      - name: Build laptop coordinator for simulator
+        if: matrix.platform == 'ios-simulator'
+        run: python scripts/build_split_runtime.py --jobs 3
+      - name: Download simulator proof model
+        if: matrix.platform == 'ios-simulator'
+        run: python scripts/download_split_model.py
       - name: Execute native iOS simulator computation
         if: matrix.platform == 'ios-simulator'
-        run: |
-          python scripts/build_split_runtime.py --jobs 3
-          python scripts/download_split_model.py
-          python scripts/verify_ios_simulator.py --app build/app/Build/Products/Release-iphonesimulator/ComputeWorker.app --bin-dir build/desktop/bin --model models/split-proof.gguf --out split-runs/ios-simulator
+        run: python -u scripts/verify_ios_simulator.py --app build/app/Build/Products/Release-iphonesimulator/ComputeWorker.app --bin-dir build/desktop/bin --model models/split-proof.gguf --out split-runs/ios-simulator
       - uses: actions/upload-artifact@v4
         if: always()
         with:
