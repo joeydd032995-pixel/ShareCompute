@@ -6,3 +6,14 @@ DerivedData/
 .DS_Store
 .superpowers/
 .worktrees/
+
+# Native model splitting artifacts and local pairing credentials
+build/
+.deps/
+.sc-pairing/
+__pycache__/
+*.gguf
+*.partial
+split-runs/
+Apps/ComputeWorker/ComputeWorker.xcodeproj/
+Apps/ComputeWorker/Info.plist
