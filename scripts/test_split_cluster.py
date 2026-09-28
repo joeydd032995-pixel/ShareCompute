@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from split_cluster import NODES, Relay, close, init_cluster, paired_connection, receive, send, validate_proof
+from split_cluster import NODES, REV, Relay, close, init_cluster, paired_connection, receive, send, validate_proof
 
 class ProofTests(unittest.TestCase):
     def setUp(self):
@@ -47,5 +47,18 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
         await send(writer, {'kind': 'data', 'node': 'iphone', 'token': self.pair['token'], 'channel': '0' * 32})
         self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
         await close(writer)
+    async def test_stop_disconnects_external_worker(self):
+        reader, writer = await paired_connection(self.pair)
+        try:
+            await send(writer, {'kind': 'control', 'node': 'iphone', 'token': self.pair['token'],
+                                'runtime': REV, 'budget_mib': self.pair['budget_mib'],
+                                'platform': 'ios', 'simulator': True})
+            self.assertTrue((await receive(reader))['ok'])
+            # The app remains connected when the coordinator finishes a generation.
+            # Python 3.12 Server.wait_closed waits for accepted connections too.
+            await asyncio.wait_for(self.relay.stop(), 4)
+            self.assertEqual(await asyncio.wait_for(reader.read(), 1), b'')
+        finally:
+            await close(writer)
 
 if __name__ == '__main__': unittest.main()

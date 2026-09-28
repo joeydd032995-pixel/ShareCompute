@@ -9,9 +9,9 @@ import subprocess
 import sys
 import time
 
-def run(*args):
+def run(*args, timeout=180):
     print(' '.join(args), flush=True)
-    return subprocess.run(args, check=True, timeout=180)
+    return subprocess.run(args, check=True, timeout=timeout)
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--app', type=Path, required=True)
     p.add_argument('--bin-dir', type=Path, required=True); p.add_argument('--model', type=Path, required=True)
@@ -20,7 +20,7 @@ def main():
     phone = next(d for group in devices['devices'].values() for d in group if 'iPhone' in d['name'] and d.get('isAvailable'))
     udid = phone['udid']
     if phone['state'] != 'Booted': run('xcrun','simctl','boot',udid)
-    run('xcrun','simctl','bootstatus',udid,'-b')
+    run('xcrun','simctl','bootstatus',udid,'-b', timeout=300)
     run('xcrun','simctl','install',udid,str(a.app.resolve()))
     command = [sys.executable,str(Path(__file__).with_name('split_cluster.py')),'simulator',
                '--worker-binary',str(a.bin_dir/'sc-rpc-worker'),'--probe-binary',str(a.bin_dir/'sc-split-probe'),

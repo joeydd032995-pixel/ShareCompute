@@ -175,10 +175,14 @@ class Relay:
 
     async def stop(self):
         self.closing = True
-        for listener in [self.server, *self.listeners]: listener.close(); await listener.wait_closed()
+        listeners = [self.server, *self.listeners]
+        for listener in listeners: listener.close()
+        # Python 3.12+ waits for accepted connections in Server.wait_closed().
+        # Disconnect external phone controls before waiting for the TLS server.
         for task in list(self.tasks): task.cancel()
         await asyncio.gather(*(close(w) for w in list(self.writers)), return_exceptions=True)
         await asyncio.gather(*list(self.tasks), return_exceptions=True)
+        await asyncio.gather(*(listener.wait_closed() for listener in listeners))
 
 async def terminate(proc):
     if proc and proc.returncode is None:
