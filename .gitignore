@@ -20,3 +20,8 @@ Apps/ComputeWorker/Info.plist
 /android.json
 /iphone.json
 /laptop.json
+
+# Standalone test-kit packaging and Android build cache
+dist/
+.gradle/
+.cxx/

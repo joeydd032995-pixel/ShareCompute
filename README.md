@@ -1,5 +1,7 @@
 # ShareCompute
 
+**Simplified setup:** use the standalone laptop test kit and QR-paired phone apps. See [Test kit quickstart](docs/TEST-KIT-QUICKSTART.md). The build instructions below are for development.
+
 
 ## Current objective: laptop + Android + native iPhone compute
 

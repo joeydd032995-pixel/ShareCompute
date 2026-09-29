@@ -1,5 +1,7 @@
 # One model, three native compute workers
 
+**Simplified setup:** use the standalone laptop test kit and QR-paired phone apps. See [Test kit quickstart](TEST-KIT-QUICKSTART.md). The build instructions below are for development.
+
 Target hardware: a **4 GB laptop**, **8 GB Android phone**, and **8 GB iPhone**.
 The iPhone executes assigned model layers using native C++ inside a Swift app.
 An owned Mac is not required: GitHub Actions builds the app on a hosted macOS runner.

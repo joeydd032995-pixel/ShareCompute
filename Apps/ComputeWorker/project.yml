@@ -23,6 +23,7 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: ShareCompute Worker
+        NSCameraUsageDescription: Scan the pairing code displayed by your laptop.
         NSLocalNetworkUsageDescription: Connect to your paired laptop to compute assigned model layers.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

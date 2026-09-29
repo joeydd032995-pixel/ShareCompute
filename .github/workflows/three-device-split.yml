@@ -1,13 +1,14 @@
 name: Native three-device model split
 on:
   pull_request:
-    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'scripts/*split*', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
+    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'Apps/AndroidWorker/**', 'scripts/*split*', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
   push:
     branches: [main]
-    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'scripts/*split*', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
+    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'Apps/AndroidWorker/**', 'scripts/*split*', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: split-${{ github.ref }}
   cancel-in-progress: true
@@ -47,7 +48,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
       - run: python scripts/build_split_runtime.py --platform android --ndk "$ANDROID_NDK_HOME" --jobs 3
+      - name: Package Android app
+        run: |
+          export SC_NDK_VERSION="$(basename "$ANDROID_NDK_HOME")"
+          gradle -p Apps/AndroidWorker assembleDebug --no-daemon --max-workers=2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: split-android-apk
+          path: Apps/AndroidWorker/app/build/outputs/apk/debug/*.apk
       - uses: actions/upload-artifact@v4
         with:
           name: split-android-arm64
@@ -105,3 +121,50 @@ jobs:
             build/${{ matrix.platform }}/THIRD_PARTY_NOTICES.txt
             split-runs/ios-simulator/report.json
             split-runs/ios-simulator/*.log
+
+  test-kit:
+    needs: [desktop, android, ios]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: split-${{ matrix.os }}
+          path: build/desktop-artifact
+      - name: Restore native binaries
+        shell: bash
+        run: |
+          mkdir -p build/desktop
+          cp -R build/desktop-artifact/build/desktop/* build/desktop/
+          chmod +x build/desktop/bin/* || true
+      - run: python -m pip install cryptography==46.0.0 qrcode==8.2 pyinstaller==6.16.0
+      - run: python scripts/test_split_launcher.py -v
+      - run: python scripts/build_split_kit.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: python scripts/download_split_model.py
+      - name: Execute packaged app with real split model
+        shell: bash
+        run: |
+          EXE=dist/ShareCompute/ShareCompute
+          if [ '${{ runner.os }}' = Windows ]; then EXE="$EXE.exe"; fi
+          "$EXE" --self-test-model models/split-proof.gguf --data-dir split-runs/packaged
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShareCompute-${{ runner.os }}
+          path: dist/ShareCompute-*.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: packaged-proof-${{ runner.os }}
+          path: |
+            split-runs/packaged/self-test/report.json
+            split-runs/packaged/self-test/*.log

@@ -101,7 +101,7 @@ private final class Stream: @unchecked Sendable {
 @MainActor
 final class WorkerModel: ObservableObject {
     @Published var pairingText = ""
-    @Published var status = "Import the pairing file created on your laptop."
+    @Published var status = "Start on your laptop, then scan its iPhone QR."
     @Published var running = false
     @Published var allocated: UInt64 = 0
     @Published var peak: UInt64 = 0
@@ -125,7 +125,15 @@ final class WorkerModel: ObservableObject {
     func start() {
         guard !running else { return }
         do {
-            let pair = try JSONDecoder().decode(Pairing.self, from: Data(pairingText.utf8))
+            var text = pairingText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text.count <= 8192 else { throw WorkerError.invalidPairing }
+            if text.hasPrefix("sc1.") {
+                var encoded = String(text.dropFirst(4)).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+                encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
+                guard let decoded = Data(base64Encoded: encoded), let json = String(data: decoded, encoding: .utf8) else { throw WorkerError.invalidPairing }
+                text = json
+            }
+            let pair = try JSONDecoder().decode(Pairing.self, from: Data(text.utf8))
             guard pair.node == "iphone", pair.port > 0, pair.runtime == runtimeRevision,
                   pair.runtime == String(cString: sc_worker_revision()), pair.pin.count == 64,
                   pair.pin.allSatisfy({ $0.isHexDigit && !$0.isUppercase }), pair.token.count == 64,
