@@ -2,6 +2,19 @@
 
 This kit is for a 4 GB laptop, 8 GB Android phone, and 8 GB iPhone. It splits one small model across all three native workers. No owned Mac, Python, Git, compiler, or Termux installation is needed for normal use.
 
+## Downloads
+
+[Validated build](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36526074904), runtime/app source commit `cca346aebf8621381ce9b80cbcd007a3432decec`. Sign in to GitHub to download artifacts. Use matching apps from this build.
+
+| Device | Download |
+| --- | --- |
+| Windows 10/11 x86-64 laptop | [Standalone Windows kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36526074904/artifacts/11014613302) |
+| Ubuntu 24.04+ x86-64 laptop | [Standalone Linux kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36526074904/artifacts/11014955984) |
+| Android 9+ ARM64 | [Worker APK](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36526074904/artifacts/11014498246) |
+| iPhone iOS 16+ | [Worker IPA — requires signing](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36526074904/artifacts/11014885851) |
+
+Both packaged laptop executables passed real-model three-process inference tests; the iPhone simulator passed native inference using the QR payload decoder. The Android APK builds and includes its native ARM64 library. Your physical three-device test is the remaining hardware validation step. These test artifacts expire on December 28, 2026; a later workflow run can produce replacements.
+
 ## First use
 
 1. Download the **ShareCompute-Windows** or **ShareCompute-Linux** kit from the linked successful build. Extract the artifact ZIP, then the kit ZIP inside it. Keep the entire `ShareCompute` folder together. Windows 10/11 x86-64: double-click `Start.cmd`. Linux x86-64 (Ubuntu 24.04 or newer): run `sh Start.sh` (if permissions were lost, first run `chmod +x ShareCompute`). Your browser opens the local dashboard.
