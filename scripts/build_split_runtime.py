@@ -44,7 +44,7 @@ def main():
         flags += ['-DGGML_LLAMAFILE=OFF']
         if a.ndk:
             flags += [f'-DCMAKE_TOOLCHAIN_FILE={a.ndk.resolve()}/build/cmake/android.toolchain.cmake',
-                      '-DANDROID_ABI=arm64-v8a', '-DANDROID_PLATFORM=android-28', '-DANDROID_STL=c++_static']
+                      '-DANDROID_ABI=arm64-v8a', '-DANDROID_PLATFORM=android-28', '-DANDROID_STL=c++_static', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON']
         elif not os.environ.get('ANDROID_ROOT'):
             raise SystemExit('Use --ndk on a build host, or build natively inside Termux')
     run('cmake', '-S', ROOT / 'native/split', '-B', out, *flags)

@@ -667,3 +667,8 @@ superseded gateway PR #24 without merging. Linux real-model and fault-injection
 matrix passes, as do five authentication/proof validation tests. Native Android and
 iOS targets, the foreground Swift compute worker, and platform CI were added.
 Physical-device validation remains an operator step; see the three-device guide.
+
+
+## Simplified test kit — 2026-09-29
+
+Implemented a frozen laptop launcher with checksum-verified model download, private localhost dashboard, QR pairing, start/stop, sanitized report export, and a single-instance data lock. Added an ARM64 Android APK using the same native worker and pinned TLS reverse tunnel; both native phone apps now scan the laptop QR. Added Windows/Linux kit packaging and CI execution of the frozen executable against the real model. Local launcher tests and protocol tests pass; a frozen Linux three-process 16-token run passed with layers 0–4 / 5–16 / 17–24 and 16 graph calls per worker. Physical phones remain the user hardware validation gate. iPhone installation still requires external signing/device trust, with no owned Mac required.

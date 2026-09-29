@@ -32,7 +32,9 @@ def main():
             if proc.poll() is not None or time.monotonic() > deadline: raise RuntimeError('Coordinator did not start')
             time.sleep(.1)
         pair = (a.out/'pairing/iphone.json').read_bytes()
-        env = dict(os.environ, SIMCTL_CHILD_SC_PAIRING_B64=base64.b64encode(pair).decode())
+        # Exercise exactly the QR payload decoder used on physical phones.
+        code = b'sc1.' + base64.urlsafe_b64encode(pair).rstrip(b'=')
+        env = dict(os.environ, SIMCTL_CHILD_SC_PAIRING_B64=base64.b64encode(code).decode())
         with (a.out/'ios-app.log').open('wb') as log:
             app = subprocess.Popen(['xcrun','simctl','launch','--console','--terminate-running-process',udid,
                                     'com.sharecompute.compute-worker'], env=env, stdout=log, stderr=subprocess.STDOUT)
