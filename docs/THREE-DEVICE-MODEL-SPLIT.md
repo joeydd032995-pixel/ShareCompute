@@ -37,8 +37,14 @@ CPU-only execution avoids dependence on incompatible device GPU runtimes.
 ## Get the builds
 
 1. Check out `feature/three-device-model-split` (until the PR is merged).
-2. Open the latest successful **Native three-device model split** Actions run for that
-   branch. Download the artifacts for your devices, from the same commit.
+2. Open the [validated Actions run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414)
+   for commit `9f9da8a6f76542658dbce0c69c6a63f5c15ff53f` and download the matching
+   [Windows](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414/artifacts/10956746142),
+   [Linux](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414/artifacts/10956004930),
+   [Android ARM64](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414/artifacts/10956587325), and
+   [iPhone IPA](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414/artifacts/10956239703)
+   artifacts as appropriate. These CI artifacts expire; use a later successful run of
+   the same workflow after they expire.
 3. Desktop artifacts contain `sc-rpc-worker` and `sc-split-probe` (`.exe` on Windows).
    Extract these into `build/desktop/bin/` in your checkout. On Linux run
    `chmod +x build/desktop/bin/sc-*` after extracting.
@@ -134,13 +140,13 @@ standard TLS library and does not need the cryptography package.
 On the laptop, start the coordinator. On Windows PowerShell use this single line:
 
 ```powershell
-python scripts/split_cluster.py coordinator --worker-binary build/desktop/bin/sc-rpc-worker.exe --probe-binary build/desktop/bin/sc-split-probe.exe --model models/split-proof.gguf --out split-runs/physical-1
+python scripts/split_cluster.py coordinator --worker-binary build/desktop/bin/sc-rpc-worker.exe --probe-binary build/desktop/bin/sc-split-probe.exe --model models/split-proof.gguf --tokens 16 --out split-runs/physical-1
 ```
 
 On Linux use:
 
 ```sh
-python3 scripts/split_cluster.py coordinator --worker-binary build/desktop/bin/sc-rpc-worker --probe-binary build/desktop/bin/sc-split-probe --model models/split-proof.gguf --out split-runs/physical-1
+python3 scripts/split_cluster.py coordinator --worker-binary build/desktop/bin/sc-rpc-worker --probe-binary build/desktop/bin/sc-split-probe --model models/split-proof.gguf --tokens 16 --out split-runs/physical-1
 ```
 
 Start Android's worker command. On the iPhone open **ShareCompute Worker**, import
@@ -160,7 +166,11 @@ The laptop runs a local baseline and then the split generation. The final
   cryptographic hardware attestation.
 
 CPU floating-point differences across architectures can change greedy choices in a
-near tie. The strict gate will fail rather than quietly relax numerical validation.
+near tie. The Linux x86-64 and macOS ARM baselines matched for the first 19 tokens of
+this fixture and differed at token 20. The physical commands use a 16-token fixture
+for that reason. A mixed-CPU run can still differ sooner; the strict gate will fail
+rather than quietly relax numerical validation. A 16-token PASS proves the bounded
+three-worker execution, not numerical identity for every possible prompt or length.
 Preserve `report.json` and `*.log` for diagnosis; do not publish the pairing directory.
 Model-generated fixture text is not a factual answer or a model quality evaluation.
 
@@ -181,7 +191,10 @@ The matrix uses three native processes on one host: successful generation, worke
 death **after observed computation**, and allocation refusal at 64 MiB per worker.
 It deliberately labels these as loopback results. CI additionally builds Android,
 Windows, and iOS and runs the actual Swift/native app in the iOS Simulator as the third
-worker. Simulator success still does not prove physical iPhone memory or LAN behavior.
+worker. All five jobs passed on the validated run. In the simulator report, all three
+workers held distinct layers, each completed 24 native graphs, and the generated
+tokens matched the local ARM baseline. Simulator success still does not prove
+physical iPhone memory or LAN behavior.
 
 The native RPC listener binds only to loopback on each device. TLS reverse tunnels
 carry its bytes across the LAN; raw RPC is never opened to the network. This protects

@@ -11,8 +11,9 @@ Windows/Linux signing and sideloading remain an operator setup step.
 
 The implementation uses a pinned llama.cpp CPU runtime, disjoint layer placement,
 per-worker RPC buffer budgets, authenticated TLS reverse tunnels, and a bounded
-subprocess that discards failed generations. Linux loopback computation has passed;
-platform CI and physical-device evidence are separate gates. Nothing here claims a
+subprocess that discards failed generations. [Platform CI](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414)
+passes on Windows, Linux, Android ARM64, physical-iPhone build, and an iPhone
+simulator computation; physical-device evidence is the remaining gate. Nothing here claims a
 single shared 20 GB address space or a completed physical-device test.
 
 See [the three-device setup and proof guide](docs/THREE-DEVICE-MODEL-SPLIT.md).

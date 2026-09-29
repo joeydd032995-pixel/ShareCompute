@@ -28,7 +28,9 @@ GGUF mapping and other local tensors. Timing is from this host only.
 from the successful log. Report files are otherwise copied unchanged. The generated
 fixture text contains model mistakes and is not a factual claim by this project.
 
-CI platform results and installable artifacts are attached to the
-[native split Actions workflow](https://github.com/joeydd032995-pixel/ShareCompute/actions/workflows/three-device-split.yml).
-An iOS simulator result, if green, is an additional real Swift/native execution check;
-only a physical-mode run on the operator's devices completes the hardware objective.
+All platform jobs and the actual Swift/native iOS simulator computation passed in the
+[validated run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414).
+The [simulator artifact](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414/artifacts/10956746112)
+contains its report and logs. It placed layers 0–4 / 5–16 / 17–24 on distinct
+workers, recorded 24 graphs on each, and matched the local ARM baseline token IDs.
+Only a physical-mode run on the operator's devices completes the hardware objective.
