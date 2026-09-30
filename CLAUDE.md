@@ -1,5 +1,25 @@
 # ShareCompute — project context
 
+
+## Current objective: laptop + Android + native iPhone compute
+
+The operator has a 4 GB laptop, an 8 GB Android phone, an 8 GB iPhone, and no owned
+Mac. The active goal is **one model split across all three native compute workers**.
+The earlier two-PC-only direction and the claim that no owned Mac prevents building
+an iOS app are superseded. GitHub-hosted macOS builds the new standalone iOS worker;
+Windows/Linux signing and sideloading remain an operator setup step.
+
+The implementation uses a pinned llama.cpp CPU runtime, disjoint layer placement,
+per-worker RPC buffer budgets, authenticated TLS reverse tunnels, and a bounded
+subprocess that discards failed generations. Linux loopback computation has passed;
+platform CI and physical-device evidence are separate gates. Nothing here claims a
+single shared 20 GB address space or a completed physical-device test.
+
+See [the three-device setup and proof guide](docs/THREE-DEVICE-MODEL-SPLIT.md).
+`Sources/ShareComputeCore` remains unchanged and dependency-free. Historical MLX and
+simulation work below remains useful context, but does not meet this objective by itself.
+
+
 Read this before doing anything. It exists so you do not have to re-derive facts that were
 expensive to establish, and so you do not repeat mistakes this project has already made.
 

@@ -1,0 +1,99 @@
+{
+  "status": "PASS",
+  "physical_devices": false,
+  "runtime": "4da6337767f973e2b4d0797e5b323d77d8565e4a",
+  "scope": "three-process-loopback",
+  "identity_note": "Platform and simulator flags are worker reports, not hardware attestation.",
+  "capacity_note": "Small-model splitting proof; does not prove a model larger than any one device fits.",
+  "workers": {
+    "laptop": {
+      "layers": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "graph_calls": 16,
+      "peak_bytes": 59005184,
+      "bytes_to_worker": 52435645,
+      "bytes_from_worker": 72848,
+      "platform": "linux",
+      "simulator": false,
+      "peer": "127.0.0.1",
+      "budget_mib": 768
+    },
+    "android": {
+      "layers": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "graph_calls": 16,
+      "peak_bytes": 133527296,
+      "bytes_to_worker": 125366790,
+      "bytes_from_worker": 72848,
+      "platform": "linux",
+      "simulator": false,
+      "peer": "127.0.0.1",
+      "budget_mib": 2048
+    },
+    "iphone": {
+      "layers": [
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24
+      ],
+      "graph_calls": 16,
+      "peak_bytes": 257146368,
+      "bytes_to_worker": 215440929,
+      "bytes_from_worker": 9725165,
+      "platform": "linux",
+      "simulator": false,
+      "peer": "127.0.0.1",
+      "budget_mib": 1536
+    }
+  },
+  "generation": {
+    "decode_ms": 2726.318652,
+    "ok": true,
+    "prefill_ms": 523.606662,
+    "prompt_tokens": 5,
+    "text": " Paris. It is the largest city in Europe and the second largest in the world",
+    "token_ids": [
+      12095,
+      13,
+      1084,
+      374,
+      279,
+      7772,
+      3283,
+      304,
+      4505,
+      323,
+      279,
+      2086,
+      7772,
+      304,
+      279,
+      1879
+    ],
+    "wall_ms": 5009.922006
+  },
+  "matches_baseline": true,
+  "model_sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
+}

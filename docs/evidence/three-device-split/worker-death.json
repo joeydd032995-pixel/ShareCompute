@@ -1,0 +1,13 @@
+{
+  "status": "FAIL",
+  "physical_devices": false,
+  "runtime": "4da6337767f973e2b4d0797e5b323d77d8565e4a",
+  "scope": "three-process-loopback",
+  "identity_note": "Platform and simulator flags are worker reports, not hardware attestation.",
+  "capacity_note": "Small-model splitting proof; does not prove a model larger than any one device fits.",
+  "fault_trigger": {
+    "node": "android",
+    "graph_calls_before_kill": 1
+  },
+  "error": "android control disconnected: Missing or oversized protocol message"
+}
