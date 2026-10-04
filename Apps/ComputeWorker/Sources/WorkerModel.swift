@@ -33,24 +33,38 @@ private enum WorkerError: LocalizedError {
     }
 }
 
+// Set from the TLS verify queue, read from the connection's state queue.
+private final class PinCheck: @unchecked Sendable {
+    private let lock = NSLock()
+    private var mismatched = false
+    var rejected: Bool { lock.lock(); defer { lock.unlock() }; return mismatched }
+    func reject() { lock.lock(); mismatched = true; lock.unlock() }
+}
+
+// NWError is not a LocalizedError, so localizedDescription can hide the POSIX, DNS or TLS cause.
+private func describe(_ error: NWError) -> String { error.debugDescription }
+
 // One reader and one writer per connection; NWConnection owns its network queue.
 private final class Stream: @unchecked Sendable {
     let connection: NWConnection
     private let endpoint: String
+    private let pinCheck: PinCheck
     private var buffered = Data()
     private static let queue = DispatchQueue(label: "ShareCompute.network", attributes: .concurrent)
 
     init(host: String, port: UInt16, pin: String? = nil) {
         let tcp = NWProtocolTCP.Options(); tcp.noDelay = true; tcp.connectionTimeout = 10
         let parameters: NWParameters
+        let pinCheck = PinCheck(); self.pinCheck = pinCheck
         if let pin = pin {
             let tls = NWProtocolTLS.Options()
             sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
             sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, trust, complete in
                 let secTrust = sec_trust_copy_ref(trust).takeRetainedValue()
-                guard let certificate = SecTrustGetCertificateAtIndex(secTrust, 0) else { complete(false); return }
+                guard let certificate = SecTrustGetCertificateAtIndex(secTrust, 0) else { pinCheck.reject(); complete(false); return }
                 let der = SecCertificateCopyData(certificate) as Data
                 let actual = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+                if actual != pin { pinCheck.reject() }
                 complete(actual == pin)
             }, Self.queue)
             parameters = NWParameters(tls: tls, tcp: tcp)
@@ -60,7 +74,7 @@ private final class Stream: @unchecked Sendable {
     }
 
     func connect(timeout: Double = 10) async throws {
-        let endpoint = endpoint
+        let endpoint = endpoint, pinCheck = pinCheck
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             // state handlers for this connection run serially on this dedicated queue.
             let queue = DispatchQueue(label: "ShareCompute.connect.\(UUID().uuidString)")
@@ -72,14 +86,16 @@ private final class Stream: @unchecked Sendable {
                 guard !finished else { return }
                 switch state {
                 case .ready: finished = true; continuation.resume()
-                case .waiting(let error): waiting = error.localizedDescription
+                case .waiting(let error): waiting = describe(error)
                 case .failed(let error):
                     finished = true
-                    continuation.resume(throwing: WorkerError.unreachable(endpoint: endpoint, reason: error.localizedDescription))
+                    // The laptop answered; only its certificate was wrong, so network advice would mislead.
+                    continuation.resume(throwing: pinCheck.rejected ? WorkerError.wrongCertificate
+                        : WorkerError.unreachable(endpoint: endpoint, reason: describe(error)))
                 case .cancelled:
                     finished = true
-                    continuation.resume(throwing: WorkerError.unreachable(
-                        endpoint: endpoint, reason: waiting ?? "no answer within \(Int(timeout)) seconds"))
+                    continuation.resume(throwing: pinCheck.rejected ? WorkerError.wrongCertificate
+                        : WorkerError.unreachable(endpoint: endpoint, reason: waiting ?? "no answer within \(Int(timeout)) seconds"))
                 default: break
                 }
             }

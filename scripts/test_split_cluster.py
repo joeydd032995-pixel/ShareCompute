@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import copy
 import io
+from unittest import mock
 import json
 from pathlib import Path
 import tempfile
@@ -58,6 +59,22 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
         await close(writer)
         self.assertIn('Rejected unknown control connection from 127.0.0.1: Unknown node', output.getvalue())
         self.assertNotIn('injected', output.getvalue())
+    async def test_non_string_node_still_logged(self):
+        reader, writer = await paired_connection(self.pair)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            await send(writer, {'kind': 'control', 'node': ['iphone'], 'token': 'x'})
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+        await close(writer)
+        self.assertIn('Rejected unknown control connection from 127.0.0.1: Unknown node', output.getvalue())
+    async def test_silent_peer_logs_timeout_reason(self):
+        output = io.StringIO()
+        quick = lambda r, timeout=0.1: receive(r, timeout)
+        with mock.patch('split_cluster.receive', quick), contextlib.redirect_stdout(output):
+            reader, writer = await paired_connection(self.pair)
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+        await close(writer)
+        self.assertIn('Rejected unknown unknown connection from 127.0.0.1: TimeoutError', output.getvalue())
     async def test_unsolicited_data_rejected(self):
         reader, writer = await paired_connection(self.pair)
         await send(writer, {'kind': 'data', 'node': 'iphone', 'token': self.pair['token'], 'channel': '0' * 32})

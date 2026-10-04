@@ -157,10 +157,10 @@ class Relay:
             if control: self.fail(f'{node} control disconnected: {e}')
             else:
                 # Name only known values; the hello is unauthenticated and must not be echoed.
-                who = node if node in self.config['nodes'] else 'unknown'
-                what = kind if kind in ('control', 'data') else 'unknown'
+                who = node if isinstance(node, str) and node in self.config['nodes'] else 'unknown'
+                what = kind if isinstance(kind, str) and kind in ('control', 'data') else 'unknown'
                 peer = (writer.get_extra_info('peername') or ('unknown address',))[0]
-                print(f'Rejected {who} {what} connection from {peer}: {e or type(e).__name__}', flush=True)
+                print(f'Rejected {who} {what} connection from {peer}: {str(e) or type(e).__name__}', flush=True)
         finally:
             await close(writer); self.writers.discard(writer); self.tasks.discard(task)
 
