@@ -80,6 +80,16 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
         await send(writer, {'kind': 'data', 'node': 'iphone', 'token': self.pair['token'], 'channel': '0' * 32})
         self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
         await close(writer)
+    async def test_joined_worker_closing_names_the_cause(self):
+        reader, writer = await paired_connection(self.pair)
+        with contextlib.redirect_stdout(io.StringIO()):
+            await send(writer, {'kind': 'control', 'node': 'iphone', 'token': self.pair['token'],
+                                'runtime': REV, 'budget_mib': self.pair['budget_mib'], 'platform': 'ios', 'simulator': False})
+            self.assertTrue((await receive(reader))['ok'])
+            await close(writer)
+            await asyncio.wait_for(self.relay.failure.wait(), 2)
+        # The phone app ended the session (left the foreground, Disconnect, or a crash); say so.
+        self.assertIn('iphone control disconnected: the iphone app closed the connection', self.relay.reason)
     async def test_stop_disconnects_external_worker(self):
         reader, writer = await paired_connection(self.pair)
         try:

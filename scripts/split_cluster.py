@@ -61,9 +61,13 @@ async def send(writer, obj):
     writer.write(json.dumps(obj, separators=(',', ':')).encode() + b'\n')
     await writer.drain()
 
+class PeerClosed(ConnectionError):
+    pass
+
 async def receive(reader, timeout=10):
     line = await asyncio.wait_for(reader.readline(), timeout)
-    if not line or len(line) > 8192: raise ConnectionError('Missing or oversized protocol message')
+    if not line: raise PeerClosed('The other side closed the connection')
+    if len(line) > 8192: raise ConnectionError('Oversized protocol message')
     result = json.loads(line)
     if not isinstance(result, dict): raise ValueError('Protocol requires a JSON object')
     return result
@@ -154,7 +158,11 @@ class Relay:
             else: raise ValueError('Unknown connection kind')
         except asyncio.CancelledError: raise
         except Exception as e:
-            if control: self.fail(f'{node} control disconnected: {e}')
+            if control and isinstance(e, PeerClosed):
+                self.fail(f'{node} control disconnected: the {node} app closed the connection '
+                          f'(it left the screen, was disconnected, or stopped). Keep both phone apps open '
+                          f'until the result appears, then press Start test and scan again.')
+            elif control: self.fail(f'{node} control disconnected: {str(e) or type(e).__name__}')
             else:
                 # Name only known values; the hello is unauthenticated and must not be echoed.
                 who = node if isinstance(node, str) and node in self.config['nodes'] else 'unknown'
