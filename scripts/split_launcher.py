@@ -31,14 +31,40 @@ def default_data_dir():
     base = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share'))
     return base / 'ShareCompute'
 
-def local_address():
+# The active route is normally the Wi-Fi the phones share. Among the rest, home Wi-Fi is usually
+# 192.168/16, and 172.16/12 is where Hyper-V, WSL and Docker put adapters phones cannot reach.
+# A subnet alone cannot identify a VPN, so a VPN holding a private route is not demoted; the
+# alternatives are always shown instead.
+LAN_RANGES = [ipaddress.ip_network(n) for n in ('192.168.0.0/16', '10.0.0.0/8', '172.16.0.0/12')]
+
+def rank_addresses(route, candidates):
+    """Private LAN IPv4 addresses, the likeliest Wi-Fi address first."""
+    usable = []
+    for text in [route, *candidates]:
+        try: address = ipaddress.ip_address(text)
+        except ValueError: continue
+        if address.version == 4 and any(address in n for n in LAN_RANGES) and text not in usable: usable.append(text)
+    return sorted(usable, key=lambda x: (x != route, next(i for i, n in enumerate(LAN_RANGES) if ipaddress.ip_address(x) in n)))
+
+def lan_addresses():
+    route = ''
     # UDP connect selects a route; it sends no packet to this address.
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(('1.1.1.1', 80)); return s.getsockname()[0]
-    except OSError:
-        candidates = socket.gethostbyname_ex(socket.gethostname())[2]
-        return next((x for x in candidates if not x.startswith('127.')), '')
+    with contextlib.suppress(OSError), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(('1.1.1.1', 80)); route = s.getsockname()[0]
+    candidates = []
+    with contextlib.suppress(OSError):
+        candidates += [info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    return rank_addresses(route, candidates)
+
+def startup_banner(hosts, url):
+    lines = ['ShareCompute is running. Keep this window open until the test finishes.', '']
+    if hosts:
+        lines.append(f'Laptop Wi-Fi address: {hosts[0]}')
+        if len(hosts) > 1: lines.append(f'  Other addresses on this laptop: {", ".join(hosts[1:])}')
+        lines.append('  Use the address on the same Wi-Fi as both phones (not a VPN or virtual adapter).')
+    else:
+        lines.append('Laptop Wi-Fi address: not detected. Connect to Wi-Fi, then type its IPv4 address in the dashboard.')
+    return '\n'.join(lines + ['', f'Dashboard: {url}'])
 
 def pairing_code(pair):
     return 'sc1.' + base64.urlsafe_b64encode(json.dumps(pair, separators=(',', ':')).encode()).decode().rstrip('=')
@@ -70,8 +96,10 @@ class TestKit:
         self.pair_dir = self.directory / 'pairing'; self.model_path = self.directory / 'model.gguf'
         self.lock = threading.RLock(); self.loop = None; self.task = None; self.thread = None
         self.current_out = None; self.preparing = False
-        self.state = {'phase': 'setup', 'message': 'Choose your laptop Wi-Fi address, then press Start.',
-                      'host': local_address(), 'progress': 0, 'active': False, 'workers': [], 'report': None}
+        hosts = lan_addresses()
+        self.state = {'phase': 'setup', 'message': 'Check your laptop Wi-Fi address, then press Start.',
+                      'host': hosts[0] if hosts else '', 'hosts': hosts,
+                      'progress': 0, 'active': False, 'workers': [], 'report': None}
         if (self.pair_dir / 'cluster.json').exists():
             old = json.loads((self.pair_dir / 'cluster.json').read_text())
             # Prefer the current route over yesterday's DHCP address.
@@ -174,7 +202,7 @@ class TestKit:
 PAGE = '''<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ShareCompute</title><style>body{font:17px system-ui;background:#f2f5fa;color:#182635;max-width:900px;margin:40px auto;padding:20px}h1{font-size:36px}section{background:white;border-radius:16px;padding:24px;margin:20px 0;box-shadow:0 4px 20px #1231}button,a.action{font:inherit;padding:12px 22px;background:#175ddc;color:white;border:0;border-radius:8px;cursor:pointer;text-decoration:none;display:inline-block;margin:6px}input{font:inherit;padding:10px;max-width:220px}small{display:block;color:#536578;margin:12px 0}.phones{display:flex;gap:24px;flex-wrap:wrap}.phone{flex:1;min-width:240px}img{width:100%;max-width:320px}#message{font-weight:600}progress{width:100%}button:disabled{opacity:.4}summary{cursor:pointer}textarea{width:95%;height:80px}</style>
 <h1>ShareCompute</h1><p>One model. Your laptop and both phones.</p>
-<section><h2>1. Start on this laptop</h2><p>Keep all three devices on the same Wi-Fi.</p><label>Laptop Wi-Fi address <input id="host" aria-label="Laptop Wi-Fi address"></label><br>
+<section><h2>1. Start on this laptop</h2><p>Keep all three devices on the same Wi-Fi.</p><label>Laptop Wi-Fi address <input id="host" aria-label="Laptop Wi-Fi address" list="hosts" placeholder="e.g. 192.168.1.20" autocomplete="off"></label><datalist id="hosts"></datalist><small id="host-help"></small>
 <button id="start" onclick="action('start',{host:document.getElementById('host').value})">Start test</button><button id="stop" onclick="action('stop',{})">Stop</button>
 <p id="message"></p><progress id="progress" max="100" value="0"></progress><small>The 469 MiB model downloads once. If Windows asks, allow ShareCompute on your private network.</small></section>
 <section><h2>2. Connect the phone apps</h2><p>Install the matching apps from the <a href="phones">phone downloads</a>. On each phone tap <b>Scan laptop QR</b>. Keep the apps open until the test ends.</p>
@@ -183,7 +211,7 @@ PAGE = '''<!doctype html><meta charset="utf-8"><meta name="viewport" content="wi
 <small>The iPhone IPA needs signing and Developer Mode before first use. The <a href="https://docs.sidestore.io/docs/installation/prerequisites" target="_blank" rel="noopener">SideStore setup</a> works from Windows or Linux; no owned Mac is required.</small></section>
 <section><h2>3. Save the result</h2><p>A PASS requires native computation on all three physical devices and matching output for this 16-token test.</p><a class="action" href="report.zip">Download report</a><button onclick="action('quit',{})">Close launcher</button><small>All project data stays in <span id="data"></span>. No global Python packages or compiler setup.</small></section>
 <script>let shown=false; async function action(name,data){try{let r=await fetch(name,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});let j=await r.json();if(!r.ok)alert(j.error);if(name==='quit')document.body.innerHTML='<h1>ShareCompute closed</h1><p>You can close this tab.</p>';}catch(e){alert(e.message)}}
-async function poll(){try{let r=await fetch('status');let s=await r.json();if(!shown){document.getElementById('host').value=s.host;shown=true}document.getElementById('message').textContent=s.message;document.getElementById('data').textContent=s.data;document.getElementById('progress').value=s.progress;document.getElementById('start').disabled=s.active;document.getElementById('host').disabled=s.active;document.getElementById('stop').disabled=!s.active;
+async function poll(){try{let r=await fetch('status');let s=await r.json();if(!shown){document.getElementById('host').value=s.host;let list=document.getElementById('hosts');for(let h of s.hosts){let o=document.createElement('option');o.value=h;list.appendChild(o)}document.getElementById('host-help').textContent=s.hosts.length>1?'Detected automatically. If a phone cannot connect, clear the box to pick another: '+s.hosts.slice(1).join(', '):s.hosts.length?'Detected automatically.':'Not detected. Type the IPv4 address of this laptop on your Wi-Fi.';shown=true}document.getElementById('message').textContent=s.message;document.getElementById('data').textContent=s.data;document.getElementById('progress').value=s.progress;document.getElementById('start').disabled=s.active;document.getElementById('host').disabled=s.active;document.getElementById('stop').disabled=!s.active;
 for(let n of ['android','iphone']){document.getElementById(n+'-state').textContent=s.workers.includes(n)?'Connected':'Waiting';let img=document.getElementById(n+'-qr');if(s.phase==='running'&&!img.getAttribute('src')){img.src='qr/'+n;let p=await fetch('pair/'+n);if(p.ok)document.getElementById(n+'-code').value=(await p.json()).code;}if(s.phase!=='running'){img.removeAttribute('src');document.getElementById(n+'-code').value=''}}}catch(e){}setTimeout(poll,1000)}poll();</script>'''
 
 def make_handler(kit, secret):
@@ -246,7 +274,7 @@ def main():
         kit=TestKit(a.data_dir,a.bin_dir); secret=secrets.token_urlsafe(24)
         server=ThreadingHTTPServer(('127.0.0.1',0),make_handler(kit,secret))
         url=f'http://127.0.0.1:{server.server_port}/{secret}/'
-        print('Open ShareCompute:',url,flush=True)
+        print(startup_banner(kit.state['hosts'],url),flush=True)
         if not a.no_browser: webbrowser.open(url)
         try: server.serve_forever()
         except KeyboardInterrupt: pass
