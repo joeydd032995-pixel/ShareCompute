@@ -13,48 +13,94 @@ private struct Pairing: Decodable {
     let token: String
     let budget_mib: UInt64
 }
-private enum WorkerError: Error { case invalidPairing, connectionClosed, protocolError, wrongCertificate }
+private enum WorkerError: LocalizedError {
+    case invalidPairing, connectionClosed, protocolError, wrongCertificate
+    case nativeNotListening, rejectedByLaptop
+    case unreachable(endpoint: String, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidPairing: return "This is not an iPhone pairing code for this app version."
+        case .connectionClosed: return "The laptop closed the connection. Check the laptop dashboard for the test result."
+        case .protocolError: return "The laptop sent an unexpected message."
+        case .wrongCertificate: return "The laptop certificate does not match the scanned code. Scan the iPhone QR again."
+        case .nativeNotListening: return "The native compute worker did not start. Force-quit and reopen the app."
+        case .rejectedByLaptop:
+            return "The laptop refused this iPhone. Scan the iPhone QR from the test that is running now; the laptop log names the reason."
+        case .unreachable(let endpoint, let reason):
+            return "Could not reach the laptop at \(endpoint) (\(reason)). Turn on Settings › Privacy & Security › Local Network › ShareCompute Worker, use the same Wi-Fi as the laptop without a VPN, and allow the laptop's firewall prompt."
+        }
+    }
+}
+
+// Set from the TLS verify queue, read from the connection's state queue.
+private final class PinCheck: @unchecked Sendable {
+    private let lock = NSLock()
+    private var mismatched = false
+    var rejected: Bool { lock.lock(); defer { lock.unlock() }; return mismatched }
+    func reject() { lock.lock(); mismatched = true; lock.unlock() }
+}
+
+// NWError is not a LocalizedError, so localizedDescription can hide the POSIX, DNS or TLS cause.
+private func describe(_ error: NWError) -> String { error.debugDescription }
 
 // One reader and one writer per connection; NWConnection owns its network queue.
 private final class Stream: @unchecked Sendable {
     let connection: NWConnection
+    private let endpoint: String
+    private let pinCheck: PinCheck
     private var buffered = Data()
     private static let queue = DispatchQueue(label: "ShareCompute.network", attributes: .concurrent)
 
     init(host: String, port: UInt16, pin: String? = nil) {
         let tcp = NWProtocolTCP.Options(); tcp.noDelay = true; tcp.connectionTimeout = 10
         let parameters: NWParameters
+        let pinCheck = PinCheck(); self.pinCheck = pinCheck
         if let pin = pin {
             let tls = NWProtocolTLS.Options()
             sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
             sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, trust, complete in
                 let secTrust = sec_trust_copy_ref(trust).takeRetainedValue()
-                guard let certificate = SecTrustGetCertificateAtIndex(secTrust, 0) else { complete(false); return }
+                guard let certificate = SecTrustGetCertificateAtIndex(secTrust, 0) else { pinCheck.reject(); complete(false); return }
                 let der = SecCertificateCopyData(certificate) as Data
                 let actual = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+                if actual != pin { pinCheck.reject() }
                 complete(actual == pin)
             }, Self.queue)
             parameters = NWParameters(tls: tls, tcp: tcp)
         } else { parameters = NWParameters(tls: nil, tcp: tcp) }
+        endpoint = "\(host):\(port)"
         connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: parameters)
     }
 
-    func connect() async throws {
+    func connect(timeout: Double = 10) async throws {
+        let endpoint = endpoint, pinCheck = pinCheck
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             // state handlers for this connection run serially on this dedicated queue.
             let queue = DispatchQueue(label: "ShareCompute.connect.\(UUID().uuidString)")
             var finished = false
+            // A refused, unroutable or Local Network-denied connection waits and retries rather than
+            // failing, so the waiting reason is the only record of why it never became ready.
+            var waiting: String?
             connection.stateUpdateHandler = { state in
                 guard !finished else { return }
                 switch state {
                 case .ready: finished = true; continuation.resume()
-                case .failed(let error): finished = true; continuation.resume(throwing: error)
-                case .cancelled: finished = true; continuation.resume(throwing: WorkerError.connectionClosed)
+                case .waiting(let error): waiting = describe(error)
+                case .failed(let error):
+                    finished = true
+                    // The laptop answered; only its certificate was wrong, so network advice would mislead.
+                    continuation.resume(throwing: pinCheck.rejected ? WorkerError.wrongCertificate
+                        : WorkerError.unreachable(endpoint: endpoint, reason: describe(error)))
+                case .cancelled:
+                    finished = true
+                    continuation.resume(throwing: pinCheck.rejected ? WorkerError.wrongCertificate
+                        : WorkerError.unreachable(endpoint: endpoint, reason: waiting ?? "no answer within \(Int(timeout)) seconds"))
                 default: break
                 }
             }
             connection.start(queue: queue)
-            queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+            queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
                 if !finished { self?.connection.cancel() }
             }
         }
@@ -176,14 +222,16 @@ final class WorkerModel: ObservableObject {
         for _ in 0..<40 {
             try Task.checkCancellation()
             let probe = Stream(host: "127.0.0.1", port: port)
-            do { try await probe.connect(); ready = true } catch { }
+            do { try await probe.connect(timeout: 1); ready = true } catch { }
             probe.close()
             if ready { break }; try await Task.sleep(nanoseconds: 50_000_000)
         }
-        guard ready else { throw WorkerError.connectionClosed }
+        guard ready else { throw WorkerError.nativeNotListening }
         let control = Stream(host: pair.host, port: pair.port, pin: pair.pin); let id = registered(control)
         defer { control.close(); streams.removeValue(forKey: id) }
-        try await control.connect(); try Task.checkCancellation()
+        // The first LAN connection raises iOS's Local Network prompt; leave time to answer it.
+        status = "Connecting to laptop at \(pair.host):\(pair.port)… If iOS asks to find devices on your local network, tap Allow."
+        try await control.connect(timeout: 45); try Task.checkCancellation()
         #if targetEnvironment(simulator)
         let simulator = true
         #else
@@ -192,8 +240,10 @@ final class WorkerModel: ObservableObject {
         try await control.sendJSON(["kind": "control", "node": pair.node, "token": pair.token,
                                     "runtime": pair.runtime, "platform": "ios", "simulator": simulator,
                                     "budget_mib": pair.budget_mib, "session": UUID().uuidString])
-        let ack = try await control.receiveJSON()
-        guard ack["ok"] as? Bool == true else { throw WorkerError.protocolError }
+        let ack: [String: Any]
+        // The laptop closes an unauthenticated, duplicate or mismatched join without replying.
+        do { ack = try await control.receiveJSON() } catch WorkerError.connectionClosed { throw WorkerError.rejectedByLaptop }
+        guard ack["ok"] as? Bool == true else { throw WorkerError.rejectedByLaptop }
         status = "Connected — waiting for model layers"
         print("SC_IOS connected; native worker ready")
         heartbeat = Task { [weak self] in
