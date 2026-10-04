@@ -50,8 +50,9 @@ public final class WorkerService extends Service {
         context.startForegroundService(new Intent(context, WorkerService.class).setAction(ACTION_START).putExtra(EXTRA_PAIRING, pairing));
     }
     static void stop(Context context) {
-        if (instance != null) instance.shutdown("Disconnected");
-        else publish("Disconnected");
+        // A START may still be queued before the service exists; intents are delivered in order,
+        // so a STOP sent after it always wins and a fast Disconnect cannot be lost.
+        context.startService(new Intent(context, WorkerService.class).setAction(ACTION_STOP));
     }
 
     @Override public void onCreate() {
@@ -100,13 +101,16 @@ public final class WorkerService extends Service {
             .build();
     }
 
-    @SuppressWarnings("deprecation") // HIGH_PERF keeps Wi-Fi awake with the screen off; LOW_LATENCY needs the screen on.
+    @SuppressWarnings("deprecation")
     private void acquireLocks() {
         if (cpu == null) {
             cpu = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ShareCompute:worker");
             cpu.setReferenceCounted(false);
         }
         cpu.acquire(LOCK_TIMEOUT_MS);
+        // HIGH_PERF keeps Wi-Fi out of power save with the screen off, but Android 14 deprecated it and
+        // LOW_LATENCY needs the screen on, so newer phones get no Wi-Fi lock: the link stays up, possibly slower.
+        if (Build.VERSION.SDK_INT >= 34) return;
         if (wifi == null) {
             wifi = ((WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE)).createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "ShareCompute:worker");
             wifi.setReferenceCounted(false);
