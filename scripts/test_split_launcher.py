@@ -8,7 +8,7 @@ import tempfile
 import threading
 import unittest
 import zipfile
-from split_launcher import TestKit, make_handler, pairing_code, ThreadingHTTPServer, instance_lock
+from split_launcher import TestKit, make_handler, pairing_code, ThreadingHTTPServer, instance_lock, rank_addresses, startup_banner
 
 class LauncherTests(unittest.TestCase):
     def setUp(self):
@@ -49,4 +49,21 @@ class LauncherTests(unittest.TestCase):
         self.kit.current_out=Path(self.tmp.name)/'run';self.kit.state.update(active=True,phase='running')
         (self.kit.directory/'active.log').write_text('Joined laptop: linux\nJoined android: android\n')
         self.assertEqual(self.kit.snapshot()['workers'],['laptop','android'])
+class AddressTests(unittest.TestCase):
+    def test_home_wifi_ranked_above_vpn_and_virtual_adapters(self):
+        # A VPN owns the internet route; Hyper-V/WSL adds a 172.x adapter.
+        self.assertEqual(rank_addresses('10.8.0.6',['172.25.160.1','192.168.1.20','10.8.0.6']),
+                         ['192.168.1.20','10.8.0.6','172.25.160.1'])
+    def test_route_breaks_ties_within_a_range(self):
+        self.assertEqual(rank_addresses('10.0.0.42',['10.5.0.2','10.0.0.42']),['10.0.0.42','10.5.0.2'])
+    def test_unreachable_addresses_excluded(self):
+        self.assertEqual(rank_addresses('',['127.0.0.1','127.0.1.1','169.254.3.4','100.100.1.2','8.8.8.8','::1','fe80::1','junk']),[])
+    def test_banner_names_address_and_alternatives(self):
+        text=startup_banner(['192.168.1.20','172.25.160.1'],'http://127.0.0.1:1/s/')
+        self.assertIn('Laptop Wi-Fi address: 192.168.1.20',text);self.assertIn('172.25.160.1',text);self.assertIn('http://127.0.0.1:1/s/',text)
+        self.assertIn('not detected',startup_banner([],'http://127.0.0.1:1/s/'))
+    def test_status_offers_detected_addresses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            kit=TestKit(Path(tmp));kit.state.update(host='192.168.1.20',hosts=['192.168.1.20','10.8.0.6'])
+            snapshot=kit.snapshot();self.assertEqual(snapshot['hosts'],['192.168.1.20','10.8.0.6'])
 if __name__=='__main__':unittest.main()
