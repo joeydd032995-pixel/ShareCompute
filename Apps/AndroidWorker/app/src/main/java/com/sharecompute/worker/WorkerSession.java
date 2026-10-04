@@ -12,7 +12,7 @@ import java.util.concurrent.*;
 
 /** Outbound pinned TLS only. The native RPC listener never leaves loopback. */
 final class WorkerSession {
-    interface Listener { void update(String message); }
+    interface Listener { void update(String message); void ended(String message); }
     private final JSONObject pair;
     private final Listener listener;
     private final int port;
@@ -65,7 +65,7 @@ final class WorkerSession {
             SSLSocket control=connect(); BufferedInputStream in=new BufferedInputStream(control.getInputStream()); OutputStream out=control.getOutputStream();
             send(out,hello("control").put("runtime",NativeWorker.revision()).put("platform","android").put("simulator",android.os.Build.FINGERPRINT.startsWith("generic") || android.os.Build.MODEL.contains("sdk") || android.os.Build.MODEL.contains("Emulator")).put("budget_mib",pair.getInt("budget_mib")).put("session",UUID.randomUUID().toString()));
             if(!line(in).optBoolean("ok")) throw new IOException("Laptop rejected pairing");
-            control.setSoTimeout(0); listener.update("Connected. Keep this app open.");
+            control.setSoTimeout(0); listener.update("Connected. The test keeps running if you lock this phone.");
             clock.scheduleAtFixedRate(()->{
                 try { long[] s=NativeWorker.stats(); send(out,new JSONObject().put("op","stats").put("allocated_bytes",s[0]).put("peak_bytes",s[1]).put("graph_calls",s[2]));
                     listener.update("Connected • "+(s[0]/1048576)+" MiB allocated • "+s[2]+" completed graphs");
@@ -93,6 +93,6 @@ final class WorkerSession {
     }
     private static void copy(InputStream in,OutputStream out) throws IOException { byte[] b=new byte[65536]; int n; while((n=in.read(b))!=-1) {out.write(b,0,n);out.flush();} }
     private static void close(Socket s) { try {s.close();} catch(IOException ignored) {} }
-    private synchronized void fail(Exception e) { if(!closed) { stop(); listener.update("Disconnected: "+e.getMessage()+". Tap Connect for the next test."); } }
+    private synchronized void fail(Exception e) { if(!closed) { stop(); listener.ended("Disconnected: "+e.getMessage()+". Tap Connect for the next test."); } }
     synchronized void stop() { closed=true; for(Socket s:sockets) close(s); sockets.clear(); clock.shutdownNow(); pool.shutdownNow(); }
 }
