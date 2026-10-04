@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import asyncio
+import contextlib
 import copy
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -39,9 +41,23 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.relay.nodes, {})
     async def test_bad_token_rejected(self):
         reader, writer = await paired_connection(self.pair)
-        await send(writer, {'kind': 'control', 'node': 'iphone', 'token': 'incorrect'})
-        self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            await send(writer, {'kind': 'control', 'node': 'iphone', 'token': 'incorrect'})
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
         await close(writer); self.assertEqual(self.relay.nodes, {})
+        # A phone that never joins must leave a diagnosable reason in the coordinator log.
+        self.assertIn('Rejected iphone control connection from 127.0.0.1: Authentication failed', output.getvalue())
+        self.assertNotIn('incorrect', output.getvalue())
+    async def test_unknown_node_rejection_does_not_echo_input(self):
+        reader, writer = await paired_connection(self.pair)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            await send(writer, {'kind': 'control', 'node': 'injected\nJoined iphone:', 'token': 'x'})
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+        await close(writer)
+        self.assertIn('Rejected unknown control connection from 127.0.0.1: Unknown node', output.getvalue())
+        self.assertNotIn('injected', output.getvalue())
     async def test_unsolicited_data_rejected(self):
         reader, writer = await paired_connection(self.pair)
         await send(writer, {'kind': 'data', 'node': 'iphone', 'token': self.pair['token'], 'channel': '0' * 32})

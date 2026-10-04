@@ -116,7 +116,7 @@ class Relay:
 
     async def accept(self, reader, writer):
         task = asyncio.current_task(); self.tasks.add(task); self.writers.add(writer)
-        node = None; control = False
+        node = kind = None; control = False
         try:
             hello = await receive(reader)
             node = hello.get('node'); kind = hello.get('kind')
@@ -155,6 +155,12 @@ class Relay:
         except asyncio.CancelledError: raise
         except Exception as e:
             if control: self.fail(f'{node} control disconnected: {e}')
+            else:
+                # Name only known values; the hello is unauthenticated and must not be echoed.
+                who = node if node in self.config['nodes'] else 'unknown'
+                what = kind if kind in ('control', 'data') else 'unknown'
+                peer = (writer.get_extra_info('peername') or ('unknown address',))[0]
+                print(f'Rejected {who} {what} connection from {peer}: {e or type(e).__name__}', flush=True)
         finally:
             await close(writer); self.writers.discard(writer); self.tasks.discard(task)
 
