@@ -50,12 +50,14 @@ class LauncherTests(unittest.TestCase):
         (self.kit.directory/'active.log').write_text('Joined laptop: linux\nJoined android: android\n')
         self.assertEqual(self.kit.snapshot()['workers'],['laptop','android'])
 class AddressTests(unittest.TestCase):
-    def test_home_wifi_ranked_above_vpn_and_virtual_adapters(self):
-        # A VPN owns the internet route; Hyper-V/WSL adds a 172.x adapter.
-        self.assertEqual(rank_addresses('10.8.0.6',['172.25.160.1','192.168.1.20','10.8.0.6']),
-                         ['192.168.1.20','10.8.0.6','172.25.160.1'])
-    def test_route_breaks_ties_within_a_range(self):
-        self.assertEqual(rank_addresses('10.0.0.42',['10.5.0.2','10.0.0.42']),['10.0.0.42','10.5.0.2'])
+    def test_active_route_wins_over_virtual_adapters(self):
+        # Wi-Fi on 10/8 must beat VirtualBox's host-only 192.168.56.1 and a WSL 172.x adapter.
+        self.assertEqual(rank_addresses('10.0.0.20',['192.168.56.1','172.25.160.1','10.0.0.20']),
+                         ['10.0.0.20','192.168.56.1','172.25.160.1'])
+    def test_without_a_lan_route_home_ranges_come_first(self):
+        # A tunnel route (CGNAT/public) is excluded, so the subnet decides among the rest.
+        self.assertEqual(rank_addresses('100.101.2.3',['172.25.160.1','10.5.0.2','192.168.1.20']),
+                         ['192.168.1.20','10.5.0.2','172.25.160.1'])
     def test_unreachable_addresses_excluded(self):
         self.assertEqual(rank_addresses('',['127.0.0.1','127.0.1.1','169.254.3.4','100.100.1.2','8.8.8.8','::1','fe80::1','junk']),[])
     def test_banner_names_address_and_alternatives(self):

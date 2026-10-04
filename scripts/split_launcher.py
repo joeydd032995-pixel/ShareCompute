@@ -31,8 +31,10 @@ def default_data_dir():
     base = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share'))
     return base / 'ShareCompute'
 
-# Home Wi-Fi is almost always 192.168/16. 10/8 is common too but also what VPN tunnels use, and
-# 172.16/12 is where Hyper-V, WSL and Docker put virtual adapters phones cannot reach.
+# The active route is normally the Wi-Fi the phones share. Among the rest, home Wi-Fi is usually
+# 192.168/16, and 172.16/12 is where Hyper-V, WSL and Docker put adapters phones cannot reach.
+# A subnet alone cannot identify a VPN, so a VPN holding a private route is not demoted; the
+# alternatives are always shown instead.
 LAN_RANGES = [ipaddress.ip_network(n) for n in ('192.168.0.0/16', '10.0.0.0/8', '172.16.0.0/12')]
 
 def rank_addresses(route, candidates):
@@ -42,8 +44,7 @@ def rank_addresses(route, candidates):
         try: address = ipaddress.ip_address(text)
         except ValueError: continue
         if address.version == 4 and any(address in n for n in LAN_RANGES) and text not in usable: usable.append(text)
-    # Range decides first; within a range, the internet route wins over the hostname order.
-    return sorted(usable, key=lambda x: (next(i for i, n in enumerate(LAN_RANGES) if ipaddress.ip_address(x) in n), x != route))
+    return sorted(usable, key=lambda x: (x != route, next(i for i, n in enumerate(LAN_RANGES) if ipaddress.ip_address(x) in n)))
 
 def lan_addresses():
     route = ''
