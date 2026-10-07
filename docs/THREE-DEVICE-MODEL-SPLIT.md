@@ -38,14 +38,16 @@ CPU-only execution avoids dependence on incompatible device GPU runtimes.
 
 ## Get the builds
 
-1. Check out `feature/three-device-model-split` (until the PR is merged).
-2. Open the [validated Actions run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414)
-   for commit `9f9da8a6f76542658dbce0c69c6a63f5c15ff53f` and download the matching
-   [Windows](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414/artifacts/10956746142),
-   [Linux](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414/artifacts/10956004930),
-   [Android ARM64](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414/artifacts/10956587325), and
-   [iPhone IPA](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414/artifacts/10956239703)
-   artifacts as appropriate. These CI artifacts expire; use a later successful run of
+1. Check out `main`.
+2. Open the [current Actions run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204)
+   for commit `4e2ce7e` and download the matching
+   [Windows](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298081934),
+   [Linux](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298281280),
+   [Android ARM64](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298006786), and
+   [iPhone IPA](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298360715)
+   artifacts as appropriate. Builds older than September 29 lack QR pairing, and
+   builds older than October 4 lack the readable join errors and the Android
+   foreground service. These CI artifacts expire; use a later successful run of
    the same workflow after they expire.
 3. Desktop artifacts contain `sc-rpc-worker` and `sc-split-probe` (`.exe` on Windows).
    Extract these into `build/desktop/bin/` in your checkout. On Linux run
@@ -117,7 +119,7 @@ stops it. No full-model download is needed on either phone.
 
 ```sh
 pkg install python git
-git clone --branch feature/three-device-model-split https://github.com/joeydd032995-pixel/ShareCompute.git
+git clone https://github.com/joeydd032995-pixel/ShareCompute.git
 cd ShareCompute
 mkdir -p build/android/bin
 ```
@@ -151,8 +153,9 @@ On Linux use:
 python3 scripts/split_cluster.py coordinator --worker-binary build/desktop/bin/sc-rpc-worker --probe-binary build/desktop/bin/sc-split-probe --model models/split-proof.gguf --tokens 16 --out split-runs/physical-1
 ```
 
-Start Android's worker command. On the iPhone open **ShareCompute Worker**, import
-`iphone.json`, tap **Connect**, and allow local-network access. Keep the app in the
+Start Android's worker command. Alternatively, install the Android APK and paste the contents of
+`android.json` under its pairing-code field. On the iPhone open **ShareCompute Worker**, expand
+**Paste code or import file**, import `iphone.json`, tap **Connect**, and allow local-network access. Keep the app in the
 foreground. All three must join within 180 seconds; use `--join-timeout 600` if setup
 needs longer. Use a new `--out` directory for each run.
 

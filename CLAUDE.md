@@ -54,7 +54,9 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | Portable path — llama.cpp RPC, **executed** on Linux | topology works; a dead peer aborts uncatchably in ~350 ms (F25); transport halves prompt processing on loopback (F27) |
 | Phase 4.2 on the portable path — `ggml-org/llama.cpp#26724` | **built and executed against a matched control (F33)**: abort gone, 5/5 → 0/5. Not adopted yet; two gaps remain |
 | Re-formation on the portable path | **executed and refuted (F35)** — a restarted peer gets zero connections from a surviving `llama-server`; the endpoint is dead for the process's life. `/health` still reports ok |
-| Linux / Windows / Android adapters | **blocked**, see below |
+| Three-device native split: laptop + Android + iPhone over llama.cpp RPC and pinned TLS | **passed on the operator's physical devices (F37)**; Linux loopback (F36); CI builds and self-tests every platform |
+| Test kit: Windows/Linux launcher, Android APK with foreground service, iOS app with QR | builds in CI; used for the F37 run. Join and disconnect failures now name their cause (PR #26) |
+| ShareComputeCore membership adapters for Linux / Windows / Android | not built. The split runs without them, and its supervisor discards a failed generation instead of re-forming |
 
 Milestone 2 is code-complete and building. The gap is no longer "uncompiled" — it is **"unrun"**:
 no ring has ever formed, `finalize()` has never been called, and no patch has executed against a
@@ -193,7 +195,12 @@ mandatory drain-on-background.
 > carry the rationale forward unexamined** — if iOS returns, re-derive it against whatever the
 > product is then.
 
-## Target configuration: two PCs, no Apple
+## Target configuration (superseded): two PCs, no Apple
+
+> **Superseded by the current objective at the top of this file.** GitHub-hosted macOS builds the
+> iOS app and SideStore installs it from Windows or Linux, so the no-Mac argument below no longer
+> removes the iPhone. The iPhone has since run as a worker on real hardware (F37). The section is
+> kept as history.
 
 **The operator has no Mac.** That removes the iPhone from the near-term plan for a reason stronger
 than the developer-account question: Xcode is macOS-only, so without a Mac there is **no way to
@@ -212,7 +219,12 @@ execution path exists". llama.cpp RPC **is** that path, it builds natively on Wi
 (`ggml-rpc` links `ws2_32`, and `transport.cpp` is full of `_WIN32`/winsock2), and upstream ships
 prebuilt Windows binaries with `GGML_RPC=ON`.
 
-## Why Linux, Windows and Android are blocked
+## Why Linux, Windows and Android were blocked
+
+> **No longer blocked in practice.** Native llama.cpp workers now run on Windows, Linux, Android
+> and iOS, and have computed together on physical devices (F36, F37). The gating in
+> `.claude/agents/` is still unchanged. Un-gating is a deliberate decision for the owner, not a
+> side effect of a docs update. The history below explains why the gate existed.
 
 Not sequencing — capability. MLX is Apple-only, so until the specification's Phase 1a (portable
 graph IR + wire protocol) and a non-MLX execution path exist, those nodes have no runtime to run.
@@ -249,7 +261,10 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | **SwiftPM manifests** — semantics, not just syntax | **yes** | `swift package dump-package` in the package directory. It *evaluates* `Package.swift`, so it catches what `-parse` cannot: argument-order rules, bad target paths, malformed products. Verified against a negative control — it reproduces the exact CI error. Run this for **any** `Package.swift` edit (F28) |
 | Xcode project builds, patched MLX and all | **not here — but yes in CI** | `.github/workflows/` on a macOS runner. Both jobs green: the patched MLX compiles for `arm64-apple-macos` and iOS Simulator, and the new C symbols link |
 | Actor isolation, runtime behaviour | **no** | needs Apple hardware |
-| Android / Windows | **no** | needs those SDKs |
+| Three-device split: protocol, relay, proof gate, launcher | **yes** | `python3 scripts/test_split_cluster.py` and `python3 scripts/test_split_launcher.py` (needs `qrcode==8.2`). Real-model loopback: `scripts/verify_split_runtime.py` after `build_split_runtime.py` |
+| Android Java type-check | partial | `javac -Xlint:all` against `android-35/android.jar` from `platform-35_r02.zip` plus ZXing 3.5.3. A type check only: the APK build (Gradle + NDK) is CI's `android` job |
+| Windows | **not here, but yes in CI** | `desktop (windows-latest)` and `test-kit (windows-latest)` build and run the real split |
+| Physical laptop + Android + iPhone | **no** | the operator's devices. Recorded evidence: `docs/evidence/physical-three-device/` (F37) |
 | Multi-**rank** ring | **yes — corrected, F30** | two processes, one machine, loopback hostfile. `size=2` on both ranks, confirmed on a headless CI runner. `Patches/mlx-swift/tests/ring-formation.sh` |
 | Multi-**device** ring, real hardware | **no** | genuinely needs two machines — but that is a *product* requirement, not a testability one |
 

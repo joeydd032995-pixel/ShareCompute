@@ -13,10 +13,12 @@ Windows/Linux signing and sideloading remain an operator setup step.
 
 The implementation uses a pinned llama.cpp CPU runtime, disjoint layer placement,
 per-worker RPC buffer budgets, authenticated TLS reverse tunnels, and a bounded
-subprocess that discards failed generations. [Platform CI](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36391329414)
+subprocess that discards failed generations. [Platform CI](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204)
 passes on Windows, Linux, Android ARM64, physical-iPhone build, and an iPhone
-simulator computation; physical-device evidence is the remaining gate. Nothing here claims a
-single shared 20 GB address space or a completed physical-device test.
+simulator computation. **On 2026-10-07 the split passed on the operator's physical laptop,
+Android phone and iPhone** ([evidence](docs/evidence/physical-three-device/), F37). That
+run used a 0.5B model and 16 tokens. Nothing here claims a single shared 20 GB address space,
+or that a model larger than any one device has run.
 
 See [the three-device setup and proof guide](docs/THREE-DEVICE-MODEL-SPLIT.md).
 `Sources/ShareComputeCore` remains unchanged and dependency-free. Historical MLX and
@@ -41,6 +43,12 @@ This repository adds the membership layer that makes departure a planned event.
 | `Tests/ShareComputeCoreTests/` | 66+ tests, no network and no sleeping. |
 | `Apps/InferRing/` | The vendored infer-ring app, unmodified. The first adapter. |
 | `Patches/` | Patches to MLX, mlx-c and mlx-swift. Start at [`Patches/README.md`](Patches/README.md). |
+| `native/split/` | The native llama.cpp RPC worker and probe used by the three-device split, with its pinned revision and budget patch. |
+| `Apps/ComputeWorker/` | The iPhone worker app: Swift UI, QR pairing, native worker. Built on GitHub-hosted macOS. |
+| `Apps/AndroidWorker/` | The Android worker app: QR pairing and a foreground service that keeps computing while locked. |
+| `scripts/split_cluster.py`, `scripts/split_launcher.py` | The coordinator, TLS relay and proof gate, plus the standalone laptop launcher and dashboard. |
+| `docs/TEST-KIT-QUICKSTART.md` | How to run the three-device test with the prebuilt kit. |
+| `docs/evidence/` | Loopback and physical-device evidence for the split. |
 | `docs/FOUR-PLATFORM-CONNECT.md` | Windows / macOS / iOS / Android pool connect (UDP discovery + TCP multi-process demo). |
 | `docs/INFERENCE-PIPELINE-SIM.md` | Phase A: shard plan → fake activation pipeline (frontend + workers). |
 | `findings.md` | Research log, including both spike results. Read this first. |
