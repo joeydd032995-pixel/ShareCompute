@@ -64,7 +64,7 @@ iOS simulator, all built through `build_split_runtime.py`. It works the same way
 - `linux-backend` is the primary owner, because Linux is where this container can build and run it.
 - `windows-backend`, `android-backend` and `ios-backend` edit only their platform's branch of it,
   **one at a time**, and only when the primary is not running.
-- The pinned revision (`llama-revision.txt`) and `llama-budget.patch` change only through the
+- The pinned revision (`llama-revision.txt`), `llama-budget.patch` and `llama-cache.patch` change only through the
   primary. A change there means every platform rebuilds and the loopback proof runs again.
 
 The laptop–phone protocol is implemented three times: `split_cluster.py` (`linux-developer`),

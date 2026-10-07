@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from split_cluster import NODES, REV, Relay, close, init_cluster, paired_connection, receive, send, validate_proof
+from split_cluster import CACHE_STATS, NODES, REV, Relay, cache_delta, close, init_cluster, paired_connection, receive, send, validate_proof
 
 class ProofTests(unittest.TestCase):
     def setUp(self):
@@ -27,6 +27,15 @@ class ProofTests(unittest.TestCase):
         for result in ({'token_ids': [1, 2, 4]}, {'token_ids': []}):
             with self.assertRaises(ValueError): validate_proof(self.result, result, self.log, self.records, self.before, False)
         with self.assertRaises(ValueError): validate_proof(self.result, self.result, self.log, self.records, self.before, True)
+
+class CacheDeltaTests(unittest.TestCase):
+    def test_delta_counts_only_this_run(self):
+        # Phone workers live across runs, so their counters are cumulative; the report needs this run's share.
+        before = {'cache_hit_bytes': 100, 'cache_stored_bytes': 7, 'cache_rejected': 1}
+        after = {'cache_hit_bytes': 160, 'cache_stored_bytes': 7, 'cache_rejected': 3, 'graph_calls': 9}
+        self.assertEqual(cache_delta(before, after), {'cache_hit_bytes': 60, 'cache_stored_bytes': 0, 'cache_rejected': 2})
+    def test_missing_fields_count_as_zero(self):
+        self.assertEqual(cache_delta({}, {}), dict.fromkeys(CACHE_STATS, 0))
 
 class PairingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -90,6 +99,41 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(self.relay.failure.wait(), 2)
         # The phone app ended the session (left the foreground, Disconnect, or a crash); say so.
         self.assertIn('iphone control disconnected: the iphone app closed the connection', self.relay.reason)
+    async def join(self):
+        reader, writer = await paired_connection(self.pair)
+        await send(writer, {'kind': 'control', 'node': 'iphone', 'token': self.pair['token'],
+                            'runtime': REV, 'budget_mib': self.pair['budget_mib'], 'platform': 'ios', 'simulator': False})
+        self.assertTrue((await receive(reader))['ok'])
+        return reader, writer
+    async def wait_for_stats(self, key, value):
+        for _ in range(200):
+            if self.relay.nodes.get('iphone', {}).get('stats', {}).get(key) == value: return
+            await asyncio.sleep(.01)
+        self.fail(f'{key} never reached {value}: {self.relay.nodes.get("iphone", {}).get("stats")}')
+    async def test_cache_telemetry_recorded(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            reader, writer = await self.join()
+            await send(writer, {'op': 'stats', 'allocated_bytes': 1, 'peak_bytes': 2, 'graph_calls': 3,
+                                'cache_hit_bytes': 40, 'cache_stored_bytes': 50, 'cache_rejected': 1})
+            await self.wait_for_stats('cache_hit_bytes', 40)
+            self.assertEqual(self.relay.nodes['iphone']['stats']['cache_rejected'], 1)
+            await close(writer)
+    async def test_telemetry_without_cache_fields_still_accepted(self):
+        # A phone app built before the cache existed must keep working with a newer laptop kit.
+        with contextlib.redirect_stdout(io.StringIO()):
+            reader, writer = await self.join()
+            await send(writer, {'op': 'stats', 'allocated_bytes': 1, 'peak_bytes': 2, 'graph_calls': 7})
+            await self.wait_for_stats('graph_calls', 7)
+            self.assertEqual({k: self.relay.nodes['iphone']['stats'][k] for k in CACHE_STATS}, dict.fromkeys(CACHE_STATS, 0))
+            self.assertFalse(self.relay.failure.is_set())
+            await close(writer)
+    async def test_invalid_cache_telemetry_rejected(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            reader, writer = await self.join()
+            await send(writer, {'op': 'stats', 'allocated_bytes': 1, 'peak_bytes': 2, 'graph_calls': 3, 'cache_hit_bytes': -5})
+            await asyncio.wait_for(self.relay.failure.wait(), 2)
+            await close(writer)
+        self.assertIn('Invalid telemetry', self.relay.reason)
     async def test_stop_disconnects_external_worker(self):
         reader, writer = await paired_connection(self.pair)
         try:

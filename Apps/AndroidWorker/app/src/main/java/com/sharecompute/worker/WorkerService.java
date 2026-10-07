@@ -68,7 +68,7 @@ public final class WorkerService extends Service {
         endSession();
         try {
             JSONObject pair = WorkerSession.parse(intent.getStringExtra(EXTRA_PAIRING));
-            int port = NativeHost.ensure(pair.getLong("budget_mib") * 1048576,
+            int port = NativeHost.ensure(pair.getLong("budget_mib") * 1048576, WeightCache.dir(this).getPath(),
                 code -> main.post(() -> { if (instance != null) instance.shutdown("Native worker exited (" + code + "). Restart the app."); }));
             acquireLocks();
             final WorkerSession[] holder = new WorkerSession[1];

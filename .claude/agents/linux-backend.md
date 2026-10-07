@@ -7,13 +7,13 @@ model: sonnet
 
 # Linux Backend Developer
 
-Read `CLAUDE.md` first, then F25, F33, F35, F36 and F37 in `findings.md`.
+Read `CLAUDE.md` first, then F25, F33, F35, F36, F37 and F38 in `findings.md`.
 
 ## What you own
 
-- `native/split/**`: `worker.cpp` and `worker.h` (`sc_worker_run(port, budget, threads)`, the
-  loopback-only RPC listener), `worker-main.cpp`, `probe.cpp` (the bounded generation the coordinator
-  runs), `llama-budget.patch`, `llama-revision.txt` and `CMakeLists.txt`.
+- `native/split/**`: `worker.cpp` and `worker.h` (`sc_worker_run(port, budget, threads, cache_dir)`,
+  the loopback-only RPC listener), `worker-main.cpp`, `probe.cpp` (the bounded generation the coordinator
+  runs), `llama-budget.patch`, `llama-cache.patch`, `llama-revision.txt` and `CMakeLists.txt`.
 - `scripts/build_split_runtime.py`: one CMake entry point for `desktop`, `android`, `ios` and
   `ios-simulator`.
 
@@ -25,6 +25,11 @@ edit their platform's branch of it only when you are not running. See `docs/AGEN
 - **Revision `4da6337…` is pinned on purpose.** The coordinator rejects a worker whose runtime differs
   (`split_cluster.py`, `REV`). Moving it means rebuilding every platform at once and re-running the
   loopback proof. `ggml-org/llama.cpp#26724` is **not** in this build.
+- **Two patches, applied in order** by `build_split_runtime.py`, which detects a checkout that already has
+  some or all of them. Each is a diff against the tree the previous one leaves.
+- **The cache patch must keep verifying hits** (F38). The client skips sending a tensor whenever the
+  worker says it has it, so an unchecked hit turns a damaged file into fluent wrong output. A matched
+  control showed exactly that.
 - **The budget patch is the allocation contract.** `sc_rpc_set_budget` refuses buffers past the
   worker's share, and `sc_rpc_peak`/`sc_rpc_graphs` feed the proof gate. Peak bytes matched to the
   byte across x86-64, Android and iOS (F37), so a change that moves them needs a reason.

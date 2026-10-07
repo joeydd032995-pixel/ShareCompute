@@ -67,8 +67,9 @@ final class WorkerSession {
             if(!line(in).optBoolean("ok")) throw new IOException("Laptop rejected pairing");
             control.setSoTimeout(0); listener.update("Connected. The test keeps running if you lock this phone.");
             clock.scheduleAtFixedRate(()->{
-                try { long[] s=NativeWorker.stats(); send(out,new JSONObject().put("op","stats").put("allocated_bytes",s[0]).put("peak_bytes",s[1]).put("graph_calls",s[2]));
-                    listener.update("Connected • "+(s[0]/1048576)+" MiB allocated • "+s[2]+" completed graphs");
+                try { long[] s=NativeWorker.stats(); send(out,new JSONObject().put("op","stats").put("allocated_bytes",s[0]).put("peak_bytes",s[1]).put("graph_calls",s[2])
+                        .put("cache_hit_bytes",s[3]).put("cache_stored_bytes",s[4]).put("cache_rejected",s[5]));
+                    listener.update("Connected • "+(s[0]/1048576)+" MiB allocated • "+(s[3]/1048576)+" MiB from cache • "+s[2]+" completed graphs");
                 } catch(Exception e) { fail(e); }
             },0,500,TimeUnit.MILLISECONDS);
             while(!closed) {

@@ -2292,3 +2292,99 @@ questions are no longer whether native split inference works across the three pl
 are capacity (a model too large for one device), repeatability across prompts and longer
 generations, failure handling on real hardware, and Wi-Fi transport cost, which is now the dominant
 term in wall time.
+
+## F38 — llama.cpp's RPC weight cache works on the split once patched, and unpatched it silently corrupts output from a damaged file
+
+llama.cpp at the pinned `4da6337…` already has a weight cache. Before sending a weight tensor,
+the client asks the worker whether it holds a file named by the data's FNV-1a hash
+(`ggml-rpc.cpp:716-718`, `rpc_use_hash_cache`, and `:721-736`). The worker answers from
+`cache_dir/<hash>` (`:1503-1546`, `set_tensor_hash`). Our worker passed `cache_dir = nullptr`
+(`native/split/worker.cpp`, before this change), so every answer was "no" and every run uploaded
+every weight.
+
+Three properties of the shipped cache made it unfit for phones as it stands:
+
+1. **The 10 MiB threshold (`:87`) skips almost everything the phones hold.** Measured on the proof
+   model by reading its GGUF tensor table:
+
+   | Smallest tensor cached | Android: cacheable of its share | iPhone: cacheable of its share |
+   |---|---|---|
+   | 10 MiB (upstream) | 0 of 119.0 MiB | 137.9 of 205.0 MiB (only `output.weight`) |
+   | 1 MiB | 104.1 of 119.0 MiB (36 files) | 196.5 of 205.0 MiB (22 files) |
+
+   The largest per-layer tensor in this model is 3.4 MiB. The iPhone figure confirms
+   `output.weight` sits on the iPhone: 67.1 + 137.9 = 205.0 MiB, matching F37.
+2. **A hit is never checked.** `get_cached_file` (`:1483-1501`) reads whatever is under the name.
+   `set_tensor_hash` loads it, using the file's own length as the size, and answers "yes". The
+   client then sends nothing (`:731-733`).
+3. **Writes are not atomic.** `set_tensor` writes straight to the final name (`:1469-1477`). A
+   worker killed mid-write leaves a partial file that point 2 will later serve. iOS and Android
+   kill backgrounded apps as a matter of course.
+
+`native/split/llama-cache.patch` (applied after `llama-budget.patch`) addresses all three:
+
+- It lowers the threshold to 1 MiB. This is a client-side constant, and the protocol is unchanged.
+- It writes `<hash>.partial` and renames it into place.
+- It re-hashes every file before calling it a hit. A file that fails is deleted, counted and
+  answered as a miss, so the client resends it.
+- It reads a hit straight into the tensor's host buffer, avoiding a second copy of a large tensor
+  on a phone.
+- It exports hit, stored and rejected counters, which flow through `SC_STATS`, both phone apps'
+  telemetry and `report.json` (per worker, as a delta for the run).
+
+**Executed on loopback.** `scripts/verify_split_runtime.py` (cache scenarios), with all three
+workers given a cache directory and 16 tokens per run:
+
+| Run | Result |
+|---|---|
+| Cold | PASS; every worker stored files, none hit |
+| Warm | PASS, tokens equal to baseline. Bytes to each worker: laptop 52,440,460 → 6,845,478; Android 125,378,346 → 16,175,106 (−87%); iPhone 215,447,670 → 9,443,194 (−96%) |
+| Damaged | One Android file had a byte flipped and another was cut to half. PASS, with Android `cache_rejected = 2` and both files re-stored |
+| Healed | PASS, zero rejected, zero stored |
+
+**Matched control, the defect pinned.** I built the same tree with only the two hash comparisons
+replaced by `false`, which reproduces upstream's unchecked read. The binaries differ (`cmp`). Both
+builds were run on byte-identical copies of a cache, damaged identically (same two files, same
+offsets):
+
+- **Control:** **FAIL — "Split greedy tokens differ from the local baseline".** Baseline: " Paris.
+  It is the largest city in Europe and the second largest in the world". Control: " Paris. It is
+  the capital of the country of France. It is the capital". **Fluent, plausible and wrong.** Only
+  the baseline comparison caught it, and a normal run has no baseline.
+- **Patched:** PASS, 2 rejected, 102,041,856 bytes served from cache.
+
+**Verified:**
+- Upstream source at `4da6337…`, fetched from raw.githubusercontent.com, read at the lines cited.
+- Tensor sizes read with the `gguf` Python reader from `models/split-proof.gguf` (sha256
+  `74a4da8c…`).
+- `python3 scripts/verify_split_runtime.py --bin-dir build/desktop/bin --model
+  models/split-proof.gguf --out split-runs/cache-test`: all seven `VERIFIED` lines, 2 m 36 s.
+- The control as described above.
+- `build_split_runtime.py` applying both patches from a clean tree, from a tree with only the budget
+  patch, and on an already-patched tree, and refusing a tree with foreign changes.
+- `test_split_cluster.py`: 15 tests.
+- Android Java type-checked with `javac` against `android-35`, including a negative control.
+- The JNI bridge syntax-checked with `g++ -fsyntax-only` against the host JDK's `jni.h`.
+
+**Not verified:**
+- **Physical devices.** Every number above is loopback on one x86-64 machine. The Wi-Fi saving on
+  the operator's phones is inferred from these byte counts, not measured.
+- **iOS.** The Swift changes have not been compiled in this session (no Swift toolchain, no Xcode);
+  CI's `ios` and `ios-simulator` jobs are the first compile. The iOS Caches purge and Android
+  cache-clearing behaviour are OS policy, read from documentation, not observed.
+- **Windows.** File semantics (delete-while-open, rename over an existing file) are covered only by
+  CI's `desktop (windows-latest)` job running the same scenarios.
+- **Kill mid-write.** Not reproduced directly. The damaged-file run simulates its result, a truncated
+  file, rather than killing a worker during `ofstream::write`.
+- **Collisions.** FNV-1a 64 is not collision-resistant. An accidental collision across a few hundred
+  tensors is negligible; a deliberate one requires write access to the app's private cache
+  directory.
+- **Disk growth.** Files are content-addressed and never evicted. A different model adds files
+  alongside the old ones until the user clears them or the OS purges the cache.
+
+**Consequence:** caching makes repeat runs cheap. On loopback the phones' upload fell from 341 MB
+to 26 MB. That makes the 3B capacity test practical to iterate on: the first run still uploads in
+full, later attempts mostly do not. It also adds a third instance of a rule this project keeps
+re-learning (facts #4 and #10): **an optimisation that skips work on a "yes" must verify the yes**.
+An unchecked skip turns a damaged file into wrong output, and here the wrong output was fluent
+English.

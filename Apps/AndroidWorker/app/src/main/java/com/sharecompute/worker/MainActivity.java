@@ -32,6 +32,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         code=new EditText(this); code.setHint("Or paste pairing code"); code.setText(text); code.setMaxLines(5); code.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); layout.addView(code);
         Button connect=new Button(this); connect.setText("Connect"); layout.addView(connect); connect.setOnClickListener(v->connect());
         Button stop=new Button(this); stop.setText("Disconnect"); layout.addView(stop); stop.setOnClickListener(v->WorkerService.stop(this));
+        TextView cached=new TextView(this); cached.setText(cacheText()); layout.addView(cached);
+        Button clear=new Button(this); clear.setText("Clear cached model data"); layout.addView(clear);
+        clear.setOnClickListener(v->{ long freed=WeightCache.clear(this); cached.setText(cacheText()); status.setText("Cleared "+(freed/1048576)+" MiB. The next test uploads the model again."); });
         status=new TextView(this); status.setTextSize(18); layout.addView(status); WorkerService.observe(this::showStatus);
         getWindow().getDecorView().setOnApplyWindowInsetsListener((v,insets)->{layout.setPadding(28,28+insets.getSystemWindowInsetTop(),28,28+insets.getSystemWindowInsetBottom());return insets;});
     }
@@ -44,6 +47,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         try { WorkerService.start(this,text); } catch(Exception e) { status.setText("Could not start the worker: "+e.getMessage()); }
     }
     private void showStatus(String message) { if(status!=null) status.setText(message); }
+    private String cacheText() { return "Cached model data: "+(WeightCache.bytes(this)/1048576)+" MiB. Repeat tests with the same model reuse it."; }
     @Override protected void onStart() {super.onStart();WorkerService.observe(this::showStatus);}
     // The worker service keeps computing in the background; only the camera is released here.
     @Override protected void onStop() {super.onStop();WorkerService.observe(null);releaseCamera();}

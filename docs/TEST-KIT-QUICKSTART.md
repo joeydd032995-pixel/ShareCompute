@@ -25,7 +25,7 @@ If Windows asks about network access, permit the launcher on your private networ
 
 ## Every later test
 
-Open the laptop launcher, click **Start test**, then scan/connect both phone apps. The model is reused. If the iPhone signature expired, refresh it in SideStore first. No development environment is required. Tap Connect again after a test disconnects.
+Open the laptop launcher, click **Start test**, then scan/connect both phone apps. The model is reused. Each phone also keeps the model data it was sent, so a repeat test with the same model uploads only a small fraction over Wi-Fi and starts much sooner; the first test after installing, clearing, or changing the model still uploads everything. Both apps show how much is cached and have a **Clear cached model data** button. If the iPhone signature expired, refresh it in SideStore first. No development environment is required. Tap Connect again after a test disconnects.
 
 ## What PASS means
 
@@ -41,6 +41,7 @@ This is a small-model splitting proof, not a claim that the devices expose one p
 - The model is downloaded only on the laptop. Internet is needed for the first download and phone installation, not for the subsequent local test.
 - Some Android brands stop background apps aggressively despite the notification. If the Android worker drops while locked, set its battery usage to unrestricted.
 - These are test builds. A newly built Android APK may use a different test signing key; uninstall the previous test app first if Android refuses an update. Re-scan after reinstalling.
+- Cached model data is checked before every use, so a damaged file is simply sent again. If a phone runs short of storage, use **Clear cached model data**; the OS may also clear it on its own, which only makes the next test slower.
 - Download report includes logs and the result, not pairing tokens or the laptop certificate's private key. Logs contain local paths and device IP addresses; review before sharing.
 - Laptop data is isolated in `%LOCALAPPDATA%\ShareCompute` on Windows or `~/.local/share/ShareCompute` on Linux. To remove it, close the launcher and delete that folder plus the extracted kit. Uninstall the phone apps normally.
 - Advanced build/manual setup: [THREE-DEVICE-MODEL-SPLIT.md](THREE-DEVICE-MODEL-SPLIT.md).

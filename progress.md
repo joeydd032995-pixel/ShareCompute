@@ -716,3 +716,27 @@ The changes:
 
 Not verified: slash-command dispatch itself, which needs an interactive session (unchanged from
 before). No code changed.
+
+## Weight cache on the phones — 2026-10-07
+
+Built at the owner's request, ahead of the 3B capacity test, so repeat attempts do not each upload
+the whole model over Wi-Fi. F38 has the full record. In short:
+
+- **What changed.**
+  - `native/split/llama-cache.patch` sits on top of the budget patch. It lowers the cache threshold
+    to 1 MiB, writes cache files atomically, and hash-checks every hit before using it.
+  - The worker takes a cache directory: `sc-rpc-worker … [CACHE_DIR]` on desktop, the app cache on
+    Android and iOS.
+  - Cache counters flow through telemetry into `report.json`. Older phone apps that don't send
+    them still join.
+  - Both apps show cached MiB and have a **Clear cached model data** button.
+  - `build_split_runtime.py` applies both patches and recognises a checkout already at any prefix
+    of them.
+- **Loopback, real model.** All of these pass:
+  - cold, warm, damaged and healed runs, plus the existing three scenarios;
+  - a fresh-clone build.
+
+  Warm runs send the phone workers 26 MB instead of 341 MB.
+- **Control.** The same build with hash checking disabled, on an identically damaged cache, failed
+  with fluent wrong output.
+- **Not run.** Physical phones. Swift not compiled here (CI). Windows only via CI.

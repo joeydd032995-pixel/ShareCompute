@@ -23,6 +23,9 @@ Read `CLAUDE.md` first, then F25, F35 and F37 in `findings.md`.
   loopback port, and the budget is fixed from then on. A different budget means "Restart the app".
   That is correct, not a bug to engineer around: the listener cannot be torn down and restarted in
   one process, for the same reason F35 found on the client side.
+- **The weight cache lives in `cacheDir/rpc-weights`** (`WeightCache.java`), passed to the native worker
+  at its one start. Every hit is hash-checked natively, so clearing files mid-run is safe: a missing
+  file is a miss and is resent (F38).
 - **The listener is loopback only.** `WorkerSession` bridges authenticated TLS channels to it. Never
   bind it to the LAN.
 - **arm64-v8a only**, `c++_static`, and flexible page sizes for 16 KB-page devices. The runtime

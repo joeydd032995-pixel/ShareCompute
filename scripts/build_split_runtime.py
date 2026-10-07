@@ -11,6 +11,28 @@ REV = (ROOT / 'native/split/llama-revision.txt').read_text().strip()
 def run(*args, cwd=None):
     subprocess.run([str(x) for x in args], cwd=cwd, check=True)
 
+# Applied in order; each is a diff against the tree the previous ones produce.
+PATCHES = [ROOT / 'native/split/llama-budget.patch', ROOT / 'native/split/llama-cache.patch']
+
+def patched_tree(source, patches):
+    """The tree HEAD becomes with these patches applied, built in a scratch index."""
+    index = source / '.git' / 'sc-patch-index'
+    env = {**os.environ, 'GIT_INDEX_FILE': str(index)}
+    try:
+        subprocess.run(['git', 'read-tree', 'HEAD'], cwd=source, env=env, check=True)
+        if patches: subprocess.run(['git', 'apply', '--cached', *map(str, patches)], cwd=source, env=env, check=True)
+        return subprocess.check_output(['git', 'write-tree'], cwd=source, env=env, text=True).strip()
+    finally:
+        index.unlink(missing_ok=True)
+
+def apply_patches(source):
+    """Bring the checkout to HEAD plus every patch, from HEAD or from any earlier prefix of them."""
+    for done in range(len(PATCHES), -1, -1):
+        if subprocess.run(['git', 'diff', '--quiet', patched_tree(source, PATCHES[:done])], cwd=source).returncode == 0:
+            if PATCHES[done:]: run('git', 'apply', *PATCHES[done:], cwd=source)
+            return
+    raise SystemExit(f'{source} has changes that are not ShareCompute patches; remove it to start clean')
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--platform', choices=['desktop', 'android', 'ios', 'ios-simulator'], default='desktop')
@@ -28,12 +50,7 @@ def main():
         run('git', 'checkout', '--detach', 'FETCH_HEAD', cwd=source)
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
     if head != REV: raise SystemExit(f'Wrong llama.cpp revision: {head}; expected {REV}')
-    patch = ROOT / 'native/split/llama-budget.patch'
-    applied = subprocess.run(['git', 'apply', '--reverse', '--check', str(patch)], cwd=source, capture_output=True).returncode == 0
-    if not applied:
-        run('git', 'diff', '--exit-code', cwd=source)
-        run('git', 'apply', '--check', patch, cwd=source)
-        run('git', 'apply', patch, cwd=source)
+    apply_patches(source)
     flags = ['-DCMAKE_BUILD_TYPE=Release', f'-DLLAMA_SOURCE_DIR={source}']
     ios = a.platform.startswith('ios')
     if ios:

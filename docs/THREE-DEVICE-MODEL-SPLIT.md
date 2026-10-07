@@ -33,8 +33,24 @@ KV, and compute buffers; code, graph metadata, TLS, and the laptop's non-RPC all
 are additional. Model sizes and layer counts do not produce perfectly balanced bytes.
 
 All binaries use llama.cpp revision
-`4da6337767f973e2b4d0797e5b323d77d8565e4a` and the repository's budget/counter patch.
+`4da6337767f973e2b4d0797e5b323d77d8565e4a` with two repository patches, applied in order by
+`scripts/build_split_runtime.py`: `native/split/llama-budget.patch` (buffer budgets and counters)
+and `native/split/llama-cache.patch` (the weight cache below).
 CPU-only execution avoids dependence on incompatible device GPU runtimes.
+
+## Weight cache
+
+Each phone keeps the weights it receives in its app cache directory (Android `cacheDir/rpc-weights`,
+iOS `Library/Caches/rpc-weights`). On the next run with the same model, the laptop asks before
+sending each weight tensor over 1 MiB, and the phone loads it from storage instead. The phone checks
+every cached file against its hash before using it; a damaged or partial file is deleted and sent
+again, never computed with (F38). On loopback a warm run sent the Android worker 16 MB instead of
+125 MB, and the iPhone worker 9 MB instead of 215 MB.
+
+Desktop workers started by `split_cluster.py` use a cache only with `--cache-dir DIR`, which gives
+each worker `DIR/<node>`. The laptop's own worker leaves it off by default: its shard travels over
+loopback, so caching it saves nothing. `report.json` records each worker's cache hits, stores and
+rejections for the run under `workers.<node>.cache`.
 
 ## Get the builds
 

@@ -1,0 +1,143 @@
+diff --git a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h
+index 13860ed..bc1e400 100644
+--- a/ggml/include/ggml-rpc.h
++++ b/ggml/include/ggml-rpc.h
+@@ -21,6 +21,9 @@ GGML_BACKEND_API void sc_rpc_set_budget(uint64_t value);
+ GGML_BACKEND_API uint64_t sc_rpc_allocated(void);
+ GGML_BACKEND_API uint64_t sc_rpc_peak(void);
+ GGML_BACKEND_API uint64_t sc_rpc_graphs(void);
++GGML_BACKEND_API uint64_t sc_rpc_cache_hit_bytes(void);
++GGML_BACKEND_API uint64_t sc_rpc_cache_stored_bytes(void);
++GGML_BACKEND_API uint64_t sc_rpc_cache_rejected(void);
+ 
+ // backend API
+ GGML_BACKEND_API ggml_backend_t ggml_backend_rpc_init(const char * endpoint, uint32_t device);
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index 9f687ee..468dad0 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -85,7 +85,15 @@ enum rpc_cmd {
+ static_assert(RPC_CMD_HELLO == 14, "RPC_CMD_HELLO must be always 14");
+ 
+ // Try RPC_CMD_SET_TENSOR_HASH first when data size is larger than this threshold
+-const size_t HASH_THRESHOLD = 10 * 1024 * 1024;
++// ShareCompute: 1 MiB, not 10 MiB. Per-layer tensors of small models are 1-4 MiB, so at 10 MiB a
++// phone holding only transformer layers cached nothing at all.
++const size_t HASH_THRESHOLD = 1 * 1024 * 1024;
++
++// ShareCompute weight-cache counters, read by worker telemetry.
++static std::atomic<uint64_t> sc_cache_hit{0}, sc_cache_stored{0}, sc_cache_rejected{0};
++uint64_t sc_rpc_cache_hit_bytes(void) { return sc_cache_hit.load(); }
++uint64_t sc_rpc_cache_stored_bytes(void) { return sc_cache_stored.load(); }
++uint64_t sc_rpc_cache_rejected(void) { return sc_cache_rejected.load(); }
+ 
+ struct rpc_msg_hello_req {
+     uint8_t conn_caps[RPC_CONN_CAPS_SIZE];
+@@ -1492,10 +1500,28 @@ bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
+         char hash_str[17];
+         snprintf(hash_str, sizeof(hash_str), "%016" PRIx64, hash);
+         // save to cache_dir/hash_str
++        // ShareCompute: write a temporary file and rename it, so a process killed mid-write (iOS and
++        // Android do this) never leaves a partial file under the final name.
+         fs::path cache_file = fs::path(cache_dir) / hash_str;
+-        std::ofstream ofs(cache_file, std::ios::binary);
+-        ofs.write((const char *)data, size);
+-        GGML_LOG_INFO("[%s] saved to '%s'\n", __func__, cache_file.string().c_str());
++        fs::path partial = cache_file;
++        partial += ".partial";
++        bool written;
++        {
++            std::ofstream ofs(partial, std::ios::binary | std::ios::trunc);
++            ofs.write((const char *)data, size);
++            written = (bool) ofs;
++        }
++        std::error_code ec;
++        if (written) {
++            fs::rename(partial, cache_file, ec);
++        }
++        if (!written || ec) {
++            fs::remove(partial, ec);
++            GGML_LOG_WARN("[%s] could not save '%s'\n", __func__, cache_file.string().c_str());
++        } else {
++            sc_cache_stored.fetch_add(size);
++            GGML_LOG_INFO("[%s] saved to '%s'\n", __func__, cache_file.string().c_str());
++        }
+     }
+     ggml_backend_tensor_set(tensor, data, offset, size);
+     return true;
+@@ -1523,12 +1549,22 @@ bool rpc_server::get_cached_file(uint64_t hash, std::vector<uint8_t> & data) {
+ 
+ bool rpc_server::set_tensor_hash(const rpc_msg_set_tensor_hash_req & request, rpc_msg_set_tensor_hash_rsp & response)
+ {
+-    std::vector<uint8_t> cached_file;
+-    if (!get_cached_file(request.hash, cached_file)) {
+-        response.result = 0;
++    // ShareCompute: the client skips sending a tensor whenever this answers 1, so a damaged cache file
++    // would silently corrupt the model. Every file is checked against its hash before it counts as a
++    // hit; anything that does not match is deleted and reported as a miss, and the client resends.
++    response.result = 0;
++    if (!cache_dir) {
+         return true;
+     }
+-    size_t size = cached_file.size();
++    char hash_str[17];
++    snprintf(hash_str, sizeof(hash_str), "%016" PRIx64, request.hash);
++    fs::path cache_file = fs::path(cache_dir) / hash_str;
++    std::error_code ec;
++    const uintmax_t file_size = fs::file_size(cache_file, ec);
++    if (ec) {
++        return true;
++    }
++    const size_t size = (size_t) file_size;
+     struct ggml_init_params params {
+         /*.mem_size   =*/ ggml_tensor_overhead(),
+         /*.mem_buffer =*/ NULL,
+@@ -1545,6 +1581,14 @@ bool rpc_server::set_tensor_hash(const rpc_msg_set_tensor_hash_req & request, rp
+     LOG_DBG("[%s] buffer: %p, data: %p, offset: %" PRIu64 ", size: %zu, hash: %" PRIx64 "\n",
+             __func__, (void*)tensor->buffer, tensor->data, request.offset, size, request.hash);
+ 
++    auto reject = [&](const char * why) {
++        std::error_code ignored;
++        fs::remove(cache_file, ignored);
++        sc_cache_rejected.fetch_add(1);
++        GGML_LOG_WARN("[%s] discarded '%s': %s\n", __func__, cache_file.string().c_str(), why);
++        return true;
++    };
++
+     // sanitize tensor->data
+     {
+         const size_t p0 = (size_t) ggml_backend_buffer_get_base(tensor->buffer);
+@@ -1553,12 +1597,29 @@ bool rpc_server::set_tensor_hash(const rpc_msg_set_tensor_hash_req & request, rp
+         if (request.tensor.data + request.offset < p0
+          || request.tensor.data + request.offset >= p1
+          || size > (p1 - request.tensor.data - request.offset)) {
+-            GGML_LOG_ERROR("[%s] tensor data region (data=0x%" PRIx64 ", offset=%" PRIu64 ", size=%zu, hash=0x%" PRIx64 ") out of buffer bounds [0x%zx, 0x%zx)\n",
+-                           __func__, request.tensor.data, request.offset, size, request.hash, p0, p1);
+-            return false;
++            return reject("size does not fit the tensor");
++        }
++    }
++    std::ifstream ifs(cache_file, std::ios::binary);
++    if (ggml_backend_buffer_is_host(tensor->buffer)) {
++        // Read straight into place: on a phone, a second copy of a large tensor can trip the OS
++        // memory killer. A rejected read leaves junk here, which the client's resend overwrites.
++        uint8_t * dst = (uint8_t *) tensor->data + request.offset;
++        ifs.read((char *) dst, size);
++        if (!ifs || (size_t) ifs.gcount() != size || fnv_hash(dst, size) != request.hash) {
++            ifs.close(); // Windows cannot delete a file that is still open
++            return reject("contents do not match the hash");
++        }
++    } else {
++        std::vector<uint8_t> cached_file(size);
++        ifs.read((char *) cached_file.data(), size);
++        if (!ifs || (size_t) ifs.gcount() != size || fnv_hash(cached_file.data(), size) != request.hash) {
++            ifs.close(); // Windows cannot delete a file that is still open
++            return reject("contents do not match the hash");
+         }
++        ggml_backend_tensor_set(tensor, cached_file.data(), request.offset, size);
+     }
+-    ggml_backend_tensor_set(tensor, cached_file.data(), request.offset, size);
++    sc_cache_hit.fetch_add(size);
+     response.result = 1;
+     return true;
+ }

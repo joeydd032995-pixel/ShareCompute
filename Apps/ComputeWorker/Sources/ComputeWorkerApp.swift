@@ -27,7 +27,13 @@ struct ComputeWorkerApp: App {
                         LabeledContent("Allocated", value: "\(model.allocated / 1_048_576) MiB")
                         LabeledContent("Peak buffers", value: "\(model.peak / 1_048_576) MiB")
                         LabeledContent("Completed graphs", value: "\(model.graphs)")
+                        LabeledContent("Loaded from cache", value: "\(model.cacheHits / 1_048_576) MiB")
                         Text("Keep this app open while computing. Leaving the app disconnects the worker and fails the active generation.")
+                    }
+                    Section("Cached model data") {
+                        LabeledContent("Stored on this iPhone", value: "\(model.cachedBytes / 1_048_576) MiB")
+                        Text("Repeat tests with the same model reuse it instead of uploading again.")
+                        Button("Clear cached model data", role: .destructive) { model.clearCache() }
                     }
                 }.navigationTitle("ShareCompute")
             }
@@ -45,7 +51,7 @@ struct ComputeWorkerApp: App {
                     model.pairingText = try String(contentsOf: url, encoding: .utf8)
                 } catch { model.status = error.localizedDescription }
             }
-            .onAppear { model.startSimulatorIfRequested() }
+            .onAppear { model.refreshCacheSize(); model.startSimulatorIfRequested() }
             .onChange(of: phase) { if $0 == .background { model.stop("Backgrounded — reconnect before the next run") } }
         }
     }

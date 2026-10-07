@@ -28,6 +28,10 @@ Facts:
 - In F37 the iPhone held layers 17–24 with a 1536 MiB budget and a 257 MB peak. 205 MiB of weights
   crossed Wi-Fi to reach it. The budget is fixed for the process's life.
 - The idle timer is disabled while connected, so auto-lock does not background the app mid-run.
+- **The weight cache lives in `Library/Caches/rpc-weights`** (`WorkerModel.cacheDirectory`), passed to
+  `sc_worker_run` at its one start. iOS may purge it, which only costs a re-upload. Every hit is
+  hash-checked natively, and a cached tensor is read straight into its buffer rather than through a
+  second copy, which matters under Jetsam (F38).
 
 ### Infer Ring lifecycle (regression protection)
 
