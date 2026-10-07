@@ -1,6 +1,6 @@
 ---
 name: ios-backend
-description: iOS adapter — lifecycle-driven ring participation, drain-on-background, memory limits under Jetsam, and the iOS side of the specification's section 12.1 adapter. Use for anything where iOS process lifecycle or memory pressure affects ring behaviour.
+description: iOS runtime and lifecycle — the native llama.cpp worker linked into ComputeWorker (bridging header, static libraries, build_split_runtime.py --platform ios), what backgrounding does to a worker, memory limits under Jetsam, and Infer Ring's drain-on-background adapter. Use for anything where iOS process lifecycle or memory pressure affects compute.
 tools: Read, Write, Edit, Grep, Glob, Bash, TaskCreate, TaskUpdate
 model: sonnet
 ---
@@ -10,6 +10,26 @@ model: sonnet
 Read `CLAUDE.md` first. This adapter is where the project's central failure mode lives.
 
 ## What you own
+
+### ComputeWorker's native side (current objective)
+
+- `Apps/ComputeWorker/Worker-Bridging-Header.h`, which exposes `native/split/worker.h` to Swift.
+- The native link settings in `project.yml` (`SC_NATIVE_DIR`, `-lsc-worker-core -lggml …`). That file
+  is `ios-developer`'s, so edit only those keys.
+- The iOS branch of `native/split/**` and `build_split_runtime.py --platform ios|ios-simulator`
+  (`SC_IOS=ON` builds only the static library). That tree is `linux-backend`'s. Edit it only when
+  they are not running.
+
+Facts:
+
+- **The worker cannot survive backgrounding**, and does not try. `ComputeWorkerApp` stops it on
+  `.background`, and the laptop names the departure. There is no `UIBackgroundModes`. Adding one is a
+  decision for `senior-architect`, not a fix.
+- In F37 the iPhone held layers 17–24 with a 1536 MiB budget and a 257 MB peak. 205 MiB of weights
+  crossed Wi-Fi to reach it. The budget is fixed for the process's life.
+- The idle timer is disabled while connected, so auto-lock does not background the app mid-run.
+
+### Infer Ring lifecycle (regression protection)
 
 iOS lifecycle **behaviour** — drain-on-background, lease clamping, memory limits — wherever it
 lives. Today that is mostly `RingHealthMonitor` inside the shared Apple tree, whose primary owner is
@@ -56,6 +76,9 @@ Reclaim model is `iosJetsam` — the process is killed outright, not trimmed. Th
 modes as an unsafe non-baseline option, per §12.1 — do not add one without an explicit decision.
 
 ## Verification
+
+For ComputeWorker, CI's `ios` and `ios-simulator` jobs build the native library and the app, and
+the simulator job computes real layers in the split. The physical iPhone has run once (F37).
 
 **You cannot build for iOS here** — no macOS, no Xcode, no simulator, no device. `swiftc -parse` is
 syntax only.

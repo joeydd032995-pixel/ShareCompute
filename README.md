@@ -249,19 +249,20 @@ These are a human surface, not a second router. All 20 carry `disable-model-invo
 removes them from the model's listing entirely: they cost nothing per turn and cannot compete with
 `orchestration` for routing. Two behaviours differ by kind:
 
-- **The eleven active roles fork.** The agent definition becomes the subagent's system prompt, so the
+- **Every role forks.** The agent definition becomes the subagent's system prompt, so the
   command carries dispatch mechanics only — arguments, the ownership pre-flight, the report contract
   — and never role knowledge. A 40-line body cap in the validator is what actually enforces that;
   pointing at the agent file would not.
-- **The nine gated roles answer inline and spawn nothing.** Fork resolution falls back to
-  `general-purpose` on an agent name it cannot resolve, and that fallback is **silent** — one typo in
-  `agent:` produces no error anywhere. Inline is the option that fails *visibly*. The validator's
-  `agent:`-resolution check is the highest-value line in it.
+- **A gated role would answer inline and spawn nothing.** None is gated today; `linux-*`,
+  `windows-*` and `android-*` were until the native split ran on those platforms. Fork resolution
+  falls back to `general-purpose` on an agent name it cannot resolve, and that fallback is
+  **silent** — one typo in `agent:` produces no error anywhere. Inline is the option that fails
+  *visibly*. The validator's `agent:`-resolution check is the highest-value line in it.
 
   Inline is **not** a tool restriction, and an earlier version of this section said otherwise. The
-  skill body runs with the caller's toolset, and the gated agents' own toolsets never apply on this
-  path at all — nor are those agents read-only: all nine carry `Bash`. The gate is **instructional**,
-  enforced by the definitions refusing the work. (A role *forked* through the `Agent` tool does get
+  skill body runs with the caller's toolset, and a gated agent's own toolset never applies on this
+  path at all — nor is any agent read-only: every role carries `Bash`. A gate is **instructional**,
+  enforced by the definition refusing the work. (A role *forked* through the `Agent` tool does get
   its narrower toolset, so that path is a real if partial narrowing — but not the command path, and
   `Bash` writes regardless.) `findings.md` F19 records the correction.
 
@@ -276,24 +277,25 @@ name the large half that this container cannot check at all.
 
 **That shadow is a design intent, not an observed behaviour.** It rests on reading the shipped CLI
 bundle, where a project skill displaces a same-named bundled one; nothing here has confirmed it at
-runtime. Typing `/verify` in an interactive session and seeing *this* file's content — the five
+runtime. Typing `/verify` in an interactive session and seeing *this* file's content — the seven
 commands and the container's limits — rather than the generic built-in is the check that would
 settle it, and it has not been run.
 
 Three things worth knowing before dispatching:
 
-- **Nine roles are gated.** `linux-*`, `windows-*` and `android-*` have no runtime to target: MLX is
-  Apple-only, so until the specification's Phase 1a (portable IR + wire protocol) and a non-MLX
-  execution path exist, those nodes cannot run. Their definitions say so and refuse the work.
+- **The split's code has owners.** `linux-*` own the native runtime, the coordinator and its
+  operator-facing text. `windows-*` own the test kit and the laptop's worker. `android-*` own the
+  Android app, and `ios-*` own ComputeWorker. `docs/AGENT-OWNERSHIP.md` has the table, including the
+  rule that `native/split/**` is one tree shared by four platforms.
 - **One writer per path.** `Sources/ShareComputeCore/**` belongs to `senior-architect` alone;
   everyone else files a change request in `findings.md`. That boundary is what contained both MLX
   spike failures without touching the core.
 - **Most platform work cannot be verified here.** This container has no macOS, Xcode, Android SDK or
-  Windows. Every definition carries the verification matrix and the rule to state what was *not*
+  Windows. CI builds those, and only the operator's devices run them on hardware. Every definition carries the verification matrix and the rule to state what was *not*
   verified.
 
 ```bash
-python3 scripts/validate-agents.py    # 20 agents (9 gated), 24 skills (20 role, 3 workflow)
+python3 scripts/validate-agents.py    # 20 agents (0 gated), 24 skills (20 role, 3 workflow, 1 router)
 ```
 
 ## Building

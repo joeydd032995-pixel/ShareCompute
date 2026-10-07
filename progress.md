@@ -690,3 +690,29 @@ Getting there took three fixes from this session:
 - **PR #28:** an Android foreground service, so the phone may lock.
 
 The run also needed the operator to install the QR-capable iPhone build instead of an older IPA.
+
+## Agent roles un-gated — 2026-10-07
+
+At the owner's request, the nine `linux-*`, `windows-*` and `android-*` roles were rewritten and
+un-gated. They had been blocked on "no non-MLX execution path exists", which the native split
+disproved (F36, F37). Each role now owns real code:
+
+| Roles | Own |
+|---|---|
+| `linux-*` | `native/split/**`, `split_cluster.py`, and operator-facing text |
+| `windows-*` | `split_launcher.py`, the kit packaging, the dashboard, and the laptop's native worker |
+| `android-*` | `Apps/AndroidWorker/**`, split into app, JNI and presentation |
+| `ios-*` | `Apps/ComputeWorker/**` in addition to Infer Ring |
+
+The changes:
+
+- **Commands.** All nine role commands now fork their agent.
+- **Lint.** `scripts/validate-agents.py` keeps its gate checks behind an empty `GATED_PREFIXES`. It
+  reports 20 agents (0 gated) and passes. A deliberately mistyped `agent:` still fails it, which is
+  the negative control.
+- **Docs.** The ownership table gains the split's paths and a shared-native-tree rule. CLAUDE.md,
+  README, the orchestration and verify skills, and the tester and architect roles are updated to
+  match.
+
+Not verified: slash-command dispatch itself, which needs an interactive session (unchanged from
+before). No code changed.

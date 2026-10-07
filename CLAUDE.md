@@ -214,17 +214,17 @@ measured (F31 aside, that path needs no Metal).
 remains valid for anyone with two Macs. F30's two-rank loopback ring keeps it honest. It is simply
 no longer on the critical path — treat it as regression protection, not as work in progress.
 
-Consequence for the roster: `windows-*` and `linux-*` roles stop being gated by "no non-MLX
-execution path exists". llama.cpp RPC **is** that path, it builds natively on Windows
+Consequence for the roster (since acted on, see **Agent roster**): `windows-*` and `linux-*` roles
+stop being gated by "no non-MLX execution path exists". llama.cpp RPC **is** that path, it builds natively on Windows
 (`ggml-rpc` links `ws2_32`, and `transport.cpp` is full of `_WIN32`/winsock2), and upstream ships
 prebuilt Windows binaries with `GGML_RPC=ON`.
 
 ## Why Linux, Windows and Android were blocked
 
-> **No longer blocked in practice.** Native llama.cpp workers now run on Windows, Linux, Android
-> and iOS, and have computed together on physical devices (F36, F37). The gating in
-> `.claude/agents/` is still unchanged. Un-gating is a deliberate decision for the owner, not a
-> side effect of a docs update. The history below explains why the gate existed.
+> **No longer blocked, and the roles are un-gated.** Native llama.cpp workers now run on Windows,
+> Linux, Android and iOS, and have computed together on physical devices (F36, F37). On 2026-10-07
+> the owner chose to un-gate `linux-*`, `windows-*` and `android-*`. Their definitions now own the
+> split's code (see **Agent roster**). The history below explains why the gate existed.
 
 Not sequencing — capability. MLX is Apple-only, so until the specification's Phase 1a (portable
 graph IR + wire protocol) and a non-MLX execution path exist, those nodes have no runtime to run.
@@ -237,10 +237,9 @@ to execute it.
 > (the portable contract) and Phase 4 (making RPC survivable — F26), which is ordinary work rather
 > than a capability gap.
 >
-> **The gating in `.claude/agents/` has not been changed to match.** Nine roles still carry the
-> gate. Un-gating `windows-*` and `linux-*` is a deliberate act that should happen when there is
-> something for them to build against, not as a side effect of this note. Android stays gated — no
-> NDK here, and no second Android device in the plan.
+> The gating in `.claude/agents/` was later removed, by the owner's decision, once all three
+> platforms had computed in the split. Android was un-gated with them, because the physical run
+> made the earlier "no device in the plan" reason false.
 
 ## Verification — what can actually be checked here
 
@@ -316,11 +315,20 @@ Role definitions live in `.claude/agents/`. Routing, file ownership and escalati
 Every role also has a slash command at `.claude/skills/<role>/SKILL.md` — `/mac-backend`,
 `/tester`, one per agent file. Those are a **human** surface, not a second router: they carry
 `disable-model-invocation: true`, so you cannot see them and routing stays one decision in
-`orchestration`. The eleven active roles fork the agent directly; the nine gated ones answer inline
-and spawn nothing, because a mistyped `agent:` silently resolves to `general-purpose` — inline is the
-option that fails *visibly*, not one that restricts tools. **The gate is instructional**, not a
-permission boundary: the definitions refuse the work, and all nine gated roles carry `Bash`, so they
-were never read-only. See F19.
+`orchestration`. All twenty roles fork their agent directly.
+
+**No role is gated.** `linux-*`, `windows-*` and `android-*` were gated until the native split ran on
+those platforms. They now own its code:
+
+- `linux-*`: the native runtime, the coordinator, and operator-facing text.
+- `windows-*`: the test kit, its dashboard, and the laptop's native worker.
+- `android-*`: the Android app.
+- `ios-*`: own ComputeWorker alongside Infer Ring.
+
+A gated role, if one is ever needed again, answers inline and spawns nothing, because a mistyped
+`agent:` silently resolves to `general-purpose`. Inline is the option that fails *visibly*, not one
+that restricts tools. **A gate is instructional**, not a permission boundary: every role carries
+`Bash`. See F19.
 
 File ownership lives in `docs/AGENT-OWNERSHIP.md`, outside `.claude/skills/` so a forked role can
 read its own contract without reading the router.
@@ -332,5 +340,5 @@ A skill body never restates role knowledge — the agent file is the definition,
 cap in the validator is what keeps that true.
 
 ```bash
-python3 scripts/validate-agents.py   # 20 agents (9 gated), 24 skills (20 role, 3 workflow, 1 router)
+python3 scripts/validate-agents.py   # 20 agents (0 gated), 24 skills (20 role, 3 workflow, 1 router)
 ```

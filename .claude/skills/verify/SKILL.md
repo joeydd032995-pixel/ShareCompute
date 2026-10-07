@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Run ShareCompute's verification matrix — the five checks that actually work in this container, with their expected results — and report honestly which half of the project each one does and does not cover.
+description: Run ShareCompute's verification matrix — the seven checks that actually work in this container, with their expected results — and report honestly which half of the project each one does and does not cover.
 argument-hint: <optional — a specific claim to check, otherwise runs everything>
 ---
 
@@ -19,9 +19,9 @@ honest output of a verification run is two lists, not one.
 
 If that names a specific claim, check *that* and say which of the commands below bears on it — many
 claims in this repo have no command that bears on them at all, and saying so is the answer. If it is
-empty, run all five.
+empty, run all seven.
 
-## The five that work
+## The seven that work
 
 Run from the repository root. Expected results are exact; a different number is a finding, not a
 rounding error.
@@ -42,8 +42,19 @@ rounding error.
 ```
 
 ```bash
-python3 scripts/validate-agents.py    # 20 agents (9 gated), 24 skills (20 role, 3 workflow, 1 router)
+python3 scripts/validate-agents.py    # 20 agents (0 gated), 24 skills (20 role, 3 workflow, 1 router)
 ```
+
+```bash
+# The three-device split's coordinator, relay, proof gate and launcher.
+# Needs: pip install cryptography==46.0.0 qrcode==8.2
+python3 scripts/test_split_cluster.py -v     # 10 tests, OK
+python3 scripts/test_split_launcher.py -v    # 10 tests, OK
+```
+
+These two cover the laptop side of the split only. The real-model loopback run
+(`build_split_runtime.py`, `download_split_model.py`, `verify_split_runtime.py`) also works here but
+takes minutes, so it is not part of the quick set. Run it after any change under `native/split/**`.
 
 Two things about the harnesses are easy to misread. They **mirror** the patched MLX code rather than
 including it — MLX cannot be compiled here — so a green run proves the *semantics*, not that the
@@ -69,7 +80,8 @@ For the MLX patch set specifically — apply order, the compile sequence, the ne
 | Actor isolation at runtime | no | Apple hardware |
 | A ring actually forms | no | two or more real devices |
 | Any MLX patch at runtime | no | macOS; **none of the four has ever been executed** |
-| Linux / Windows / Android | no | those SDKs, and a non-MLX runtime that does not exist yet |
+| Windows / Android / iOS builds of the split | no | CI: `three-device-split.yml` builds every platform and runs the real split on Linux, Windows and the iOS simulator. Android Java can be type-checked here with `javac` |
+| The split on physical devices | no | the operator's laptop and phones. One recorded PASS, F37 |
 | Slash commands at **dispatch** | no | an interactive session. `validate-agents.py` checks the *files*, never the behaviour: not that a fork spawns the named agent, not that `background: false` blocks, not that this skill actually shadows the built-in |
 
 ## Report

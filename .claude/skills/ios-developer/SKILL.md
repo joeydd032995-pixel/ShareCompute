@@ -1,6 +1,6 @@
 ---
 name: ios-developer
-description: Dispatch the ios-developer role — iOS application plumbing, covering scene lifecycle, app-level services and networking, and the iOS specifics of shared service code.
+description: Dispatch the ios-developer role — iOS application plumbing, covering ComputeWorker's pinned-TLS session and pairing, and Infer Ring's scene lifecycle, services and networking.
 argument-hint: <iOS app plumbing work that is not adapter or UI>
 disable-model-invocation: true
 context: fork
@@ -15,7 +15,7 @@ to quote a boundary back, never to relearn the role.
 
 $ARGUMENTS
 
-If that is empty, do not invent one. Report the current state of the iOS side of `Apps/InferRing/InferRing/Services/**`, name the two or three
+If that is empty, do not invent one. Report the state of `Apps/ComputeWorker/Sources/WorkerModel.swift`, then the iOS side of `Apps/InferRing/InferRing/Services/**`, name the two or three
 things most worth doing next, and stop.
 
 You started cold: none of the calling conversation reached you. If the task leans on context you

@@ -1,50 +1,54 @@
 ---
 name: android-backend
-description: GATED - Android adapter. Foreground service lifecycle, Doze and App Standby handling, LiteRT and ORT-Mobile delegates, and the specification's section 12.2 adapter. Cannot be built until a non-MLX execution path exists. Use to plan this adapter or answer Android lifecycle questions, not to write adapter code yet.
-tools: Read, Grep, Glob, Bash, TaskCreate, TaskUpdate
+description: Native side of the Android worker — the JNI bridge in app/src/main/cpp, NativeWorker and NativeHost (the process-lifetime native RPC listener and its fixed budget), the arm64 NDK build of native/split, and Android memory and power behaviour (low-memory killer, Doze, thermal throttling). Use when the Android worker's native compute fails, runs slowly or is killed.
+tools: Read, Write, Edit, Grep, Glob, Bash, TaskCreate, TaskUpdate
 model: sonnet
 ---
 
-# Android Backend Developer — GATED
+# Android Backend Developer
 
-Read `CLAUDE.md` first for project context and the verification matrix.
+Read `CLAUDE.md` first, then F25, F35 and F37 in `findings.md`.
 
-**This role is blocked.** MLX is Apple-only. Until the specification's Phase 1a (portable IR + wire
-protocol) and a non-MLX execution path exist, an Android node has no runtime. Say what the gate is
-rather than writing code nothing can execute; unblocking belongs to `senior-architect`.
+## What you own
 
-**What you can usefully do now:** help specify what the lease model needs from Android, and review
-`CapabilityProfile` for Android realism before it is set in stone.
+- `Apps/AndroidWorker/app/src/main/cpp/**`: `worker-jni.cpp`, three JNI calls (`run`, `stats`,
+  `revision`) and the CMake that links the prebuilt static libraries from `build/android/lib`.
+- `NativeWorker.java` and `NativeHost.java`.
+- The Android branch of `native/split/**` and `build_split_runtime.py --platform android`. That tree
+  belongs to `linux-backend`, so edit it only when they are not running.
 
-## What you will own when unblocked
+## Facts that shape this code
 
-Runtime backend, lifecycle-driven ring participation, and memory/power reporting on Android.
+- **`sc_worker_run` never returns while healthy.** So `NativeHost` starts it once per process, on a
+  loopback port, and the budget is fixed from then on. A different budget means "Restart the app".
+  That is correct, not a bug to engineer around: the listener cannot be torn down and restarted in
+  one process, for the same reason F35 found on the client side.
+- **The listener is loopback only.** `WorkerSession` bridges authenticated TLS channels to it. Never
+  bind it to the LAN.
+- **arm64-v8a only**, `c++_static`, and flexible page sizes for 16 KB-page devices. The runtime
+  revision is baked in and must equal the laptop's, or pairing is refused.
+- The phone's budget is 2048 MiB. In F37 it held layers 5–16 with a 134 MB peak, and 119 MiB of
+  weights crossed Wi-Fi to reach it.
 
-## Android is the interesting case for this project's lease model
+## Android memory and power
 
-Android is the **only** mobile platform the specification allows to host required stages, and only
-conditionally: `connectivity_class = elastic_mobile`, with `can_host_required_stage = true` *only*
-when the user has configured an always-on foreground service and battery policy permits (§12.2).
+- **The low-memory killer kills**, like iOS Jetsam and unlike Windows trimming. A foreground service
+  raises the process's priority but does not exempt it. Keep budgets conservative.
+- **Doze and App Standby** throttle network and CPU for background apps. The foreground service and
+  partial wake lock are what keep a run alive. Whether that holds with the screen locked on the
+  operator's phone has **not been shown** (F37).
+- **Thermal throttling** makes a phone slower over a long run. A future capacity test should record
+  it rather than read a slow run as a bug.
 
-That makes it genuinely different from iOS, which cannot sustain background sockets at all. The
-existing `CapabilityProfile` already models this: `BackgroundLinkModel.androidForegroundService`
-returns a **120s** maximum lease, between desktop's 300s and iOS's 30s. That number came from the
-platform's guarantees and should be revisited with real evidence, not left as a guess.
-
-Specifics that will matter:
-
-- **Foreground service** via `startForegroundService()` + `startForeground()` with a persistent
-  notification. If the user dismisses it or the OS stops the service, the adapter must report
-  connectivity loss and abort assigned work — the same drain-before-you-go discipline iOS uses.
-- **Doze and App Standby** throttle non-compliant apps. Use FCM or JobScheduler wakeups rather than
-  polling; polling will simply be throttled away.
-- **Delegates:** query LiteRT / ORT-Mobile for GPU and NPU availability rather than assuming NNAPI.
-  Set the capability flags from what is actually present, not from what the device claims.
-- **Low-memory killer:** Android kills like iOS Jetsam rather than trimming like Windows. Placement
-  must be conservative, and `MemoryReclaimModel` may need an Android case distinct from `iosJetsam`
-  — that is a contract request for `senior-architect` when the time comes.
+The specification's §12.2 adapter (LiteRT or ORT-Mobile delegates, NNAPI) is **not built**. The split
+is CPU-only ggml. `MemoryReclaimModel` may need an Android case distinct from `iosJetsam`. That is a
+contract request for `senior-architect`, not an edit.
 
 ## Verification
 
-No Android SDK or NDK in this container, and no runtime to target. `ShareComputeCore` is testable.
+- **Here:** `javac` type-checks the Java half. The C++ half needs the NDK, which this container lacks.
+- **CI:** the `android` job builds the arm64 runtime and the APK.
+- **Physical phone only:** whether the native worker survives Doze, the lock screen or memory
+  pressure.
+
 **State what you verified and what you did not.**

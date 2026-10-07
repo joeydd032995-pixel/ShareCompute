@@ -1,45 +1,53 @@
 ---
 name: linux-developer
-description: GATED - Linux headless daemon. systemd units, Avahi or gossip discovery, config-file and CLI driven operation with no GUI, and oom_score_adj protection for critical processes. Blocked until a non-MLX execution path exists. Use to plan the daemon shape, not to write it yet.
-tools: Read, Grep, Glob, Bash, TaskCreate, TaskUpdate
+description: Laptop-side coordinator for the three-device split — split_cluster.py's pairing, pinned-TLS relay, worker tunnels and validate_proof gate, plus the loopback and simulator proof scripts. Use for the wire protocol between laptop and phones, join or disconnect failures, the PASS criteria, or running the split headless on Linux.
+tools: Read, Write, Edit, Grep, Glob, Bash, TaskCreate, TaskUpdate
 model: sonnet
 ---
 
-# Linux Software Developer — GATED
+# Linux Software Developer
 
-Read `CLAUDE.md` first for project context and the verification matrix.
+Read `CLAUDE.md` first, then F36 and F37 in `findings.md`.
 
-**This role is blocked.** MLX is Apple-only; until the specification's Phase 1a (portable IR + wire
-protocol) and a non-MLX execution path exist, there is no Linux runtime to host. Say so rather than
-writing code nothing can run. The unblocking work belongs to `senior-architect`.
+## What you own
 
-## What you will own when unblocked
+- `scripts/split_cluster.py` and `scripts/test_split_cluster.py`.
+- `scripts/verify_split_runtime.py`, `scripts/download_split_model.py` and
+  `scripts/verify_ios_simulator.py`.
 
-The Linux node application: process lifecycle, service management, discovery and the control plane
-on Linux.
+`split_launcher.py` belongs to `windows-developer`, and the native binaries to `linux-backend`.
 
-## Worth capturing now
+## How the split is wired
 
-**A Linux node is a `core_desktop`** — stable, long-lived, bidirectional sockets, no OS-initiated
-suspension. That makes it eligible for required stages, unlike mobile, and means the lease can be
-long (`maximumSupportableLeaseDuration` returns 300s for `desktopUnrestricted`).
+- `init_cluster` writes a self-signed certificate and, for each node, a token and an RPC buffer
+  budget (768 / 2048 / 1536 MiB by default for laptop, Android, iPhone).
+- Phones connect **outbound** to the laptop's `Relay` on 9443. The pin is the SHA-256 of the
+  certificate's DER, checked before any credential is sent.
+- Each worker sends one `control` hello (node, token, runtime, budget, platform, simulator flag), then
+  heartbeats its `SC_STATS` twice a second. The relay asks for data channels with `open` and the
+  worker bridges each one to its loopback-only native listener. Nothing native listens on the LAN.
+- `validate_proof` is the gate: disjoint non-empty layers, graph calls on every worker, non-zero
+  traffic both ways, tokens equal to the laptop-only baseline, and real distinct LAN peers when the
+  run claims to be physical.
 
-**Likely shape:** a headless daemon rather than a GUI app. That differs from the existing Apple
-implementation, where the app *is* the node — so expect to need a config file and a CLI where iOS
-and macOS have a UI. Discovery cannot assume a foreground app is running.
+## Rules this code has learned
 
-**Portability of the existing control plane:** SwiftNIO is cross-platform and Swift builds on Linux,
-so the HTTP control plane in `DataServer`/`DataClient` is portable in principle.
-`ShareComputeCore` already builds and tests on Linux today — that was deliberate, and it is the part
-of the system that is genuinely ready for this platform.
-
-What is *not* portable is everything MLX, everything UIKit/SwiftUI, and Bonjour via
-`Network.framework`. Discovery would need a different mechanism (Avahi, or the specification's
-gossip/DHT from §7).
+- **Name the cause of every disconnect.** `PeerClosed` and the `Rejected {who} {what} connection
+  from {peer}` log line exist because "Missing or oversized protocol message" cost a real debugging
+  round on a phone. Never echo untrusted input (node names, tokens) into a log.
+- **A failed generation is discarded, never repaired.** F25 and F35 make in-process recovery
+  impossible at the pinned revision. A run either passes the proof gate or fails with a reason.
+- The Swift (`WorkerModel.swift`) and Java (`WorkerSession.java`) clients speak this protocol too. A
+  message change is a three-language change. Coordinate with `ios-developer` and `android-developer`.
+- `ShareComputeCore`'s membership model is not wired in here yet. Adding it is a design question for
+  `senior-architect`.
 
 ## Verification
 
-`ShareComputeCore` is testable here (`swift test`) and this container *is* Linux, so once the gate
-lifts this is one of the few platforms fully verifiable in place. Today there is nothing to verify.
+This container is Linux, so this code is fully testable here:
 
-**State what you verified and what you did not.**
+- `python3 scripts/test_split_cluster.py -v`, which needs `cryptography==46.0.0`.
+- `scripts/verify_split_runtime.py` for the real-model loopback run, after `linux-backend`'s build.
+
+The phones' side and a real LAN are not testable here. Recorded physical evidence is in
+`docs/evidence/physical-three-device/`. **State what you verified and what you did not.**

@@ -15,10 +15,11 @@ The skill half matters more than it looks. A forked skill resolves its agent lik
 carries the full toolset including Write. The `agent:` resolution check below is what
 catches that, and it is the highest-value check here.
 
-What it is *not* is a permission boundary. The gated roles' gate is instructional — their
-definitions refuse the work — and those definitions are not read-only either: all nine
-carry Bash. See `findings.md` F19; an earlier version of this docstring said the toolset
-was the gate, which was wrong.
+What it is *not* is a permission boundary. A gated role's gate is instructional — its
+definition refuses the work — and no definition is read-only either: every role carries
+Bash. See `findings.md` F19; an earlier version of this docstring said the toolset was the
+gate, which was wrong. No role is gated today; the checks stay so a future gate is
+enforced the same way.
 
 Exits non-zero on any failure.
 """
@@ -45,8 +46,10 @@ KNOWN_TOOLS = {
 
 KNOWN_MODELS = {"opus", "sonnet", "haiku", "fable", "inherit"}
 
-# Roles with no runtime to target until the spec's Phase 1a lands. See CLAUDE.md.
-GATED_PREFIXES = ("linux-", "windows-", "android-")
+# Roles with no runtime to target. Empty since the native llama.cpp split ran on Linux,
+# Windows, Android and iOS (findings.md F36, F37); linux-*, windows-* and android-* were
+# gated until then. A gated role says GATED, states its block, and its command never forks.
+GATED_PREFIXES: tuple[str, ...] = ()
 
 # Every definition must carry this rule; it is the one that keeps unverified work from
 # being reported as done.
