@@ -277,7 +277,7 @@ name the large half that this container cannot check at all.
 
 **That shadow is a design intent, not an observed behaviour.** It rests on reading the shipped CLI
 bundle, where a project skill displaces a same-named bundled one; nothing here has confirmed it at
-runtime. Typing `/verify` in an interactive session and seeing *this* file's content — the five
+runtime. Typing `/verify` in an interactive session and seeing *this* file's content — the seven
 commands and the container's limits — rather than the generic built-in is the check that would
 settle it, and it has not been run.
 

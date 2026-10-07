@@ -23,11 +23,11 @@ This is the rule that makes parallel work safe. The shared contract is the colli
 | `native/split/**`, `scripts/build_split_runtime.py` | `linux-backend` | see the shared-native-tree rule below |
 | `scripts/split_cluster.py`, `scripts/test_split_cluster.py`, `scripts/verify_split_runtime.py`, `scripts/download_split_model.py`, `scripts/verify_ios_simulator.py` | `linux-developer` | `linux-designer` and `windows-backend` when the primary is not running |
 | `scripts/split_launcher.py`, `scripts/test_split_launcher.py`, `scripts/build_split_kit.py` | `windows-developer` | `windows-designer` (dashboard) and `linux-designer` (banner) when the primary is not running |
-| `Apps/AndroidWorker/app/src/main/cpp/**`, `NativeWorker.java`, `NativeHost.java` | `android-backend` | read-only |
-| `Apps/AndroidWorker/**`, everything else | `android-developer` | `android-designer` for screen and notification presentation when the primary is not running |
-| `Apps/ComputeWorker/Sources/ComputeWorkerApp.swift`, `QRScanner.swift` | `ios-designer` | read-only |
+| `Apps/AndroidWorker/app/src/main/cpp/**`, `Apps/AndroidWorker/app/src/main/java/com/sharecompute/worker/NativeWorker.java`, `Apps/AndroidWorker/app/src/main/java/com/sharecompute/worker/NativeHost.java` | `android-backend` | read-only |
+| `Apps/AndroidWorker/**`, except the `android-backend` paths above | `android-developer` | `android-designer` for screen and notification presentation when the primary is not running |
+| `Apps/ComputeWorker/Sources/ComputeWorkerApp.swift`, `Apps/ComputeWorker/Sources/QRScanner.swift` | `ios-designer` | read-only |
 | `Apps/ComputeWorker/Worker-Bridging-Header.h` | `ios-backend` | read-only |
-| `Apps/ComputeWorker/**`, everything else | `ios-developer` | `ios-backend` for native link keys in `project.yml` |
+| `Apps/ComputeWorker/**`, except the `ios-designer` and `ios-backend` paths above | `ios-developer` | `ios-backend` for native link keys in `project.yml` |
 | `docs/evidence/**` | `tester` | **never edited** after commit, except to mask addresses and user names |
 | `.github/workflows/**` | `senior-architect` | a platform role may edit its own job in `three-device-split.yml` when no one else is in that file |
 | `CLAUDE.md`, `.claude/**`, `docs/AGENT-OWNERSHIP.md` | `senior-architect` | read-only |

@@ -35,8 +35,10 @@ switched apps. Now:
 - It takes a Wi-Fi lock only below API 34. `WIFI_MODE_FULL_HIGH_PERF` is inert from 34 on.
 - `stop()` always sends `ACTION_STOP` through `startService`. Intents arrive in order, so a fast
   Disconnect cannot be lost behind a queued START.
-- Every path through `onStartCommand` calls `startForeground` first, failures included. Skipping it
-  crashes the app.
+- Every **start** request (sent with `startForegroundService`) reaches `goForeground` before
+  anything that can fail, failures included. Skipping it crashes the app. A null intent or
+  `ACTION_STOP` arrives through plain `startService` and shuts down without it. That is correct, so
+  don't add a notification to the stop path.
 
 **Lock survival is not proven.** The F37 PASS does not record whether the phone was locked. Do not
 claim it until a run says so.
