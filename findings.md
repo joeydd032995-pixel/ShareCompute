@@ -2266,7 +2266,9 @@ Timing from this one run, laptop alone versus split:
 - **Prefill:** 3,554 ms versus 1,942 ms.
 - **Decode, 16 tokens:** 10,885 ms versus 5,489 ms.
 - **Wall time:** 15,611 ms versus 66,352 ms. The split's wall time is dominated by uploading
-  about 374 MiB of weights to the phones over Wi-Fi (the model-buffer lines in `split.log`).
+  324 MiB of weights to the phones over Wi-Fi: 118.99 MiB to Android and 205.04 MiB to the
+  iPhone. The laptop's 49.67 MiB shard stays on loopback. The `model buffer size` lines in
+  `split.log` label every worker `RPC0`; map them by port to the `using device RPCn` lines.
 
 **Verified:** this session read the uploaded `report.json`, `coordinator.log`, `split.log`,
 `baseline.log` and `laptop-worker.log`. It checked the placement lines and the single
