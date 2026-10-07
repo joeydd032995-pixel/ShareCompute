@@ -16,6 +16,8 @@ holds the routing and ownership rules you enforce.
   change requests in `findings.md`; you make the change and update the tests.
 - `Apps/InferRing/**/*.xcodeproj/**` — generated, easy to corrupt, structurally validated.
 - `CLAUDE.md` and `.claude/**` — the roster and its rules.
+- `.github/workflows/**` — CI. A platform role may edit its own job in `three-device-split.yml`
+  when no one else is in that file.
 - Specification sequencing: which phase is next, and what genuinely blocks it.
 
 ## The boundary you are guarding
@@ -52,13 +54,16 @@ Follow `.claude/skills/orchestration/SKILL.md`. The default is to do the work yo
 starts cold and re-derives context you already hold. Dispatch for genuine specialisation, genuine
 parallelism, or genuine isolation.
 
-Never run two agents whose owned paths overlap. Refuse work targeting `linux-*`, `windows-*` or
-`android-*` while their gate holds, and say what would unblock it.
+Never run two agents whose owned paths overlap. `native/split/**` is one tree for four platforms, so
+two `*-backend` roles never run in it at once. A protocol change touches `split_cluster.py`,
+`WorkerModel.swift` and `WorkerSession.java` together. Sequence that work rather than running it in
+parallel.
 
 ## Verification
 
-`CLAUDE.md` has the matrix. `ShareComputeCore` is fully testable here (`swift test`); Apple and
-Android work is not buildable in this container at all.
+`CLAUDE.md` has the matrix. `ShareComputeCore`, the split's Python and the Linux native runtime are
+fully testable here. Apple, Android and Windows builds happen only in CI. Physical devices are the
+operator's.
 
 **State what you verified and what you did not.** An architectural decision presented without its
 evidence, or with unverified work described as done, is the failure mode this project has already

@@ -25,8 +25,8 @@ than any one device.
    prohibitive.
 3. **Hardware repeatability and failure.** Repeat runs, a run with the Android phone locked
    (PR #28), and closing a phone app mid-run (expect a clean, named FAIL).
-4. **Roster.** Un-gating the `windows-*`, `linux-*` and `android-*` agent roles is the owner's
-   deliberate decision. Native workers for those platforms now exist and have run.
+4. ~~**Roster.**~~ **Done 2026-10-07, by the owner's decision.** `windows-*`, `linux-*` and
+   `android-*` are un-gated and now own the split's code. `docs/AGENT-OWNERSHIP.md` has the table.
 
 See [the three-device setup and proof guide](docs/THREE-DEVICE-MODEL-SPLIT.md).
 `Sources/ShareComputeCore` remains unchanged and dependency-free. Historical MLX and

@@ -1,6 +1,6 @@
 ---
 name: ios-designer
-description: Dispatch the ios-designer role — iOS SwiftUI screens on iPhone and iPad, touch and size-class adaptation, and the iOS presentation of ring state, contribution and errors.
+description: Dispatch the ios-designer role — the ComputeWorker pairing form and QR scanner, the Infer Ring screens on iPhone and iPad, and the iOS presentation of contribution and errors.
 argument-hint: <iOS screen or presentation work>
 disable-model-invocation: true
 context: fork
@@ -15,7 +15,7 @@ to quote a boundary back, never to relearn the role.
 
 $ARGUMENTS
 
-If that is empty, do not invent one. Report the current state of the iOS presentation in `Apps/InferRing/InferRing/Screens/**`, name the two or three
+If that is empty, do not invent one. Report the state of `ComputeWorkerApp.swift` and `QRScanner.swift`, then the iOS presentation in `Apps/InferRing/InferRing/Screens/**`, name the two or three
 things most worth doing next, and stop.
 
 You started cold: none of the calling conversation reached you. If the task leans on context you

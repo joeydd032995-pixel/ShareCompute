@@ -42,7 +42,7 @@ rounding error.
 ```
 
 ```bash
-python3 scripts/validate-agents.py    # 20 agents (9 gated), 24 skills (20 role, 3 workflow, 1 router)
+python3 scripts/validate-agents.py    # 20 agents (0 gated), 24 skills (20 role, 3 workflow, 1 router)
 ```
 
 Two things about the harnesses are easy to misread. They **mirror** the patched MLX code rather than
@@ -69,7 +69,8 @@ For the MLX patch set specifically — apply order, the compile sequence, the ne
 | Actor isolation at runtime | no | Apple hardware |
 | A ring actually forms | no | two or more real devices |
 | Any MLX patch at runtime | no | macOS; **none of the four has ever been executed** |
-| Linux / Windows / Android | no | those SDKs, and a non-MLX runtime that does not exist yet |
+| Windows / Android / iOS builds of the split | no | CI: `three-device-split.yml` builds every platform and runs the real split on Linux, Windows and the iOS simulator. Android Java can be type-checked here with `javac` |
+| The split on physical devices | no | the operator's laptop and phones. One recorded PASS, F37 |
 | Slash commands at **dispatch** | no | an interactive session. `validate-agents.py` checks the *files*, never the behaviour: not that a fork spawns the named agent, not that `background: false` blocks, not that this skill actually shadows the built-in |
 
 ## Report

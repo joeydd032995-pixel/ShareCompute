@@ -1,6 +1,6 @@
 ---
 name: ios-backend
-description: Dispatch the ios-backend role — iOS adapter behaviour covering drain-on-background, lease clamping and memory limits under Jetsam. This is where the project's central failure mode lives.
+description: Dispatch the ios-backend role — the native worker linked into ComputeWorker, what backgrounding does to it, memory limits under Jetsam, and Infer Ring's drain-on-background adapter.
 argument-hint: <iOS lifecycle or memory-pressure work>
 disable-model-invocation: true
 context: fork
@@ -15,7 +15,7 @@ to quote a boundary back, never to relearn the role.
 
 $ARGUMENTS
 
-If that is empty, do not invent one. Report the current state of the iOS lifecycle path in `RingHealthMonitor`, name the two or three
+If that is empty, do not invent one. Report the state of ComputeWorker's native link and background handling, and of the iOS lifecycle path in `RingHealthMonitor`, name the two or three
 things most worth doing next, and stop.
 
 You started cold: none of the calling conversation reached you. If the task leans on context you

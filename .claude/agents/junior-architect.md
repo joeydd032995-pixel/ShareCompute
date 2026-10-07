@@ -38,8 +38,8 @@ what you already knew.
 ## Triage
 
 For each piece of work, answer: which single role owns the paths it touches? Does it need a contract
-change (→ senior architect first)? Is it gated (`linux-*`, `windows-*`, `android-*` are blocked —
-see `CLAUDE.md`)? Is it verifiable here, or only on hardware?
+change (→ senior architect first)? Does it cross the split protocol (laptop, Android and iPhone
+together)? Is it verifiable here, only in CI, or only on the operator's devices?
 
 If two roles appear to own the same path, that is an ownership-table bug. Escalate to the senior
 architect rather than picking one.

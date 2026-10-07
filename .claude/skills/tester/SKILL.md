@@ -15,7 +15,7 @@ to quote a boundary back, never to relearn the role.
 
 $ARGUMENTS
 
-If that is empty, do not invent one. Report the current state of `Tests/ShareComputeCoreTests/**` and the harnesses in `Patches/mlx/tests/`, name the two or three
+If that is empty, do not invent one. Report the current state of `Tests/ShareComputeCoreTests/**`, the split tests in `scripts/test_split_*.py` and the harnesses in `Patches/mlx/tests/`, name the two or three
 things most worth doing next, and stop.
 
 You started cold: none of the calling conversation reached you. If the task leans on context you

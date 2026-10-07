@@ -40,10 +40,12 @@ your own context or a subagent's.
 
 Two consequences worth knowing. An active role command **forks** — the agent definition becomes the
 subagent's system prompt, so the command carries dispatch mechanics only and never role knowledge.
-A gated role command answers **inline** and spawns nothing, because fork resolution falls back to
-`general-purpose` on a bad agent name and that fallback is silent. Inline is not a tool restriction —
-the body runs with the caller's toolset — it is the option that fails **visibly**. The gate itself is
-instructional: the definitions refuse the work. See `findings.md` F19.
+Every role command forks today. A *gated* role command would instead answer **inline** and spawn
+nothing, because fork resolution falls back to `general-purpose` on a bad agent name and that
+fallback is silent. Inline is not a tool restriction — the body runs with the caller's toolset — it
+is the option that fails **visibly**. A gate is instructional: the definition refuses the work. See
+`findings.md` F19. `linux-*`, `windows-*` and `android-*` were gated this way until the native split
+ran on those platforms (F36, F37).
 
 ## Roster
 
@@ -53,25 +55,40 @@ instructional: the definitions refuse the work. See `findings.md` F19.
 | `junior-architect` | triage, briefs, `task_plan.md`, `progress.md` | sonnet |
 | `mlx-cpp-specialist` | `Patches/mlx/**` | opus |
 | `swift-concurrency-specialist` | actor isolation review across Apple code | opus |
-| `mac-designer` / `mac-developer` / `mac-backend` | macOS UI / app / adapter | sonnet |
-| `ios-designer` / `ios-developer` / `ios-backend` | iOS UI / app / adapter | sonnet |
-| `linux-*`, `windows-*`, `android-*` | **gated — see below** | sonnet |
-| `tester` | verification, `Tests/**` | sonnet |
+| `mac-designer` / `mac-developer` / `mac-backend` | macOS UI / app / adapter (Infer Ring, MLX) | sonnet |
+| `ios-designer` / `ios-developer` / `ios-backend` | iOS UI / app / native and lifecycle — ComputeWorker and Infer Ring | sonnet |
+| `linux-backend` | the native split runtime, `native/split/**`, on every platform | sonnet |
+| `linux-developer` | the laptop coordinator, relay and proof gate, `split_cluster.py` | sonnet |
+| `linux-designer` | operator-facing terminal, log and report text | sonnet |
+| `windows-developer` | the test kit, `split_launcher.py` and its packaging | sonnet |
+| `windows-designer` | the test kit's browser dashboard and first run on Windows | sonnet |
+| `windows-backend` | the native runtime on the Windows laptop: build, memory, speed | sonnet |
+| `android-developer` / `android-designer` / `android-backend` | Android worker app / its screen and notification / its JNI and native side | sonnet |
+| `tester` | verification, `Tests/**`, `docs/evidence/**` | sonnet |
+
+**Where the current objective lives.** The three-device split is `linux-*`, `windows-*`, `android-*`
+and the ComputeWorker half of `ios-*`. `mac-*`, `mlx-cpp-specialist`, `swift-concurrency-specialist`
+and the Infer Ring half of `ios-*` maintain the MLX path, which CI keeps as regression protection.
 
 ### Activation gates
 
-`linux-*`, `windows-*` and `android-*` are **blocked**. MLX is Apple-only, so until the
-specification's Phase 1a (portable IR + wire protocol) and a non-MLX execution path exist, those
-platforms have no runtime. Dispatching to them produces code nothing can execute.
+**No role is gated.** `linux-*`, `windows-*` and `android-*` were blocked while MLX was the only
+runtime. llama.cpp RPC is now the runtime on all of them: it ran across a laptop, an Android phone
+and an iPhone (F37).
 
-If asked for one of those adapters, say what the gate is and what would unblock it. Do not write
-speculative adapter code against a runtime that does not exist.
+What is still unbuilt is the specification's **membership adapter** (§12.2, §12.4, §12.5) on those
+platforms. The split runs without it, discarding a failed generation instead of re-forming. If asked
+for one, it is real work now, but it touches the contract. Start with `senior-architect`, not the
+platform role.
+
+If a gate is ever needed again, mark the role GATED and add its prefix to `GATED_PREFIXES` in
+`scripts/validate-agents.py`. Its command then answers inline and the lint enforces both.
 
 ### Prefer a specialist over a generalist
 
 When the task is narrower than any role, dispatch the **nearest role plus a narrowing brief** rather
 than adding a new file — cgroup memory accounting, `PBXFileSystemSynchronizedRootGroup` semantics,
-LiteRT delegate selection. A specialty earns its own definition once it recurs. `mlx-cpp-specialist`
+Android Doze behaviour. A specialty earns its own definition once it recurs. `mlx-cpp-specialist`
 exists because MLX internals came up three times.
 
 ## File ownership — one writer per path
@@ -86,7 +103,7 @@ Two rules from it bear directly on dispatch, so they are worth repeating here:
 - **Never run two agents whose owned paths overlap at the same time.** That is what the table is for.
 - **`Sources/ShareComputeCore/**` belongs to `senior-architect` alone.** Every other role that needs
   a contract change appends the request to `findings.md` and returns. `ShareComputeCore` importing
-  nothing is what contained both MLX spike failures without touching the core; fifteen agents editing
+  nothing is what contained both MLX spike failures without touching the core; twenty agents editing
   it concurrently would destroy that in an afternoon.
 
 ## Isolation
@@ -109,7 +126,8 @@ something in `task_plan.md`.
 
 Every definition carries the verification matrix from `CLAUDE.md`. The rule is the same for all of
 them: **state what you verified and what you did not.** This container has no macOS, no Xcode, no
-Android SDK and no Windows, so most platform work here can be written but not built. An agent that
+Android SDK and no Windows, so most platform work here can be written but not built. CI builds it,
+and only the operator's devices run it on hardware. An agent that
 returns Apple code without saying it was never type-checked has failed the task, however good the
 code is.
 
@@ -122,8 +140,17 @@ code is.
 read-only first. It can reason about isolation and run `swiftc -parse`, but **cannot** type-check —
 that needs a Mac. Expect a report, not a fix that claims to be verified.
 
-**"Build the Android adapter."** → **refuse and explain the gate.** No runtime exists for it yet.
-The unblocking work is Phase 1a, which belongs to `senior-architect`.
+**"The Android worker disconnects when the phone locks."** → `android-developer`, worktree. Owns
+`WorkerService.java`. Verifiable here only by `javac`. The APK is CI's, and the lock behaviour is a
+physical-phone test the operator runs. Say both.
+
+**"Add a field to the worker hello."** → sequence, don't parallelise. `linux-developer` first
+(`split_cluster.py` plus a test), then `android-developer` and `ios-developer`. It is one protocol
+in three languages.
+
+**"Build the Android membership adapter."** → `senior-architect` first. The runtime exists now, but
+wiring `ShareComputeCore` into a non-Swift app is a contract and architecture decision before it is
+platform work.
 
 **"Split the layer planner so each platform can tune it."** → `senior-architect` only. It is the
 shared contract; no platform agent may touch it.
