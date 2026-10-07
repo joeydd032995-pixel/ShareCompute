@@ -11,9 +11,11 @@ Windows/Linux signing and sideloading remain an operator setup step.
 
 The implementation uses a pinned llama.cpp CPU runtime, disjoint layer placement,
 per-worker RPC buffer budgets, authenticated TLS reverse tunnels, and a bounded
-subprocess that discards failed generations. Linux loopback computation has passed;
-platform CI and physical-device evidence are separate gates. Nothing here claims a
-single shared 20 GB address space or a completed physical-device test.
+subprocess that discards failed generations. Linux loopback computation, platform CI and
+**a physical-device run have all passed**: on 2026-10-07 the operator's Windows laptop, Android
+phone and iPhone produced a PASS report with baseline-identical tokens (F37,
+`docs/evidence/physical-three-device/`). That is one 16-token run of a 0.5B model. Nothing here
+claims a single shared 20 GB address space, a model larger than one device, or hardware failure handling.
 
 See [the three-device setup and proof guide](docs/THREE-DEVICE-MODEL-SPLIT.md).
 `Sources/ShareComputeCore` remains unchanged and dependency-free. Historical MLX and

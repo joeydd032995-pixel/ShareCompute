@@ -205,4 +205,5 @@ trusted client: the paired laptop can supply native graph instructions and must 
 trusted. This is not a hostile multi-tenant compute sandbox.
 
 Local execution evidence is under [evidence/three-device-split](evidence/three-device-split/).
-The final acceptance gate remains a PASS from your actual three devices.
+A physical PASS from an actual laptop, Android phone and iPhone is recorded in
+[evidence/physical-three-device](evidence/physical-three-device/) (F37).

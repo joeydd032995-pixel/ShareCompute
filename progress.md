@@ -674,3 +674,19 @@ Physical-device validation remains an operator step; see the three-device guide.
 Implemented a frozen laptop launcher with checksum-verified model download, private localhost dashboard, QR pairing, start/stop, sanitized report export, and a single-instance data lock. Added an ARM64 Android APK using the same native worker and pinned TLS reverse tunnel; both native phone apps now scan the laptop QR. Added Windows/Linux kit packaging and CI execution of the frozen executable against the real model. Local launcher tests and protocol tests pass; a frozen Linux three-process 16-token run passed with layers 0–4 / 5–16 / 17–24 and 16 graph calls per worker. Physical phones remain the user hardware validation gate. iPhone installation still requires external signing/device trust, with no owned Mac required.
 
 Final test-kit CI passed all seven jobs at https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/36526074904 (source cca346a). Windows and Linux frozen executables each passed the real 16-token, three-process split test. iOS simulator passed the QR payload decode plus actual native 24-token computation. Android APK includes libsc-android.so and the native/ZXing notices, with only Android system shared-library dependencies. Local packaged dashboard start, verified model reuse, native worker join, QR/code endpoints, stop, credential-free report export, and clean quit passed. Direct matching downloads are in docs/TEST-KIT-QUICKSTART.md. Physical laptop + Android + iPhone evidence is still required from the operator.
+
+## Physical three-device PASS — 2026-10-07
+
+The operator's Windows laptop, Android phone and iPhone ran the test kit over home Wi-Fi and the
+coordinator reported **PASS** in physical-LAN mode:
+- **Layers:** 0–4 / 5–16 / 17–24.
+- **Compute:** 16 graph calls on each worker.
+- **Tokens:** 16/16 identical to the laptop-only baseline.
+
+The masked report and logs are in `docs/evidence/physical-three-device/`, and the analysis is F37.
+Getting there took three fixes from this session:
+- **PR #26:** readable iPhone and laptop join and disconnect errors.
+- **PR #27:** the laptop Wi-Fi address shown in the terminal and pre-filled in the dashboard.
+- **PR #28:** an Android foreground service, so the phone may lock.
+
+The run also needed the operator to install the QR-capable iPhone build instead of an older IPA.
