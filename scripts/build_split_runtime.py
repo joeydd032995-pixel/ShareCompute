@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 REV = (ROOT / 'native/split/llama-revision.txt').read_text().strip()
@@ -18,12 +19,19 @@ def patched_tree(source, patches):
     """The tree HEAD becomes with these patches applied, built in a scratch index."""
     index = source / '.git' / 'sc-patch-index'
     env = {**os.environ, 'GIT_INDEX_FILE': str(index)}
-    try:
-        subprocess.run(['git', 'read-tree', 'HEAD'], cwd=source, env=env, check=True)
-        if patches: subprocess.run(['git', 'apply', '--cached', *map(str, patches)], cwd=source, env=env, check=True)
-        return subprocess.check_output(['git', 'write-tree'], cwd=source, env=env, text=True).strip()
-    finally:
-        index.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory() as scratch:
+        # The index holds LF blobs, but Git for Windows checks these .patch files out with CRLF
+        # (and the llama.cpp working copy too, which is why the real apply below still matches).
+        lf = []
+        for patch in patches:
+            copy = Path(scratch) / patch.name
+            copy.write_bytes(patch.read_bytes().replace(b'\r\n', b'\n')); lf.append(str(copy))
+        try:
+            subprocess.run(['git', 'read-tree', 'HEAD'], cwd=source, env=env, check=True)
+            if lf: subprocess.run(['git', 'apply', '--cached', *lf], cwd=source, env=env, check=True)
+            return subprocess.check_output(['git', 'write-tree'], cwd=source, env=env, text=True).strip()
+        finally:
+            index.unlink(missing_ok=True)
 
 def apply_patches(source):
     """Bring the checkout to HEAD plus every patch, from HEAD or from any earlier prefix of them."""
