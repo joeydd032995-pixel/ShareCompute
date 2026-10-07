@@ -10,7 +10,7 @@ final class NativeHost {
     private static long budget;
     private NativeHost() {}
 
-    static synchronized int ensure(long requested, Exit onExit) throws Exception {
+    static synchronized int ensure(long requested, String cacheDir, Exit onExit) throws Exception {
         if (port != 0) {
             if (budget != requested) throw new Exception("Restart the app to change its memory budget");
             return port;
@@ -18,7 +18,7 @@ final class NativeHost {
         try (ServerSocket probe = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) { port = probe.getLocalPort(); }
         budget = requested;
         final int chosen = port;
-        new Thread(() -> onExit.exited(NativeWorker.run(chosen, requested)), "native-worker").start();
+        new Thread(() -> onExit.exited(NativeWorker.run(chosen, requested, cacheDir)), "native-worker").start();
         return port;
     }
 }

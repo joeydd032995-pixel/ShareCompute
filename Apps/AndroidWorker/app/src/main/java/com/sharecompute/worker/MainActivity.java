@@ -14,6 +14,7 @@ import com.google.zxing.common.HybridBinarizer;
 public final class MainActivity extends Activity implements SurfaceHolder.Callback {
     private EditText code;
     private TextView status;
+    private TextView cached;
     private Camera camera;
     private SurfaceView preview;
     private boolean scanning;
@@ -32,6 +33,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         code=new EditText(this); code.setHint("Or paste pairing code"); code.setText(text); code.setMaxLines(5); code.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); layout.addView(code);
         Button connect=new Button(this); connect.setText("Connect"); layout.addView(connect); connect.setOnClickListener(v->connect());
         Button stop=new Button(this); stop.setText("Disconnect"); layout.addView(stop); stop.setOnClickListener(v->WorkerService.stop(this));
+        cached=new TextView(this); layout.addView(cached); refreshCache();
+        Button clear=new Button(this); clear.setText("Clear cached model data"); layout.addView(clear);
+        clear.setOnClickListener(v->{ long freed=WeightCache.clear(this); refreshCache(); status.setText("Cleared "+(freed/1048576)+" MiB. The next test uploads the model again."); });
         status=new TextView(this); status.setTextSize(18); layout.addView(status); WorkerService.observe(this::showStatus);
         getWindow().getDecorView().setOnApplyWindowInsetsListener((v,insets)->{layout.setPadding(28,28+insets.getSystemWindowInsetTop(),28,28+insets.getSystemWindowInsetBottom());return insets;});
     }
@@ -43,8 +47,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},2);
         try { WorkerService.start(this,text); } catch(Exception e) { status.setText("Could not start the worker: "+e.getMessage()); }
     }
-    private void showStatus(String message) { if(status!=null) status.setText(message); }
-    @Override protected void onStart() {super.onStart();WorkerService.observe(this::showStatus);}
+    // Status arrives as runs start, progress and end, so the cache total follows each run without its own timer.
+    private void showStatus(String message) { if(status!=null) status.setText(message); refreshCache(); }
+    private void refreshCache() { if(cached!=null) cached.setText("Cached model data: "+(WeightCache.bytes(this)/1048576)+" MiB. Repeat tests with the same model reuse it."); }
+    @Override protected void onStart() {super.onStart();WorkerService.observe(this::showStatus);refreshCache();}
     // The worker service keeps computing in the background; only the camera is released here.
     @Override protected void onStop() {super.onStop();WorkerService.observe(null);releaseCamera();}
     @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] grants) {

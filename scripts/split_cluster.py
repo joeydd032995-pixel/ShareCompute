@@ -23,6 +23,13 @@ ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
 REV = (ROOT / 'native/split/llama-revision.txt').read_text().strip()
 NODES = ('laptop', 'android', 'iphone')
 PROMPT = 'The capital of France is'
+CORE_STATS = ('allocated_bytes', 'peak_bytes', 'graph_calls')
+# Weight-cache counters. Optional on the wire so a phone app built before the cache still joins.
+CACHE_STATS = ('cache_hit_bytes', 'cache_stored_bytes', 'cache_rejected')
+
+def cache_delta(before, after):
+    """Cache activity during one run. Phone workers outlive runs, so their counters are cumulative."""
+    return {k: after.get(k, 0) - before.get(k, 0) for k in CACHE_STATS}
 
 def private_json(path, obj):
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -134,7 +141,7 @@ class Relay:
                     raise ValueError('Runtime or memory budget mismatch')
                 control = True
                 record = {'writer': writer, 'hello': hello, 'peer': writer.get_extra_info('peername')[0],
-                          'stats': {'allocated_bytes': 0, 'peak_bytes': 0, 'graph_calls': 0}, 'bytes': [0, 0]}
+                          'stats': dict.fromkeys(CORE_STATS + CACHE_STATS, 0), 'bytes': [0, 0]}
                 self.nodes[node] = record
                 listener = await asyncio.start_server(lambda r, w: self.forward(node, r, w), '127.0.0.1', 0)
                 self.listeners.append(listener)
@@ -144,7 +151,7 @@ class Relay:
                 while True:
                     message = await receive(reader)
                     if message.get('op') != 'stats': raise ValueError('Expected telemetry heartbeat')
-                    stats = {k: message.get(k) for k in record['stats']}
+                    stats = {k: message.get(k) for k in CORE_STATS} | {k: message.get(k, 0) for k in CACHE_STATS}
                     if any(type(v) is not int or v < 0 for v in stats.values()): raise ValueError('Invalid telemetry')
                     record['stats'] = stats
             elif kind == 'data':
@@ -213,9 +220,10 @@ def check_binary(path):
         raise RuntimeError('Native binary revision does not match this checkout')
 
 class Worker:
-    def __init__(self, pair, binary, log):
+    def __init__(self, pair, binary, log, cache_dir=None):
         self.pair = pair; self.binary = str(Path(binary).resolve()); self.log = log
-        self.stats = {'allocated_bytes': 0, 'peak_bytes': 0, 'graph_calls': 0}
+        self.cache_dir = cache_dir  # None leaves the native weight cache off
+        self.stats = dict.fromkeys(CORE_STATS + CACHE_STATS, 0)
         self.proc = None; self.channels = set(); self.data_failed = asyncio.Event()
 
     async def tunnel(self, channel):
@@ -239,7 +247,8 @@ class Worker:
         self.log.parent.mkdir(parents=True, exist_ok=True)
         with self.log.open('w', encoding='utf-8') as log:
             try:
-                self.proc = await asyncio.create_subprocess_exec(self.binary, str(self.port), str(self.pair['budget_mib']), '2',
+                cache = [str(Path(self.cache_dir).resolve())] if self.cache_dir else []
+                self.proc = await asyncio.create_subprocess_exec(self.binary, str(self.port), str(self.pair['budget_mib']), '2', *cache,
                                                                  stdout=asyncio.subprocess.PIPE, stderr=log)
                 async def telemetry():
                     while line := await self.proc.stdout.readline():
@@ -349,7 +358,9 @@ async def run_coordinator(a):
         (out / 'pairing-ready').write_text(str(directory))
         for node in (NODES if a.mode == 'loopback' else ('laptop', 'android') if a.mode == 'simulator' else ('laptop',)):
             pair = dict(config['nodes'][node]); pair['host'] = '127.0.0.1'; pair['port'] = relay.port
-            worker = Worker(pair, a.worker_binary, out / f'{node}-worker.log'); workers[node] = worker
+            cache_dir = getattr(a, 'cache_dir', None)
+            worker = Worker(pair, a.worker_binary, out / f'{node}-worker.log', cache_dir and Path(cache_dir) / node)
+            workers[node] = worker
             task = asyncio.create_task(worker.run()); tasks.append(task)
             def ended(t, n=node):
                 if not t.cancelled() and t.exception(): relay.fail(f'{n}: {t.exception()}')
@@ -362,6 +373,7 @@ async def run_coordinator(a):
         cfg = {'model': str(a.model.resolve()), 'prompt': a.prompt, 'tokens': a.tokens, 'endpoints': [], 'shares': []}
         baseline, _ = await probe(a.probe_binary, cfg, out, 'baseline', a.timeout, relay)
         before = {n: relay.nodes[n]['stats']['graph_calls'] for n in NODES}
+        cache_before = {n: dict(relay.nodes[n]['stats']) for n in NODES}
         if a.kill_worker:
             if a.kill_worker not in workers: raise ValueError('Fault target is not a locally managed worker')
             async def inject():
@@ -376,6 +388,7 @@ async def run_coordinator(a):
         await asyncio.sleep(.8) # Allow final counters to traverse the heartbeat connection.
         if relay.failure.is_set(): raise RuntimeError(relay.reason)
         report['workers'] = validate_proof(baseline, result, log, relay.nodes, before, physical)
+        for n in NODES: report['workers'][n]['cache'] = cache_delta(cache_before[n], relay.nodes[n]['stats'])
         report['generation'] = result; report['matches_baseline'] = True
         with a.model.open('rb') as f: report['model_sha256'] = hashlib.file_digest(f, 'sha256').hexdigest()
         report['status'] = 'PASS'
@@ -404,6 +417,8 @@ def main():
         p.add_argument('--join-timeout', type=float, default=180); p.add_argument('--timeout', type=float, default=300)
         p.add_argument('--budgets', nargs=3, type=int, default=[768,2048,1536])
         p.add_argument('--kill-worker', choices=NODES if mode == 'loopback' else ['android'] if mode == 'simulator' else [], default=None)
+        p.add_argument('--cache-dir', type=Path, default=None,
+                       help='Give each worker this process starts a weight cache under DIR/<node>. Phones manage their own.')
     a = parser.parse_args()
     if a.mode == 'init': init_cluster(a.dir, a.host, a.port, a.budgets); print(f'Pairing files created in {a.dir}'); return 0
     if a.mode == 'worker':

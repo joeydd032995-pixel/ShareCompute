@@ -152,6 +152,13 @@ final class WorkerModel: ObservableObject {
     @Published var allocated: UInt64 = 0
     @Published var peak: UInt64 = 0
     @Published var graphs: UInt64 = 0
+    @Published var cachedBytes: UInt64 = 0
+    @Published var cacheHits: UInt64 = 0
+    /// Weights the laptop sent before, so a repeat run with the same model skips most of the upload.
+    /// The native worker checks each file against its hash before use; iOS may purge Caches when
+    /// storage runs low, which only costs a re-upload.
+    static let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("rpc-weights", isDirectory: true)
     private var runner: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
     private var channels: [String: Task<Void, Never>] = [:]
@@ -189,8 +196,10 @@ final class WorkerModel: ObservableObject {
             }
             if nativePort == nil {
                 let port = UInt16.random(in: 20000...30000); nativePort = port; nativeBudget = pair.budget_mib
+                let cachePath = Self.cacheDirectory.path
                 Thread.detachNewThread {
-                    let result = sc_worker_run(Int32(port), pair.budget_mib * 1_048_576, 2)
+                    // sc_worker_run never returns while healthy, so the C string outlives the server.
+                    let result = cachePath.withCString { sc_worker_run(Int32(port), pair.budget_mib * 1_048_576, 2, $0) }
                     Task { @MainActor [weak self] in self?.stop("Native worker exited (\(result)); restart the app") }
                 }
             }
@@ -204,6 +213,20 @@ final class WorkerModel: ObservableObject {
         } catch { status = "Invalid pairing file: \(error.localizedDescription)" }
     }
 
+    func refreshCacheSize() {
+        let files = (try? FileManager.default.contentsOfDirectory(at: Self.cacheDirectory, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        cachedBytes = files.reduce(0) { $0 + UInt64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+    }
+
+    /// Safe while connected: a file deleted mid-run reads as a miss and the laptop sends it again.
+    func clearCache() {
+        let before = cachedBytes
+        let files = (try? FileManager.default.contentsOfDirectory(at: Self.cacheDirectory, includingPropertiesForKeys: nil)) ?? []
+        for file in files { try? FileManager.default.removeItem(at: file) }
+        refreshCacheSize()
+        status = "Cleared \((before - min(before, cachedBytes)) / 1_048_576) MiB. The next test uploads the model again."
+    }
+
     func stop(_ message: String) {
         print("SC_IOS \(message)")
         epoch = UUID(); running = false; status = message
@@ -212,6 +235,7 @@ final class WorkerModel: ObservableObject {
         for stream in streams.values { stream.close() }
         streams.removeAll(); channels.removeAll()
         UIApplication.shared.isIdleTimerDisabled = false
+        refreshCacheSize()
     }
     private func registered(_ stream: Stream) -> UUID { let id = UUID(); streams[id] = stream; return id }
 
@@ -251,8 +275,12 @@ final class WorkerModel: ObservableObject {
             do {
                 while !Task.isCancelled {
                     self.allocated = sc_worker_allocated(); self.peak = sc_worker_peak(); self.graphs = sc_worker_graphs()
+                    self.cacheHits = sc_worker_cache_hit_bytes()
                     try await control.sendJSON(["op": "stats", "allocated_bytes": self.allocated,
-                                                "peak_bytes": self.peak, "graph_calls": self.graphs])
+                                                "peak_bytes": self.peak, "graph_calls": self.graphs,
+                                                "cache_hit_bytes": self.cacheHits,
+                                                "cache_stored_bytes": sc_worker_cache_stored_bytes(),
+                                                "cache_rejected": sc_worker_cache_rejected()])
                     try await Task.sleep(nanoseconds: 500_000_000)
                 }
             } catch { if self.epoch == current && !Task.isCancelled { self.stop("Heartbeat failed") } }
