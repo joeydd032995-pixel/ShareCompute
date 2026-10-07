@@ -2325,10 +2325,11 @@ Three properties of the shipped cache made it unfit for phones as it stands:
 
 - It lowers the threshold to 1 MiB. This is a client-side constant, and the protocol is unchanged.
 - It writes `<hash>.partial` and renames it into place.
-- It re-hashes every file before calling it a hit. A file that fails is deleted, counted and
-  answered as a miss, so the client resends it.
-- It reads a hit straight into the tensor's host buffer, avoiding a second copy of a large tensor
-  on a phone.
+- It verifies every file before touching tensor memory. Each file must fit inside its tensor, not
+  merely its buffer: an over-long file would otherwise spill into the next tensor, which the
+  client's resend never repairs. The file must also hash correctly. It is hashed in 1 MiB chunks, so
+  a phone never holds a second copy of a large tensor, and only then read into place. A file that
+  fails is deleted, counted and answered as a miss, so the client resends it.
 - It exports hit, stored and rejected counters, which flow through `SC_STATS`, both phone apps'
   telemetry and `report.json` (per worker, as a delta for the run).
 
@@ -2339,7 +2340,7 @@ workers given a cache directory and 16 tokens per run:
 |---|---|
 | Cold | PASS; every worker stored files, none hit |
 | Warm | PASS, tokens equal to baseline. Bytes to each worker: laptop 52,440,460 → 6,845,478; Android 125,378,346 → 16,175,106 (−87%); iPhone 215,447,670 → 9,443,194 (−96%) |
-| Damaged | One Android file had a byte flipped and another was cut to half. PASS, with Android `cache_rejected = 2` and both files re-stored |
+| Damaged | Three Android files damaged: a byte flipped, a file cut to half, 1 MiB of junk appended. PASS, with Android `cache_rejected = 3` and all re-stored. The worker log names each cause: two "contents do not match the hash", one "larger than its tensor" |
 | Healed | PASS, zero rejected, zero stored |
 
 **Matched control, the defect pinned.** I built the same tree with only the two hash comparisons
@@ -2376,6 +2377,14 @@ offsets):
   CI's `desktop (windows-latest)` job running the same scenarios.
 - **Kill mid-write.** Not reproduced directly. The damaged-file run simulates its result, a truncated
   file, rather than killing a worker during `ofstream::write`.
+- **The over-long-file corruption itself is not pinned.** The first version of the patch read a hit
+  into place before checking it. A review found that an appended file could overwrite the next
+  tensor. Re-running that build with three recently written files extended still passed, because
+  this loader uploads tensors in memory order and later uploads overwrite the spill. The defect
+  depends on load order and has no visible symptom with this model. The test now covers the
+  rejection, and the code no longer writes before verifying.
+- **A file rewritten between the verify pass and the read pass.** It would be loaded unverified.
+  Only this worker writes that directory, and it serves one request at a time.
 - **Collisions.** FNV-1a 64 is not collision-resistant. An accidental collision across a few hundred
   tensors is negligible; a deliberate one requires write access to the app's private cache
   directory.

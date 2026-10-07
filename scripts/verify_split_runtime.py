@@ -52,14 +52,16 @@ def verify_cache(base, root):
     print('VERIFIED cache-warm ' + ', '.join(f"{n} {cold[n]['bytes_to_worker']}->{w['bytes_to_worker']} bytes"
                                             for n, w in warm.items()), flush=True)
 
-    # A flipped byte and a file cut short, as a phone killed mid-write could leave. Both must be
-    # rejected and re-sent; neither may reach the model.
+    # A flipped byte and a file cut short, as a phone killed mid-write could leave, plus a file
+    # with junk appended, which must not spill into the next tensor. All three must be rejected
+    # and re-sent; none may reach the model.
     files = sorted((f for f in (cache / 'android').iterdir() if f.is_file()), key=lambda f: f.stat().st_size, reverse=True)
-    flipped, truncated = files[0], files[1]
+    flipped, truncated, extended = files[0], files[1], files[2]
     data = bytearray(flipped.read_bytes()); data[len(data) // 2] ^= 0xFF; flipped.write_bytes(data)
     with truncated.open('r+b') as f: f.truncate(truncated.stat().st_size // 2)
+    with extended.open('ab') as f: f.write(b'\xff' * (1 << 20))
     damaged = run_split(base, root / 'cache-damaged', '--cache-dir', str(cache))
-    assert damaged['android']['cache']['cache_rejected'] == 2, damaged['android']
+    assert damaged['android']['cache']['cache_rejected'] == 3, damaged['android']
     assert damaged['android']['cache']['cache_stored_bytes'] > 0, damaged['android']
     assert all(damaged[n]['cache']['cache_rejected'] == 0 for n in ('laptop', 'iphone')), damaged
     print('VERIFIED cache-damaged', flush=True)

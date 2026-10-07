@@ -15,6 +15,8 @@ This kit is for a 4 GB laptop, 8 GB Android phone, and 8 GB iPhone. It splits on
 
 Both packaged laptop executables passed real-model three-process inference tests in CI, and the iPhone app passed native inference in the iOS simulator. On 2026-10-07 this kit passed on a real Windows laptop, Android phone and iPhone ([evidence](evidence/physical-three-device/)). These artifacts expire on 2027-01-02; a later successful run of the same workflow on `main` produces replacements.
 
+**The linked `4e2ce7e` build predates the phone weight cache** (PR #31). To get it, take all four downloads from the newest successful [Native three-device model split](https://github.com/joeydd032995-pixel/ShareCompute/actions/workflows/three-device-split.yml?query=branch%3Amain) run on `main` after PR #31 merged, until the links above are updated.
+
 ## First use
 
 1. Download the **ShareCompute-Windows** or **ShareCompute-Linux** kit from the linked successful build. Extract the artifact ZIP, then the kit ZIP inside it. Keep the entire `ShareCompute` folder together. Windows 10/11 x86-64: double-click `Start.cmd`. Linux x86-64 (Ubuntu 24.04 or newer): run `sh Start.sh` (if permissions were lost, first run `chmod +x ShareCompute`). Your browser opens the local dashboard.
@@ -25,7 +27,7 @@ If Windows asks about network access, permit the launcher on your private networ
 
 ## Every later test
 
-Open the laptop launcher, click **Start test**, then scan/connect both phone apps. The model is reused. Each phone also keeps the model data it was sent, so a repeat test with the same model uploads only a small fraction over Wi-Fi and starts much sooner; the first test after installing, clearing, or changing the model still uploads everything. Both apps show how much is cached and have a **Clear cached model data** button. If the iPhone signature expired, refresh it in SideStore first. No development environment is required. Tap Connect again after a test disconnects.
+Open the laptop launcher, click **Start test**, then scan/connect both phone apps. The model is reused. With phone apps built after the weight cache landed (PR #31; see Downloads), each phone also keeps the model data it was sent, so a repeat test with the same model uploads only a small fraction over Wi-Fi and starts much sooner; the first test after installing, clearing, or changing the model still uploads everything. Both apps show how much is cached and have a **Clear cached model data** button. If the iPhone signature expired, refresh it in SideStore first. No development environment is required. Tap Connect again after a test disconnects.
 
 ## What PASS means
 

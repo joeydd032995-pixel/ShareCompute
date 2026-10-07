@@ -13,7 +13,7 @@ index 13860ed..bc1e400 100644
  // backend API
  GGML_BACKEND_API ggml_backend_t ggml_backend_rpc_init(const char * endpoint, uint32_t device);
 diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
-index 9f687ee..468dad0 100644
+index 9f687ee..3aa3084 100644
 --- a/ggml/src/ggml-rpc/ggml-rpc.cpp
 +++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
 @@ -85,7 +85,15 @@ enum rpc_cmd {
@@ -107,7 +107,7 @@ index 9f687ee..468dad0 100644
      // sanitize tensor->data
      {
          const size_t p0 = (size_t) ggml_backend_buffer_get_base(tensor->buffer);
-@@ -1553,12 +1597,29 @@ bool rpc_server::set_tensor_hash(const rpc_msg_set_tensor_hash_req & request, rp
+@@ -1553,12 +1597,54 @@ bool rpc_server::set_tensor_hash(const rpc_msg_set_tensor_hash_req & request, rp
          if (request.tensor.data + request.offset < p0
           || request.tensor.data + request.offset >= p1
           || size > (p1 - request.tensor.data - request.offset)) {
@@ -117,22 +117,47 @@ index 9f687ee..468dad0 100644
 +            return reject("size does not fit the tensor");
 +        }
 +    }
++    // A cached chunk can never be longer than what is left of its tensor. The buffer bound above
++    // is not enough: an over-long file would spill into the next tensor in the same buffer.
++    if (request.offset > ggml_nbytes(tensor) || size > ggml_nbytes(tensor) - request.offset) {
++        return reject("larger than its tensor");
++    }
 +    std::ifstream ifs(cache_file, std::ios::binary);
-+    if (ggml_backend_buffer_is_host(tensor->buffer)) {
-+        // Read straight into place: on a phone, a second copy of a large tensor can trip the OS
-+        // memory killer. A rejected read leaves junk here, which the client's resend overwrites.
-+        uint8_t * dst = (uint8_t *) tensor->data + request.offset;
-+        ifs.read((char *) dst, size);
-+        if (!ifs || (size_t) ifs.gcount() != size || fnv_hash(dst, size) != request.hash) {
++    {
++        // Verify the whole file before touching live tensor memory, in chunks so a phone never
++        // holds a second copy of a large tensor. A rejected file leaves the tensor unmodified.
++        std::vector<uint8_t> chunk(std::min<size_t>(size, 1 << 20));
++        uint64_t hash = fnv_hash(nullptr, 0);
++        size_t seen = 0;
++        while (seen < size) {
++            const size_t want = std::min(chunk.size(), size - seen);
++            ifs.read((char *) chunk.data(), want);
++            if ((size_t) ifs.gcount() != want) {
++                break;
++            }
++            hash = fnv_hash(chunk.data(), want, hash);
++            seen += want;
++        }
++        if (seen != size || ifs.peek() != std::ifstream::traits_type::eof() || hash != request.hash) {
 +            ifs.close(); // Windows cannot delete a file that is still open
 +            return reject("contents do not match the hash");
++        }
++    }
++    ifs.clear();
++    ifs.seekg(0);
++    if (ggml_backend_buffer_is_host(tensor->buffer)) {
++        ifs.read((char *) tensor->data + request.offset, size);
++        if ((size_t) ifs.gcount() != size) {
++            // Changed between the two passes. The client resends this exact region.
++            ifs.close();
++            return reject("changed while being read");
 +        }
 +    } else {
 +        std::vector<uint8_t> cached_file(size);
 +        ifs.read((char *) cached_file.data(), size);
-+        if (!ifs || (size_t) ifs.gcount() != size || fnv_hash(cached_file.data(), size) != request.hash) {
-+            ifs.close(); // Windows cannot delete a file that is still open
-+            return reject("contents do not match the hash");
++        if ((size_t) ifs.gcount() != size || fnv_hash(cached_file.data(), size) != request.hash) {
++            ifs.close();
++            return reject("changed while being read");
          }
 +        ggml_backend_tensor_set(tensor, cached_file.data(), request.offset, size);
      }
