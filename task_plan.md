@@ -11,9 +11,22 @@ Windows/Linux signing and sideloading remain an operator setup step.
 
 The implementation uses a pinned llama.cpp CPU runtime, disjoint layer placement,
 per-worker RPC buffer budgets, authenticated TLS reverse tunnels, and a bounded
-subprocess that discards failed generations. Linux loopback computation has passed;
-platform CI and physical-device evidence are separate gates. Nothing here claims a
-single shared 20 GB address space or a completed physical-device test.
+subprocess that discards failed generations. Linux loopback computation, platform CI
+and a physical run on the operator's laptop, Android phone and iPhone have all passed (F37,
+2026-10-07). Nothing here claims a single shared 20 GB address space or a model larger
+than any one device.
+
+**Next steps after the physical PASS, in order:**
+1. **Capacity.** Run a model the 4 GB laptop cannot load alone, such as a 3B Q4 model of about
+   1.9 GB, with a laptop-only run expected to fail. This is the first test of the actual reason
+   for pooling. Risk: iOS memory limits under the larger iPhone share.
+2. **Weight caching.** Enable llama.cpp's RPC tensor cache on each worker. About 60 of the 66 s
+   physical wall time was uploading weights over Wi-Fi, and a larger model makes that cost
+   prohibitive.
+3. **Hardware repeatability and failure.** Repeat runs, a run with the Android phone locked
+   (PR #28), and closing a phone app mid-run (expect a clean, named FAIL).
+4. **Roster.** Un-gating the `windows-*`, `linux-*` and `android-*` agent roles is the owner's
+   deliberate decision. Native workers for those platforms now exist and have run.
 
 See [the three-device setup and proof guide](docs/THREE-DEVICE-MODEL-SPLIT.md).
 `Sources/ShareComputeCore` remains unchanged and dependency-free. Historical MLX and

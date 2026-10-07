@@ -2237,3 +2237,58 @@ This proves multi-process model splitting, not yet physical three-device executi
 and not the ability to fit a model larger than a single device. Android/iOS build and
 native iOS simulator execution are separate CI gates. The final acceptance report
 must come from the operator's actual laptop, Android, and iPhone.
+
+## F37 — The split passes on the operator's physical laptop, Android phone and iPhone
+
+Date reported: 2026-10-07. Evidence: `docs/evidence/physical-three-device/`, with phone LAN
+addresses and the Windows user name masked and nothing else changed.
+
+The standalone kit ran on the operator's Windows laptop (AMD A9-9420e, 4 GB), an 8 GB Android
+phone, and an 8 GB iPhone sideloaded through SideStore, all on one home Wi-Fi network. The
+coordinator's `report.json` reads `"status": "PASS"`, `"physical_devices": true` and
+`"scope": "physical-LAN"`. Every condition the F36 gate (`validate_proof` in
+`scripts/split_cluster.py`) checks in physical mode held:
+
+- **Placement:** disjoint layers, laptop 0–4, Android 5–16, iPhone 17–24 (`split.log`,
+  `load_tensors: layer N assigned to device RPCk`).
+- **Native compute and allocation:** 16 graph calls and non-zero peak RPC buffers on each worker.
+- **Traffic:** non-zero bytes in both directions through every authenticated tunnel.
+- **Platform reports:** `android` and `ios` workers, neither flagged as a simulator, at distinct
+  non-loopback LAN addresses.
+- **Tokens:** the 16 greedy token IDs are identical to the laptop-only baseline. The mixed-CPU
+  near-tie risk named in the guide did not occur on this prompt.
+
+The peak RPC buffers, 59,005,184 / 133,527,296 / 257,146,368 bytes, equal the F36 Linux loopback
+run to the byte. Placement and allocation for this model are deterministic across x86-64 Windows,
+ARM Android and ARM iOS.
+
+Timing from this one run, laptop alone versus split:
+- **Prefill:** 3,554 ms versus 1,942 ms.
+- **Decode, 16 tokens:** 10,885 ms versus 5,489 ms.
+- **Wall time:** 15,611 ms versus 66,352 ms. The split's wall time is dominated by uploading
+  324 MiB of weights to the phones over Wi-Fi: 118.99 MiB to Android and 205.04 MiB to the
+  iPhone. The laptop's 49.67 MiB shard stays on loopback. The `model buffer size` lines in
+  `split.log` label every worker `RPC0`; map them by port to the `using device RPCn` lines.
+
+**Verified:** this session read the uploaded `report.json`, `coordinator.log`, `split.log`,
+`baseline.log` and `laptop-worker.log`. It checked the placement lines and the single
+`SC_RESULT` line in each probe log against the report. After masking, `grep -rhoE
+'192\.168\.[0-9.]+|anton' docs/evidence/physical-three-device` returns nothing.
+
+**Not verified:**
+- **Provenance:** none of this was run by this session. The files are operator uploads.
+- **Identity:** platform and simulator flags are worker reports, not attestation.
+- **Build:** the kit's commit is not recorded in the report. The runtime revision `4da6337…`
+  matches every build since F36.
+- **Android background survival:** the report does not say whether the phone was locked, so the
+  PR #28 foreground service is not shown to work.
+- **Scope:** one prompt, 16 tokens, one run, a 0.5B model. This does not show a model larger than
+  any single device. No hardware failure path was exercised: worker death and allocation refusal
+  remain loopback-only.
+- **Speed:** the faster split decode is a single sample on a weak laptop CPU, not a benchmark.
+
+**Consequence:** the physical-device acceptance gate for the current objective is met. The open
+questions are no longer whether native split inference works across the three platforms. They
+are capacity (a model too large for one device), repeatability across prompts and longer
+generations, failure handling on real hardware, and Wi-Fi transport cost, which is now the dominant
+term in wall time.
