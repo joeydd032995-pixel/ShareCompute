@@ -38,6 +38,7 @@ def main():
     suffix='.exe' if os.name=='nt' else ''
     command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--name','ShareCompute','--paths',str(ROOT/'scripts'),'--distpath',str(ROOT/'dist'),'--workpath',str(ROOT/'build/pyinstaller'),'--specpath',str(ROOT/'build'),
         '--add-data',str(ROOT/'native/split/llama-revision.txt')+':native/split',
+        '--add-data',str(ROOT/'native/split/reference-capacity.json')+':native/split',
         '--add-data',str(stage/'phone-downloads.json')+':.', '--add-data',str(licenses)+':licenses']
     for name in ('sc-rpc-worker','sc-split-probe'):command+=['--add-binary',str(a.bin_dir.resolve()/(name+suffix))+':bin']
     command+=[str(ROOT/'scripts/split_launcher.py')];subprocess.run(command,check=True)

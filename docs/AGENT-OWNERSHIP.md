@@ -21,7 +21,7 @@ This is the rule that makes parallel work safe. The shared contract is the colli
 | `Apps/InferRing/InferRing/Screens/**` | `mac-designer` | see the shared-tree rule below |
 | `Apps/InferRing/**/*.xcodeproj/**` | `senior-architect` | read-only |
 | `native/split/**`, `scripts/build_split_runtime.py` | `linux-backend` | see the shared-native-tree rule below |
-| `scripts/split_cluster.py`, `scripts/test_split_cluster.py`, `scripts/verify_split_runtime.py`, `scripts/download_split_model.py`, `scripts/verify_ios_simulator.py` | `linux-developer` | `linux-designer` and `windows-backend` when the primary is not running |
+| `scripts/split_cluster.py`, `scripts/test_split_cluster.py`, `scripts/verify_split_runtime.py`, `scripts/verify_capacity.py`, `scripts/download_split_model.py`, `scripts/verify_ios_simulator.py` | `linux-developer` | `linux-designer` and `windows-backend` when the primary is not running |
 | `scripts/split_launcher.py`, `scripts/test_split_launcher.py`, `scripts/build_split_kit.py` | `windows-developer` | `windows-designer` (dashboard) and `linux-designer` (banner) when the primary is not running |
 | `Apps/AndroidWorker/app/src/main/cpp/**`, `Apps/AndroidWorker/app/src/main/java/com/sharecompute/worker/NativeWorker.java`, `Apps/AndroidWorker/app/src/main/java/com/sharecompute/worker/NativeHost.java` | `android-backend` | read-only |
 | `Apps/AndroidWorker/**`, except the `android-backend` paths above | `android-developer` | `android-designer` for screen and notification presentation when the primary is not running |

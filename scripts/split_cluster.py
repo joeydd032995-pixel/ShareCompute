@@ -313,9 +313,31 @@ async def probe(binary, config, out, name, timeout, relay=None):
         if failed: failed.cancel(); await asyncio.gather(failed, return_exceptions=True)
         await terminate(proc)
 
+SMALL_MODEL_NOTE = 'Small-model splitting proof; does not prove a model larger than any one device fits.'
+CAPACITY_NOTE = ('The workers\' combined peak allocations exceed the largest single worker budget, so no one worker budget '
+                 'could have held this model. This is a budget result: it does not show the model would not fit in a '
+                 'device\'s physical memory, and platform flags are worker reports, not hardware attestation.')
+
+def load_reference(path, model_sha256, prompt, tokens):
+    """Tokens produced elsewhere by this runtime, for a model too large to run unsplit on the laptop."""
+    ref = json.loads(Path(path).read_text(encoding='utf-8'))
+    for key, want in (('runtime', REV), ('model_sha256', model_sha256), ('prompt', prompt), ('tokens', tokens)):
+        if ref.get(key) != want: raise ValueError(f'Pinned reference does not match this run: {key}')
+    ids = ref.get('token_ids')
+    if not isinstance(ids, list) or not ids or len(ids) > tokens or not all(isinstance(t, int) for t in ids):
+        raise ValueError('Pinned reference has no usable token_ids')
+    return ref
+
+def capacity_summary(workers, model_file_bytes):
+    """Whether the workers' combined allocations are more than any one worker's budget allows."""
+    combined = sum(w['peak_bytes'] for w in workers.values())
+    largest = max(w['budget_mib'] for w in workers.values()) * 1048576
+    return {'model_file_bytes': model_file_bytes, 'combined_peak_bytes': combined,
+            'largest_worker_budget_bytes': largest, 'exceeds_largest_worker_budget': combined > largest}
+
 def validate_proof(baseline, result, log, records, before, physical):
     if not baseline.get('token_ids') or result.get('token_ids') != baseline['token_ids']:
-        raise ValueError('Split greedy tokens differ from the local baseline')
+        raise ValueError('Split greedy tokens differ from the ' + ('pinned reference' if baseline.get('profile') else 'local baseline'))
     workers = {}; assigned = set()
     for index, node in enumerate(NODES):
         layers = sorted(set(map(int, re.findall(r'layer\s+(\d+)\s+assigned to device RPC'+str(index)+r'\b', log))))
@@ -347,7 +369,7 @@ async def run_coordinator(a):
     report = {'status': 'FAIL', 'physical_devices': physical, 'runtime': REV,
               'scope': 'physical-LAN' if physical else ('native-ios-simulator' if a.mode == 'simulator' else 'three-process-loopback'),
               'identity_note': 'Platform and simulator flags are worker reports, not hardware attestation.',
-              'capacity_note': 'Small-model splitting proof; does not prove a model larger than any one device fits.'}
+              'capacity_note': SMALL_MODEL_NOTE}
     try:
         check_binary(a.worker_binary); check_binary(a.probe_binary)
         await relay.start()
@@ -371,7 +393,12 @@ async def run_coordinator(a):
             if time.monotonic() > deadline: raise TimeoutError('Waiting for all three workers timed out')
             await asyncio.sleep(.1)
         cfg = {'model': str(a.model.resolve()), 'prompt': a.prompt, 'tokens': a.tokens, 'endpoints': [], 'shares': []}
-        baseline, _ = await probe(a.probe_binary, cfg, out, 'baseline', a.timeout, relay)
+        reference = getattr(a, 'reference', None)
+        with a.model.open('rb') as f: model_sha256 = hashlib.file_digest(f, 'sha256').hexdigest()
+        if reference:
+            baseline = load_reference(reference, model_sha256, a.prompt, a.tokens); report['baseline_source'] = 'pinned-reference'
+        else:
+            baseline, _ = await probe(a.probe_binary, cfg, out, 'baseline', a.timeout, relay); report['baseline_source'] = 'local-run'
         before = {n: relay.nodes[n]['stats']['graph_calls'] for n in NODES}
         cache_before = {n: dict(relay.nodes[n]['stats']) for n in NODES}
         if a.kill_worker:
@@ -389,8 +416,9 @@ async def run_coordinator(a):
         if relay.failure.is_set(): raise RuntimeError(relay.reason)
         report['workers'] = validate_proof(baseline, result, log, relay.nodes, before, physical)
         for n in NODES: report['workers'][n]['cache'] = cache_delta(cache_before[n], relay.nodes[n]['stats'])
-        report['generation'] = result; report['matches_baseline'] = True
-        with a.model.open('rb') as f: report['model_sha256'] = hashlib.file_digest(f, 'sha256').hexdigest()
+        report['generation'] = result; report['matches_baseline'] = True; report['model_sha256'] = model_sha256
+        report['capacity'] = capacity_summary(report['workers'], a.model.stat().st_size)
+        if report['capacity']['exceeds_largest_worker_budget']: report['capacity_note'] = CAPACITY_NOTE
         report['status'] = 'PASS'
     except Exception as e:
         report['error'] = str(e)
@@ -414,6 +442,8 @@ def main():
         p.add_argument('--worker-binary', type=Path, required=True); p.add_argument('--probe-binary', type=Path, required=True)
         p.add_argument('--model', type=Path, required=True); p.add_argument('--out', type=Path, required=True)
         p.add_argument('--tokens', type=int, default=24); p.add_argument('--prompt', default=PROMPT)
+        p.add_argument('--reference', type=Path, default=None,
+                       help='Compare against pinned tokens instead of running the model unsplit first (for a model too big for one machine).')
         p.add_argument('--join-timeout', type=float, default=180); p.add_argument('--timeout', type=float, default=300)
         p.add_argument('--budgets', nargs=3, type=int, default=[768,2048,1536])
         p.add_argument('--kill-worker', choices=NODES if mode == 'loopback' else ['android'] if mode == 'simulator' else [], default=None)

@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import socket
 import sys
 import threading
@@ -93,7 +94,7 @@ class TestKit:
     def __init__(self, directory, binaries=None):
         self.directory = directory.resolve(); self.directory.mkdir(parents=True, exist_ok=True)
         self.binaries = binaries or BUNDLE / 'bin'
-        self.pair_dir = self.directory / 'pairing'; self.model_path = self.directory / 'model.gguf'
+        self.pair_dir = self.directory / 'pairing'; self.profile = 'proof'; self.model_path = self.directory / model.PROFILES['proof']['file']
         self.lock = threading.RLock(); self.loop = None; self.task = None; self.thread = None
         self.current_out = None; self.preparing = False
         hosts = lan_addresses()
@@ -116,7 +117,8 @@ class TestKit:
                     state['message'] = 'Computing on all three devices…' if len(state['workers']) == 3 else 'Scan the QR codes in the phone apps. Keep both apps open.'
             return state
 
-    def start(self, host):
+    def start(self, host, profile='proof'):
+        if profile not in model.PROFILES: raise ValueError('Unknown model choice.')
         address = ipaddress.ip_address(host)
         if address.version != 4 or address.is_loopback or address.is_unspecified or address.is_multicast:
             raise ValueError('Choose the laptop IPv4 address used by your Wi-Fi network.')
@@ -124,23 +126,28 @@ class TestKit:
             if self.state['active']: raise ValueError('A test is already active.')
             self.state.update(host=host, active=True, phase='preparing', message='Preparing model and pairing…', report=None, progress=0, workers=[])
             self.current_out = None; self.preparing = True
+            self.profile = profile; self.model_path = self.directory / model.PROFILES[profile]['file']
             self.thread = threading.Thread(target=self.prepare_and_run, args=(host,), daemon=True); self.thread.start()
 
     def prepare_and_run(self, host):
         try:
             suffix = '.exe' if os.name == 'nt' else ''
             for name in ('sc-rpc-worker', 'sc-split-probe'): cluster.check_binary(self.binaries / (name+suffix))
-            if not self.model_path.exists() or model.digest(self.model_path) != model.SHA256:
+            chosen = model.PROFILES[self.profile]; total_mib = round(chosen['bytes'] / 1048576)
+            if not self.model_path.exists() or model.digest(self.model_path) != chosen['sha256']:
                 partial = self.directory / 'model.partial'; partial.unlink(missing_ok=True)
+                free = shutil.disk_usage(self.directory).free
+                if free < chosen['bytes'] + (256 << 20):
+                    raise RuntimeError(f"The {chosen['label']} needs {total_mib + 256} MiB of free disk space; this drive has {free >> 20} MiB.")
                 digest = hashlib.sha256(); received = 0
-                with urllib.request.urlopen(model.URL, timeout=60) as response, partial.open('xb') as f:
+                with urllib.request.urlopen(chosen['url'], timeout=60) as response, partial.open('xb') as f:
                     while chunk := response.read(1024*1024):
                         if not self.preparing: raise InterruptedError('Stopped')
                         f.write(chunk); digest.update(chunk); received += len(chunk)
                         with self.lock:
-                            self.state.update(progress=min(100, int(received * 100 / 491400032)),
-                                              message=f'Downloading the test model once: {received//1048576} / 469 MiB')
-                if digest.hexdigest() != model.SHA256: raise RuntimeError('Model checksum mismatch; start again to retry.')
+                            self.state.update(progress=min(100, int(received * 100 / chosen['bytes'])),
+                                              message=f"Downloading the {chosen['label']} once: {received//1048576} / {total_mib} MiB")
+                if digest.hexdigest() != chosen['sha256']: raise RuntimeError('Model checksum mismatch; start again to retry.')
                 partial.replace(self.model_path)
             if not self.preparing: raise InterruptedError('Stopped')
             if not self.pair_dir.exists(): cluster.init_cluster(self.pair_dir, host)
@@ -155,7 +162,9 @@ class TestKit:
             args = SimpleNamespace(mode='coordinator', config=self.pair_dir/'cluster.json', model=self.model_path,
                 worker_binary=self.binaries/('sc-rpc-worker'+suffix), probe_binary=self.binaries/('sc-split-probe'+suffix),
                 out=self.current_out, tokens=16, prompt=cluster.PROMPT, budgets=[768,2048,1536],
-                join_timeout=900, timeout=300, kill_worker=None)
+                join_timeout=900, timeout=chosen['probe_timeout'], kill_worker=None,
+                # A model too big for the laptop alone is compared with tokens pinned from a larger machine.
+                reference=BUNDLE/'native/split/reference-capacity.json' if self.profile == 'capacity' else None)
             async def run():
                 self.loop = asyncio.get_running_loop(); self.task = asyncio.current_task()
                 if not self.preparing: raise asyncio.CancelledError()
@@ -203,15 +212,16 @@ PAGE = '''<!doctype html><meta charset="utf-8"><meta name="viewport" content="wi
 <title>ShareCompute</title><style>body{font:17px system-ui;background:#f2f5fa;color:#182635;max-width:900px;margin:40px auto;padding:20px}h1{font-size:36px}section{background:white;border-radius:16px;padding:24px;margin:20px 0;box-shadow:0 4px 20px #1231}button,a.action{font:inherit;padding:12px 22px;background:#175ddc;color:white;border:0;border-radius:8px;cursor:pointer;text-decoration:none;display:inline-block;margin:6px}input{font:inherit;padding:10px;max-width:220px}small{display:block;color:#536578;margin:12px 0}.phones{display:flex;gap:24px;flex-wrap:wrap}.phone{flex:1;min-width:240px}img{width:100%;max-width:320px}#message{font-weight:600}progress{width:100%}button:disabled{opacity:.4}summary{cursor:pointer}textarea{width:95%;height:80px}</style>
 <h1>ShareCompute</h1><p>One model. Your laptop and both phones.</p>
 <section><h2>1. Start on this laptop</h2><p>Keep all three devices on the same Wi-Fi.</p><label>Laptop Wi-Fi address <input id="host" aria-label="Laptop Wi-Fi address" list="hosts" placeholder="e.g. 192.168.1.20" autocomplete="off"></label><datalist id="hosts"></datalist><small id="host-help"></small>
-<button id="start" onclick="action('start',{host:document.getElementById('host').value})">Start test</button><button id="stop" onclick="action('stop',{})">Stop</button>
-<p id="message"></p><progress id="progress" max="100" value="0"></progress><small>The 469 MiB model downloads once. If Windows asks, allow ShareCompute on your private network.</small></section>
+<p><label>Model <select id="profile" aria-label="Model" onchange="document.getElementById('profile-help').textContent=this.value==='capacity'?'3.4 GB download. The first run sends about 2,580 MiB to the phones over Wi-Fi and can take 10 minutes or more; later runs reuse what the phones kept. No single device here can hold this model.':'469 MiB download. Quick check that all three devices compute.'"><option value="proof">Quick test (469 MiB)</option><option value="capacity">3B capacity test (3.4 GB)</option></select></label> <small id="profile-help">469 MiB download. Quick check that all three devices compute.</small></p>
+<button id="start" onclick="action('start',{host:document.getElementById('host').value,profile:document.getElementById('profile').value})">Start test</button><button id="stop" onclick="action('stop',{})">Stop</button>
+<p id="message"></p><progress id="progress" max="100" value="0"></progress><small>The chosen model downloads once. If Windows asks, allow ShareCompute on your private network.</small></section>
 <section><h2>2. Connect the phone apps</h2><p>Install the matching apps from the <a href="phones">phone downloads</a>. On each phone tap <b>Scan laptop QR</b>. Keep the apps open until the test ends.</p>
 <div class="phones"><div class="phone"><h3>Android</h3><p id="android-state">Waiting</p><img id="android-qr" alt="Android pairing QR"><details><summary>Copy pairing code instead</summary><textarea id="android-code" readonly></textarea></details></div>
 <div class="phone"><h3>iPhone</h3><p id="iphone-state">Waiting</p><img id="iphone-qr" alt="iPhone pairing QR"><details><summary>Copy pairing code instead</summary><textarea id="iphone-code" readonly></textarea></details></div></div>
 <small>The iPhone IPA needs signing and Developer Mode before first use. The <a href="https://docs.sidestore.io/docs/installation/prerequisites" target="_blank" rel="noopener">SideStore setup</a> works from Windows or Linux; no owned Mac is required.</small></section>
 <section><h2>3. Save the result</h2><p>A PASS requires native computation on all three physical devices and matching output for this 16-token test.</p><a class="action" href="report.zip">Download report</a><button onclick="action('quit',{})">Close launcher</button><small>All project data stays in <span id="data"></span>. No global Python packages or compiler setup.</small></section>
 <script>let shown=false; async function action(name,data){try{let r=await fetch(name,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});let j=await r.json();if(!r.ok)alert(j.error);if(name==='quit')document.body.innerHTML='<h1>ShareCompute closed</h1><p>You can close this tab.</p>';}catch(e){alert(e.message)}}
-async function poll(){try{let r=await fetch('status');let s=await r.json();if(!shown){document.getElementById('host').value=s.host;let list=document.getElementById('hosts');for(let h of s.hosts){let o=document.createElement('option');o.value=h;list.appendChild(o)}document.getElementById('host-help').textContent=s.hosts.length>1?'Detected automatically. If a phone cannot connect, clear the box to pick another: '+s.hosts.slice(1).join(', '):s.hosts.length?'Detected automatically.':'Not detected. Type the IPv4 address of this laptop on your Wi-Fi.';shown=true}document.getElementById('message').textContent=s.message;document.getElementById('data').textContent=s.data;document.getElementById('progress').value=s.progress;document.getElementById('start').disabled=s.active;document.getElementById('host').disabled=s.active;document.getElementById('stop').disabled=!s.active;
+async function poll(){try{let r=await fetch('status');let s=await r.json();if(!shown){document.getElementById('host').value=s.host;let list=document.getElementById('hosts');for(let h of s.hosts){let o=document.createElement('option');o.value=h;list.appendChild(o)}document.getElementById('host-help').textContent=s.hosts.length>1?'Detected automatically. If a phone cannot connect, clear the box to pick another: '+s.hosts.slice(1).join(', '):s.hosts.length?'Detected automatically.':'Not detected. Type the IPv4 address of this laptop on your Wi-Fi.';shown=true}document.getElementById('message').textContent=s.message;document.getElementById('data').textContent=s.data;document.getElementById('progress').value=s.progress;document.getElementById('start').disabled=s.active;document.getElementById('host').disabled=s.active;document.getElementById('profile').disabled=s.active;document.getElementById('stop').disabled=!s.active;
 for(let n of ['android','iphone']){document.getElementById(n+'-state').textContent=s.workers.includes(n)?'Connected':'Waiting';let img=document.getElementById(n+'-qr');if(s.phase==='running'&&!img.getAttribute('src')){img.src='qr/'+n;let p=await fetch('pair/'+n);if(p.ok)document.getElementById(n+'-code').value=(await p.json()).code;}if(s.phase!=='running'){img.removeAttribute('src');document.getElementById(n+'-code').value=''}}}catch(e){}setTimeout(poll,1000)}poll();</script>'''
 
 def make_handler(kit, secret):
@@ -252,7 +262,7 @@ def make_handler(kit, secret):
                 length=int(self.headers.get('Content-Length','0'))
                 if not 0 < length <= 4096: raise ValueError('Invalid request size')
                 data=json.loads(self.rfile.read(length))
-                if route=='start': kit.start(data['host'])
+                if route=='start': kit.start(data['host'], data.get('profile', 'proof'))
                 elif route in ('stop','quit'):
                     kit.stop()
                     if route=='quit': threading.Thread(target=self.server.shutdown,daemon=True).start()

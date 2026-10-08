@@ -1,0 +1,26 @@
+{
+ "unit": "KiB",
+ "note": "Peak of Linux RssAnon (real memory), RssFile (mapped model file; the OS can drop and re-read it) and VmRSS, sampled every 100 ms during one loopback run. Worker roles are inferred from size, in the order of their layer counts.",
+ "processes": {
+  "laptop-worker (7 layers)": {
+   "anon": 584120,
+   "file": 4752,
+   "rss": 588872
+  },
+  "android-worker (17 layers)": {
+   "anon": 1384064,
+   "file": 4716,
+   "rss": 1388780
+  },
+  "iphone-worker (13 layers, with output.weight)": {
+   "anon": 1308912,
+   "file": 4724,
+   "rss": 1313636
+  },
+  "probe (the laptop-side client that reads the model file)": {
+   "anon": 399944,
+   "file": 3537708,
+   "rss": 3937652
+  }
+ }
+}

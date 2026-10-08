@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from split_cluster import CACHE_STATS, NODES, REV, Relay, cache_delta, close, init_cluster, paired_connection, receive, send, validate_proof
+from split_cluster import CACHE_STATS, NODES, PROMPT, REV, Relay, cache_delta, capacity_summary, close, init_cluster, load_reference, paired_connection, receive, send, validate_proof
 
 class ProofTests(unittest.TestCase):
     def setUp(self):
@@ -27,6 +27,50 @@ class ProofTests(unittest.TestCase):
         for result in ({'token_ids': [1, 2, 4]}, {'token_ids': []}):
             with self.assertRaises(ValueError): validate_proof(self.result, result, self.log, self.records, self.before, False)
         with self.assertRaises(ValueError): validate_proof(self.result, self.result, self.log, self.records, self.before, True)
+
+class ReferenceTests(unittest.TestCase):
+    """A model too big to run unsplit on the laptop is judged against tokens pinned from a larger machine."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.good = {'profile': 'capacity', 'runtime': REV, 'model_sha256': 'abc', 'prompt': 'p', 'tokens': 3, 'token_ids': [1, 2, 3]}
+    def write(self, **changes):
+        path = Path(self.tmp.name) / 'reference.json'; path.write_text(json.dumps({**self.good, **changes})); return path
+    def test_matching_reference_accepted(self):
+        self.assertEqual(load_reference(self.write(), 'abc', 'p', 3)['token_ids'], [1, 2, 3])
+    def test_a_reference_for_anything_else_is_rejected(self):
+        for key, value in (('runtime', 'other'), ('model_sha256', 'other'), ('prompt', 'other'), ('tokens', 4)):
+            with self.subTest(key), self.assertRaisesRegex(ValueError, key):
+                load_reference(self.write(**{key: value}), 'abc', 'p', 3)
+    def test_unusable_token_lists_rejected(self):
+        for ids in ([], [1, '2'], [1, 2, 3, 4], None):
+            with self.subTest(ids), self.assertRaises(ValueError): load_reference(self.write(token_ids=ids), 'abc', 'p', 3)
+    def test_mismatch_names_which_baseline_it_was_compared_with(self):
+        records = {n: {'stats': {'peak_bytes': 10, 'graph_calls': 3}, 'bytes': [20, 30],
+                       'hello': {'platform': 'linux', 'simulator': False, 'budget_mib': 64}, 'peer': '127.0.0.1'} for n in NODES}
+        log = '\n'.join(f'layer {i} assigned to device RPC{i}' for i in range(3))
+        wrong = {'token_ids': [1, 2, 4]}; before = dict.fromkeys(NODES, 0)
+        with self.assertRaisesRegex(ValueError, 'pinned reference'): validate_proof(self.good, wrong, log, records, before, False)
+        with self.assertRaisesRegex(ValueError, 'local baseline'): validate_proof({'token_ids': [1, 2, 3]}, wrong, log, records, before, False)
+
+    def test_the_shipped_reference_still_belongs_to_this_runtime_and_model(self):
+        # Moving the pinned llama.cpp revision changes the tokens this file claims. Regenerate it then.
+        import download_split_model as models
+        shipped = Path(__file__).resolve().parents[1] / 'native/split/reference-capacity.json'
+        ref = load_reference(shipped, models.CAPACITY_SHA256, PROMPT, 16)
+        self.assertEqual(len(ref['token_ids']), 16)
+
+class CapacityTests(unittest.TestCase):
+    MIB = 1048576
+    def workers(self, peaks, budgets=(768, 2048, 1536)):
+        return {n: {'peak_bytes': p * self.MIB, 'budget_mib': b} for n, p, b in zip(NODES, peaks, budgets)}
+    def test_combined_allocations_beyond_the_largest_budget_are_a_capacity_result(self):
+        # Qwen2.5-3B Q8_0 on loopback (F40): 562 + 1348 + 1299 MiB against a 2048 MiB largest budget.
+        summary = capacity_summary(self.workers((562, 1348, 1299)), 3616088480)
+        self.assertTrue(summary['exceeds_largest_worker_budget'])
+        self.assertEqual(summary['largest_worker_budget_bytes'], 2048 * self.MIB)
+    def test_a_model_one_worker_could_hold_is_not_claimed_as_capacity(self):
+        # The 0.5B proof model (F37): 59 + 133 + 257 MiB.
+        self.assertFalse(capacity_summary(self.workers((59, 133, 257)), 491400032)['exceeds_largest_worker_budget'])
 
 class CacheDeltaTests(unittest.TestCase):
     def test_delta_counts_only_this_run(self):

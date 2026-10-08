@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+from unittest import mock
 import unittest
 import zipfile
 from split_launcher import TestKit, make_handler, pairing_code, ThreadingHTTPServer, instance_lock, rank_addresses, startup_banner
@@ -49,6 +50,20 @@ class LauncherTests(unittest.TestCase):
         self.kit.current_out=Path(self.tmp.name)/'run';self.kit.state.update(active=True,phase='running')
         (self.kit.directory/'active.log').write_text('Joined laptop: linux\nJoined android: android\n')
         self.assertEqual(self.kit.snapshot()['workers'],['laptop','android'])
+class ModelChoiceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.kit=TestKit(Path(self.tmp.name))
+    def test_default_is_the_small_proof_model(self):
+        self.assertEqual((self.kit.profile,self.kit.model_path.name),('proof','model.gguf'))
+    def test_unknown_choice_rejected_before_anything_starts(self):
+        with self.assertRaises(ValueError):self.kit.start('192.168.1.2','nope')
+        self.assertFalse(self.kit.state['active'])
+    def test_capacity_choice_keeps_its_own_model_file(self):
+        # A separate file, so choosing it never evicts the 469 MiB model the quick test reuses.
+        with mock.patch.object(TestKit,'prepare_and_run'):
+            self.kit.start('192.168.1.2','capacity');self.kit.thread.join()
+        self.assertEqual((self.kit.profile,self.kit.model_path.name),('capacity','model-capacity.gguf'))
+
 class AddressTests(unittest.TestCase):
     def test_active_route_wins_over_virtual_adapters(self):
         # Wi-Fi on 10/8 must beat VirtualBox's host-only 192.168.56.1 and a WSL 172.x adapter.
