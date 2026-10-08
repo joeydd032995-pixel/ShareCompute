@@ -78,8 +78,8 @@ physical run is the next step.
 - **Reference, not baseline.** The laptop never runs this model unsplit. The coordinator takes
   `--reference native/split/reference-capacity.json`, tokens recorded from the same runtime on a Linux
   PC, and `report.json` says `"baseline_source": "pinned-reference"`.
-- **What the claim is.** `report.json` has a `capacity` block. When the workers' combined peak
-  allocations exceed the largest budget it says so and replaces the "small-model" note. This is a
+- **What the claim is.** `report.json` has a `capacity` block. When what the workers held during the run
+  (`run_allocated_bytes`, not their lifetime peaks) adds up to more than the largest budget it says so and replaces the "small-model" note. This is a
   statement about worker budgets, not about physical memory limits.
 - **Limits.** The generation is allowed an hour, since the first upload sends about 2,580 MiB to the
   phones. The laptop's real memory use is about 570 MiB for its worker and 391 MiB for the probe.

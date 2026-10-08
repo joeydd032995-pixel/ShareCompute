@@ -4,7 +4,7 @@
   "runtime": "4da6337767f973e2b4d0797e5b323d77d8565e4a",
   "scope": "three-process-loopback",
   "identity_note": "Platform and simulator flags are worker reports, not hardware attestation.",
-  "capacity_note": "The workers' combined peak allocations exceed the largest single worker budget, so no one worker budget could have held this model. This is a budget result: it does not show the model would not fit in a device's physical memory, and platform flags are worker reports, not hardware attestation.",
+  "capacity_note": "The workers' combined allocations during this run exceed the largest single worker budget, so no one worker budget could have held this model. This is a budget result: it does not show the model would not fit in a device's physical memory, and platform flags are worker reports, not hardware attestation.",
   "baseline_source": "pinned-reference",
   "workers": {
     "laptop": {
@@ -29,7 +29,8 @@
         "cache_hit_bytes": 0,
         "cache_stored_bytes": 0,
         "cache_rejected": 0
-      }
+      },
+      "run_allocated_bytes": 589458432
     },
     "android": {
       "layers": [
@@ -63,7 +64,8 @@
         "cache_hit_bytes": 0,
         "cache_stored_bytes": 0,
         "cache_rejected": 0
-      }
+      },
+      "run_allocated_bytes": 1413839872
     },
     "iphone": {
       "layers": [
@@ -93,13 +95,14 @@
         "cache_hit_bytes": 0,
         "cache_stored_bytes": 0,
         "cache_rejected": 0
-      }
+      },
+      "run_allocated_bytes": 1361664000
     }
   },
   "generation": {
-    "decode_ms": 7233.483276,
+    "decode_ms": 7026.957059,
     "ok": true,
-    "prefill_ms": 1081.468992,
+    "prefill_ms": 1038.608207,
     "prompt_tokens": 5,
     "text": " Paris. The capital of Spain is Madrid. The capital of Italy is Rome.",
     "token_ids": [
@@ -120,13 +123,13 @@
       21718,
       13
     ],
-    "wall_ms": 32055.183559
+    "wall_ms": 31119.227911
   },
   "matches_baseline": true,
   "model_sha256": "6dcc22694c8654b045ec40bbe350212b88893fd9010e8474bae5b19a43578ba1",
   "capacity": {
     "model_file_bytes": 3616088480,
-    "combined_peak_bytes": 3364962304,
+    "combined_run_allocated_bytes": 3364962304,
     "largest_worker_budget_bytes": 2147483648,
     "exceeds_largest_worker_budget": true
   }

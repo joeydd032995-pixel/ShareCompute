@@ -28,7 +28,7 @@
   "pooled": {
     "capacity": {
       "model_file_bytes": 3616088480,
-      "combined_peak_bytes": 3364962304,
+      "combined_run_allocated_bytes": 3364962304,
       "largest_worker_budget_bytes": 2147483648,
       "exceeds_largest_worker_budget": true
     },
@@ -36,19 +36,19 @@
     "workers": {
       "laptop": {
         "layers": 7,
-        "peak_bytes": 589458432,
+        "run_allocated_bytes": 589458432,
         "budget_mib": 768,
         "bytes_to_worker": 573890422
       },
       "android": {
         "layers": 17,
-        "peak_bytes": 1413839872,
+        "run_allocated_bytes": 1413839872,
         "budget_mib": 2048,
         "bytes_to_worker": 1393375362
       },
       "iphone": {
         "layers": 13,
-        "peak_bytes": 1361664000,
+        "run_allocated_bytes": 1361664000,
         "budget_mib": 1536,
         "bytes_to_worker": 1314271211
       }

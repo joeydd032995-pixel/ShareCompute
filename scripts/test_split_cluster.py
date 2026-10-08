@@ -61,13 +61,21 @@ class ReferenceTests(unittest.TestCase):
 
 class CapacityTests(unittest.TestCase):
     MIB = 1048576
-    def workers(self, peaks, budgets=(768, 2048, 1536)):
-        return {n: {'peak_bytes': p * self.MIB, 'budget_mib': b} for n, p, b in zip(NODES, peaks, budgets)}
+    def workers(self, held, budgets=(768, 2048, 1536), lifetime_peaks=None):
+        peaks = lifetime_peaks or held
+        return {n: {'run_allocated_bytes': h * self.MIB, 'peak_bytes': p * self.MIB, 'budget_mib': b}
+                for n, h, p, b in zip(NODES, held, peaks, budgets)}
     def test_combined_allocations_beyond_the_largest_budget_are_a_capacity_result(self):
         # Qwen2.5-3B Q8_0 on loopback (F40): 562 + 1348 + 1299 MiB against a 2048 MiB largest budget.
         summary = capacity_summary(self.workers((562, 1348, 1299)), 3616088480)
         self.assertTrue(summary['exceeds_largest_worker_budget'])
         self.assertEqual(summary['largest_worker_budget_bytes'], 2048 * self.MIB)
+    def test_a_phone_peak_left_over_from_an_earlier_run_is_not_counted(self):
+        # The phones' native workers outlive runs and their peak is a lifetime high-water mark. After a
+        # 3B run, a 0.5B run sees the same phones still reporting 1,348 and 1,299 MiB.
+        stale = capacity_summary(self.workers((59, 133, 257), lifetime_peaks=(59, 1348, 1299)), 491400032)
+        self.assertFalse(stale['exceeds_largest_worker_budget'])
+        self.assertEqual(stale['combined_run_allocated_bytes'], (59 + 133 + 257) * self.MIB)
     def test_a_model_one_worker_could_hold_is_not_claimed_as_capacity(self):
         # The 0.5B proof model (F37): 59 + 133 + 257 MiB.
         self.assertFalse(capacity_summary(self.workers((59, 133, 257)), 491400032)['exceeds_largest_worker_budget'])

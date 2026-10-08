@@ -4,8 +4,8 @@
 1. The whole model is handed to ONE worker at each real budget. Each must refuse it
    ("buffer budget exceeded"). A worker with a large enough budget must accept it, so the refusals are
    about the budget and not about the model or the worker. Its peak is the model's single-worker need.
-2. The three-worker loopback split runs against the pinned reference tokens. Its combined peak
-   allocations must exceed the largest single budget while every worker stays inside its own.
+2. The three-worker loopback split runs against the pinned reference tokens. Its combined
+   allocations during the run must exceed the largest single budget while every worker stays inside its own.
 """
 import argparse
 import json
@@ -15,6 +15,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 BUDGETS = {'laptop': 768, 'android': 2048, 'iphone': 1536}
@@ -31,6 +32,9 @@ def one_worker(bins, suffix, model, budget_mib):
     port = free_port()
     worker = subprocess.Popen([str(bins / ('sc-rpc-worker' + suffix)), str(port), str(budget_mib), '2'],
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    # The worker prints four stats lines a second and logs to the same pipe. Left unread it fills in under
+    # two minutes, then stalls the worker and the probe waiting on it, and hides the later peaks.
+    lines = []; reader = threading.Thread(target=lambda: lines.extend(worker.stdout), daemon=True); reader.start()
     try:
         for _ in range(100):
             try: socket.create_connection(('127.0.0.1', port), 1).close(); break
@@ -43,8 +47,10 @@ def one_worker(bins, suffix, model, budget_mib):
             probe = subprocess.run([str(bins / ('sc-split-probe' + suffix)), str(cfg)], capture_output=True, text=True, timeout=900)
     finally:
         worker.terminate()
-        try: output, _ = worker.communicate(timeout=10)
-        except subprocess.TimeoutExpired: worker.kill(); output, _ = worker.communicate()
+        try: worker.wait(timeout=10)
+        except subprocess.TimeoutExpired: worker.kill(); worker.wait()
+        reader.join(timeout=10)
+    output = ''.join(lines)
     stats = [json.loads(l[9:]) for l in output.splitlines() if l.startswith('SC_STATS ')]
     return {'budget_mib': budget_mib, 'probe_exit': probe.returncode, 'refused': 'buffer budget exceeded' in output,
             'peak_bytes': max((s['peak_bytes'] for s in stats), default=0)}
@@ -79,12 +85,12 @@ def main():
     assert result.returncode == 0 and report['status'] == 'PASS' and report['baseline_source'] == 'pinned-reference', report
     assert report['capacity']['exceeds_largest_worker_budget'], report['capacity']
     for node, w in report['workers'].items():
-        assert w['peak_bytes'] <= w['budget_mib'] * MIB, (node, w)
+        assert w['run_allocated_bytes'] <= w['budget_mib'] * MIB, (node, w)
     summary['pooled'] = {'capacity': report['capacity'], 'text': report['generation']['text'],
-                         'workers': {n: {'layers': len(w['layers']), 'peak_bytes': w['peak_bytes'], 'budget_mib': w['budget_mib'],
+                         'workers': {n: {'layers': len(w['layers']), 'run_allocated_bytes': w['run_allocated_bytes'], 'budget_mib': w['budget_mib'],
                                          'bytes_to_worker': w['bytes_to_worker']} for n, w in report['workers'].items()}}
     (a.out / 'capacity-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
-    print(f"VERIFIED the three budgets pool: combined peak {report['capacity']['combined_peak_bytes'] / MIB:.0f} MiB "
+    print(f"VERIFIED the three budgets pool: combined {report['capacity']['combined_run_allocated_bytes'] / MIB:.0f} MiB held "
           f"against a {report['capacity']['largest_worker_budget_bytes'] / MIB:.0f} MiB largest budget, tokens equal the pinned reference", flush=True)
 
 if __name__ == '__main__': main()

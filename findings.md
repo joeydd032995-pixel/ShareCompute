@@ -2564,3 +2564,27 @@ physical devices computing a model that no single worker budget could hold, with
 reference made elsewhere. A FAIL with `Split greedy tokens differ from the pinned reference` is
 ambiguous between a real fault and benign numerical drift, and the logs of both runs would be
 needed to tell which.
+
+### F40 addendum — corrections after review of PR #34
+
+Three review findings were checked against the code and all three held.
+
+- **The `capacity` block counted lifetime peaks, which phones carry between runs.** F40 above names
+  `combined_peak_bytes`, built from each worker's `peak_bytes`. A phone's native worker lives as long
+  as its app, and `sc_rpc_peak()` is a high-water mark for that whole life, so a 0.5B run made after a
+  3B run, without closing the apps, would have summed the phones' old 1,348 and 1,299 MiB with the
+  laptop's fresh 59 MiB and labelled the small model a capacity result. The block now holds
+  `combined_run_allocated_bytes`, built from `run_allocated_bytes`: the most each worker's live
+  `allocated_bytes` reached, sampled from its telemetry every 100 ms while the split generation ran.
+  Both phone apps already send `allocated_bytes`, so no app changed. The loopback figures are
+  unchanged (562.2 / 1,348.3 / 1,298.6 MiB, combined 3,209.1 MiB), and the 0.5B model reproduces F37's
+  peaks exactly (59,005,184 / 133,527,296 / 257,146,368 bytes) while still being reported as not a
+  capacity result. A new unit test fails on the old behaviour. **Not verified:** the stale-peak case on real
+  phones, because it needs a 3B run followed by a quick run on the same open apps.
+- **`verify_capacity.py` did not read the worker's output while the probe ran.** The worker writes four
+  stats lines a second and logs to the same pipe, which fills in under two minutes. A slow machine would
+  then stall the worker and the probe, and the control could record an intermediate peak. The output is
+  now drained on a thread. The runs here finish in 10 to 20 seconds, so the fault was reachable on a
+  slower runner and was not seen here.
+- **The quickstart pointed the capacity instructions at a kit that cannot do them.** Build `7ba06cc` has no
+  model choice. The quickstart now says so and tells the reader to take a kit from a `main` build after #34.

@@ -314,8 +314,8 @@ async def probe(binary, config, out, name, timeout, relay=None):
         await terminate(proc)
 
 SMALL_MODEL_NOTE = 'Small-model splitting proof; does not prove a model larger than any one device fits.'
-CAPACITY_NOTE = ('The workers\' combined peak allocations exceed the largest single worker budget, so no one worker budget '
-                 'could have held this model. This is a budget result: it does not show the model would not fit in a '
+CAPACITY_NOTE = ('The workers\' combined allocations during this run exceed the largest single worker budget, so no one '
+                 'worker budget could have held this model. This is a budget result: it does not show the model would not fit in a '
                  'device\'s physical memory, and platform flags are worker reports, not hardware attestation.')
 
 def load_reference(path, model_sha256, prompt, tokens):
@@ -329,10 +329,15 @@ def load_reference(path, model_sha256, prompt, tokens):
     return ref
 
 def capacity_summary(workers, model_file_bytes):
-    """Whether the workers' combined allocations are more than any one worker's budget allows."""
-    combined = sum(w['peak_bytes'] for w in workers.values())
+    """Whether the workers' combined allocations are more than any one worker's budget allows.
+
+    Uses what each worker held during this run. A phone's native worker lives as long as its app, and its
+    reported peak is a high-water mark for that whole life, so an earlier larger run would otherwise be
+    counted again in a later, smaller one.
+    """
+    combined = sum(w['run_allocated_bytes'] for w in workers.values())
     largest = max(w['budget_mib'] for w in workers.values()) * 1048576
-    return {'model_file_bytes': model_file_bytes, 'combined_peak_bytes': combined,
+    return {'model_file_bytes': model_file_bytes, 'combined_run_allocated_bytes': combined,
             'largest_worker_budget_bytes': largest, 'exceeds_largest_worker_budget': combined > largest}
 
 def validate_proof(baseline, result, log, records, before, physical):
@@ -411,11 +416,21 @@ async def run_coordinator(a):
             fault = asyncio.create_task(inject())
         cfg['endpoints'] = [relay.nodes[n]['endpoint'] for n in NODES]
         cfg['shares'] = [config['nodes'][n]['budget_mib'] for n in NODES]
-        result, log = await probe(a.probe_binary, cfg, out, 'split', a.timeout, relay)
+        held = dict.fromkeys(NODES, 0)
+        async def sample():
+            while True:
+                for n in NODES: held[n] = max(held[n], relay.nodes[n]['stats']['allocated_bytes'])
+                await asyncio.sleep(.1)
+        sampler = asyncio.create_task(sample())
+        try: result, log = await probe(a.probe_binary, cfg, out, 'split', a.timeout, relay)
+        finally:
+            sampler.cancel(); await asyncio.gather(sampler, return_exceptions=True)
         await asyncio.sleep(.8) # Allow final counters to traverse the heartbeat connection.
         if relay.failure.is_set(): raise RuntimeError(relay.reason)
         report['workers'] = validate_proof(baseline, result, log, relay.nodes, before, physical)
-        for n in NODES: report['workers'][n]['cache'] = cache_delta(cache_before[n], relay.nodes[n]['stats'])
+        for n in NODES:
+            report['workers'][n]['cache'] = cache_delta(cache_before[n], relay.nodes[n]['stats'])
+            report['workers'][n]['run_allocated_bytes'] = held[n]
         report['generation'] = result; report['matches_baseline'] = True; report['model_sha256'] = model_sha256
         report['capacity'] = capacity_summary(report['workers'], a.model.stat().st_size)
         if report['capacity']['exceeds_largest_worker_budget']: report['capacity_note'] = CAPACITY_NOTE

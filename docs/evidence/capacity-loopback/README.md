@@ -31,12 +31,16 @@ budget can.
 `scripts/verify_capacity.py` (five `VERIFIED` lines) then ran the three-worker loopback split against
 the pinned reference tokens (`native/split/reference-capacity.json`).
 
-| Worker | Layers | Peak allocation | Budget | Headroom | Sent to it |
+| Worker | Layers | Held during the run | Budget | Headroom | Sent to it |
 |---|---:|---:|---:|---:|---:|
 | laptop | 7 | 562.2 MiB | 768 | 206 MiB | 547 MiB |
 | android | 17 | 1,348.3 MiB | 2048 | 700 MiB | 1,329 MiB |
 | iphone (also holds `output.weight`) | 13 | 1,298.6 MiB | 1536 | 237 MiB | 1,253 MiB |
 | **Combined** | 37 | **3,209.1 MiB** | largest: 2048 | | phones: 2,582 MiB |
+
+"Held during the run" is the most each worker's live allocation reached while the split ran, sampled from its
+telemetry. It is not the worker's lifetime peak: a phone's native worker lives as long as its app, so a lifetime
+peak would carry an earlier, larger run into a later one.
 
 `PASS`. The 16 generated tokens equal the pinned reference, and the text is " Paris. The capital of
 Spain is Madrid. The capital of Italy is Rome." Prefill 1,081 ms, decode 7,233 ms, wall 32,055 ms.
