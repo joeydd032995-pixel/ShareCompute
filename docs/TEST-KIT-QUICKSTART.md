@@ -4,14 +4,14 @@ This kit is for a 4 GB laptop, 8 GB Android phone, and 8 GB iPhone. It splits on
 
 ## Downloads
 
-[Current build](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657) from `main` at commit `7ba06cc`. Sign in to GitHub to download artifacts. Take the laptop kit and both phone apps from this same build.
+[Current build](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160) from `main` at commit `5491d2c`. Sign in to GitHub to download artifacts. Take the laptop kit and both phone apps from this same build.
 
 | Device | Download |
 | --- | --- |
-| Windows 10/11 x86-64 laptop | [Standalone Windows kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11521311221) |
-| Ubuntu 24.04+ x86-64 laptop | [Standalone Linux kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11521241439) |
-| Android 9+ ARM64 | [Worker APK](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11520542858) |
-| iPhone iOS 16+ | [Worker IPA (requires signing)](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11520304646) |
+| Windows 10/11 x86-64 laptop | [Standalone Windows kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530417238) |
+| Ubuntu 24.04+ x86-64 laptop | [Standalone Linux kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530423481) |
+| Android 9+ ARM64 | [Worker APK](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530815296) |
+| iPhone iOS 16+ | [Worker IPA (requires signing)](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530221864) |
 
 Both packaged laptop executables passed real-model three-process inference tests in CI, and the iPhone app passed native inference in the iOS simulator. On 2026-10-07 the kit passed on a real Windows laptop, Android phone and iPhone ([evidence](evidence/physical-three-device/)), and on 2026-10-08 a build with the weight cache passed twice in a row on the same devices ([evidence](evidence/physical-weight-cache/)). The reports do not record the exact commit of the build the operator used. These artifacts expire on 2027-01-06; a later successful run of the same workflow on `main` produces replacements.
 
@@ -31,11 +31,9 @@ Open the laptop launcher, click **Start test**, then scan/connect both phone app
 
 The quick test uses a model that fits on any one device. The capacity test uses Qwen2.5-3B at Q8_0, which no single worker budget can hold (3,183 MiB needed; the largest budget is 2,048 MiB), so a PASS means the three devices computed something none of them could have run alone within these limits ([evidence](evidence/capacity-loopback/)). It has not yet been run on the real devices.
 
-**Use a kit built after this feature merged.** The build linked under Downloads (`7ba06cc`) predates it and its dashboard has no model choice. Take all four downloads from the newest successful [Native three-device model split](https://github.com/joeydd032995-pixel/ShareCompute/actions/workflows/three-device-split.yml?query=branch%3Amain) run on `main` after the capacity-test pull request (#34) merged, until the links above are updated.
-
 1. Before you start: **close other programs on the laptop**. Its worker and the launcher need about 1.1 GB of real memory, and the laptop had roughly 1.2 GB free in the last test. The laptop also needs 3.7 GB of free disk space for the model.
 2. In the dashboard choose **3B capacity test (3.4 GB)** next to the Wi-Fi address, then **Start test**. The model downloads once (several minutes), then you scan the QR codes as usual.
-3. **The first run is slow: about 2.6 GB goes to the phones over Wi-Fi.** Expect 10 minutes or more. Keep the iPhone app on screen and leave the phones plugged in and on the same Wi-Fi. The generation limit is one hour. A second run reuses what the phones kept and is much faster.
+3. **The first run is slow: about 2,580 MiB (2.5 GiB) goes to the phones over Wi-Fi.** Expect 10 minutes or more. Keep the iPhone app on screen and leave the phones plugged in and on the same Wi-Fi. The generation limit is one hour. A second run reuses what the phones kept and is much faster.
 4. The result: **PASS** shows `"capacity": {"exceeds_largest_worker_budget": true}` in `report.json`. There is no `baseline.log`, because the laptop never runs the model alone; the 16 tokens are compared with ones recorded on a Linux PC.
 5. If it fails, **Download report** and keep the logs. A failure that says `Split greedy tokens differ from the pinned reference` is either a real fault or a harmless numerical difference between processors; the logs from the run are needed to tell which.
 
