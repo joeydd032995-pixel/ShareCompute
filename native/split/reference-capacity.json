@@ -1,0 +1,27 @@
+{
+  "profile": "capacity",
+  "model_sha256": "6dcc22694c8654b045ec40bbe350212b88893fd9010e8474bae5b19a43578ba1",
+  "runtime": "4da6337767f973e2b4d0797e5b323d77d8565e4a",
+  "prompt": "The capital of France is",
+  "tokens": 16,
+  "token_ids": [
+    12095,
+    13,
+    576,
+    6722,
+    315,
+    17689,
+    374,
+    24081,
+    13,
+    576,
+    6722,
+    315,
+    15344,
+    374,
+    21718,
+    13
+  ],
+  "text": " Paris. The capital of Spain is Madrid. The capital of Italy is Rome.",
+  "source": "sc-split-probe with no endpoints (whole model in one process), greedy, Linux x86-64, 2026-10-08. The three-worker loopback split produced identical tokens."
+}

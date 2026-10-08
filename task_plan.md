@@ -17,9 +17,13 @@ and a physical run on the operator's laptop, Android phone and iPhone have all p
 than any one device.
 
 **Next steps after the physical PASS, in order:**
-1. **Capacity.** Run a model the 4 GB laptop cannot load alone, such as a 3B Q4 model of about
-   1.9 GB, with a laptop-only run expected to fail. This is the first test of the actual reason
-   for pooling. Risk: iOS memory limits under the larger iPhone share.
+1. **Capacity — prepared (F40); physical run pending.** The plan named a 3B Q4 model of about
+   1.9 GB. Measured: that file runs on the Android phone alone (1,890 MiB of a 2,048 MiB budget), so
+   it cannot show pooling. The test is the same model at **Q8_0**, which needs 3,183 MiB on one worker;
+   no single budget holds it and the three pool. Verified on Linux loopback, with the launcher offering
+   it as a model choice. No laptop-only attempt: it would page through ~1.2 GB of free RAM instead of
+   failing (F40). Risks: the laptop's memory, the iPhone's limit under a 1,299 MiB share, and a
+   10-minute first upload.
 2. **Weight caching — done: loopback (F38) and physical phones (F39).** llama.cpp's RPC tensor
    cache is enabled on the phone workers. About 60 of the 66 s physical wall time was uploading
    weights over Wi-Fi, and a larger model makes that cost prohibitive. A second physical run sent

@@ -1,0 +1,17 @@
+Two runs of scripts/verify_capacity.py that are expected to FAIL, so the check is known to be able to.
+Run 2026-10-08 with the same binaries as the passing run.
+
+1. The Q4_K_M file of the same 3B model (qwen2.5-3b-instruct-q4_k_m.gguf, 2,104,932,768 bytes,
+   sha256 626b4a66...c62d). It fits the Android phone's 2048 MiB budget on its own, so it is not a
+   capacity test:
+
+     VERIFIED laptop alone (768 MiB) refuses the model
+     AssertionError: ('android', {'budget_mib': 2048, 'probe_exit': 0, 'refused': False, 'peak_bytes': 1982240768})
+
+   Measured with the same method: 768 MiB and 1536 MiB refuse it; 2048 MiB and 4096 MiB run it, at a
+   peak of 1,982,240,768 bytes (1,890 MiB).
+
+2. The 0.5B proof model. One worker at 768 MiB runs it (peak 437,276,160 bytes), so it is rejected
+   as a capacity model:
+
+     AssertionError: ('laptop', {'budget_mib': 768, 'probe_exit': 0, 'refused': False, 'peak_bytes': 437276160})

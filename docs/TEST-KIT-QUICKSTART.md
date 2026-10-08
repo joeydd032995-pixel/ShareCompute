@@ -27,11 +27,25 @@ If Windows asks about network access, permit the launcher on your private networ
 
 Open the laptop launcher, click **Start test**, then scan/connect both phone apps. The model is reused. Each phone keeps the model data it was sent, so a repeat test with the same model uploads only a small fraction over Wi-Fi and starts much sooner; the first test after installing, clearing, or changing the model still uploads everything. On the real devices, the second run sent the phones 24.4 MiB instead of 325.0 MiB and finished in 18 s instead of 70 s ([evidence](evidence/physical-weight-cache/)). Both apps show how much is cached and have a **Clear cached model data** button. If the iPhone signature expired, refresh it in SideStore first. No development environment is required. Tap Connect again after a test disconnects.
 
+## The 3B capacity test
+
+The quick test uses a model that fits on any one device. The capacity test uses Qwen2.5-3B at Q8_0, which no single worker budget can hold (3,183 MiB needed; the largest budget is 2,048 MiB), so a PASS means the three devices computed something none of them could have run alone within these limits ([evidence](evidence/capacity-loopback/)). It has not yet been run on the real devices.
+
+**Use a kit built after this feature merged.** The build linked under Downloads (`7ba06cc`) predates it and its dashboard has no model choice. Take all four downloads from the newest successful [Native three-device model split](https://github.com/joeydd032995-pixel/ShareCompute/actions/workflows/three-device-split.yml?query=branch%3Amain) run on `main` after the capacity-test pull request (#34) merged, until the links above are updated.
+
+1. Before you start: **close other programs on the laptop**. Its worker and the launcher need about 1.1 GB of real memory, and the laptop had roughly 1.2 GB free in the last test. The laptop also needs 3.7 GB of free disk space for the model.
+2. In the dashboard choose **3B capacity test (3.4 GB)** next to the Wi-Fi address, then **Start test**. The model downloads once (several minutes), then you scan the QR codes as usual.
+3. **The first run is slow: about 2.6 GB goes to the phones over Wi-Fi.** Expect 10 minutes or more. Keep the iPhone app on screen and leave the phones plugged in and on the same Wi-Fi. The generation limit is one hour. A second run reuses what the phones kept and is much faster.
+4. The result: **PASS** shows `"capacity": {"exceeds_largest_worker_budget": true}` in `report.json`. There is no `baseline.log`, because the laptop never runs the model alone; the 16 tokens are compared with ones recorded on a Linux PC.
+5. If it fails, **Download report** and keep the logs. A failure that says `Split greedy tokens differ from the pinned reference` is either a real fault or a harmless numerical difference between processors; the logs from the run are needed to tell which.
+
+The phones will keep about 2.5 GB of cached model data afterwards. Use **Clear cached model data** in each app when you are finished.
+
 ## What PASS means
 
 Each physical phone and the laptop completed native model computation with nonzero assigned layers, graph counters, memory allocations, and tunnel traffic; the 16 generated tokens matched a laptop-only baseline. The report records the proof. Phone identities are worker reports, not cryptographic hardware attestation.
 
-This is a small-model splitting proof, not a claim that the devices expose one pooled RAM address space, can run any large model, or will be faster than the laptop alone. Native buffer budgets are 768 MiB / 2048 MiB / 1536 MiB; these are not whole-app RAM limits. Exact token matching on mixed CPU architectures can still fail, and a failure must be investigated rather than treated as a pass.
+This describes the quick test, which is a small-model splitting proof, not a claim that the devices expose one pooled RAM address space, can run any large model, or will be faster than the laptop alone. Native buffer budgets are 768 MiB / 2048 MiB / 1536 MiB; these are not whole-app RAM limits. Exact token matching on mixed CPU architectures can still fail, and a failure must be investigated rather than treated as a pass.
 
 ## Troubleshooting and removal
 

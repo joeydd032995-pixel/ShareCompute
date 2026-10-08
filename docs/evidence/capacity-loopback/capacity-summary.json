@@ -1,0 +1,57 @@
+{
+  "single_worker": {
+    "laptop": {
+      "budget_mib": 768,
+      "probe_exit": 1,
+      "refused": true,
+      "peak_bytes": 0
+    },
+    "android": {
+      "budget_mib": 2048,
+      "probe_exit": 1,
+      "refused": true,
+      "peak_bytes": 0
+    },
+    "iphone": {
+      "budget_mib": 1536,
+      "probe_exit": 1,
+      "refused": true,
+      "peak_bytes": 0
+    },
+    "control": {
+      "budget_mib": 4096,
+      "probe_exit": 0,
+      "refused": false,
+      "peak_bytes": 3337814016
+    }
+  },
+  "pooled": {
+    "capacity": {
+      "model_file_bytes": 3616088480,
+      "combined_run_allocated_bytes": 3364962304,
+      "largest_worker_budget_bytes": 2147483648,
+      "exceeds_largest_worker_budget": true
+    },
+    "text": " Paris. The capital of Spain is Madrid. The capital of Italy is Rome.",
+    "workers": {
+      "laptop": {
+        "layers": 7,
+        "run_allocated_bytes": 589458432,
+        "budget_mib": 768,
+        "bytes_to_worker": 573890422
+      },
+      "android": {
+        "layers": 17,
+        "run_allocated_bytes": 1413839872,
+        "budget_mib": 2048,
+        "bytes_to_worker": 1393375362
+      },
+      "iphone": {
+        "layers": 13,
+        "run_allocated_bytes": 1361664000,
+        "budget_mib": 1536,
+        "bytes_to_worker": 1314271211
+      }
+    }
+  }
+}

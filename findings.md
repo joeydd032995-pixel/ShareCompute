@@ -2474,3 +2474,117 @@ time. The 5.4 s by which the split exceeds the laptop is not decomposed.
 attempt. The first attempt on a new model still uploads everything, and for a model that does not
 fit on the laptop that first upload will be the slow part, so it is worth running it once with the
 operator watching for storage use on both phones.
+
+
+## F40 — The planned 3B Q4 test cannot show pooling, because one phone holds it; the same model at Q8_0 can
+
+`task_plan.md` item 1 called for "a 3B Q4 model of about 1.9 GB" as "the first test of the actual
+reason for pooling". That premise did not survive measurement. The whole model was given to a
+single worker (`sc-rpc-worker`, then `sc-split-probe` with one endpoint) at each real budget:
+
+| Whole model on one worker with a budget of | Qwen2.5-3B Q4_K_M (2,104,932,768 B) | Qwen2.5-3B Q8_0 (3,616,088,480 B) |
+|---|---|---|
+| 768 MiB (laptop) | refused | refused |
+| 1536 MiB (iPhone) | refused | refused |
+| **2048 MiB (Android)** | **runs, peak 1,982,240,768 B (1,890 MiB)** | refused |
+| 3072 MiB | not run (runs at 2048) | refused |
+| 4096 MiB | runs | runs, peak 3,337,814,016 B (3,183 MiB) |
+
+Q4_K_M fits the Android phone's budget alone, with 158 MiB spare, so running it across three
+devices proves the split works and nothing about needing it. Q8_0 needs 3,183 MiB, more than every
+budget, and the three budgets together are 4,352 MiB. Both files are Qwen's own, pinned to Hugging
+Face commit `7dabda4d…`. The peaks are lower than the files because `token_embd.weight` (the input
+embedding, 166.9 MiB at Q4_K_M and 315.3 MiB at Q8_0) stays in the laptop-side client and is never sent to a worker.
+
+**The test is therefore Q8_0 of the same 3B model.** It is still "the 3B test"; only the
+quantisation changed. It costs a larger download (3.4 GB) and a longer first upload (2,582 MiB to the
+phones, about 8.5 minutes at the roughly 5 MiB/s that F39's cold run implies, an estimate and not a measurement).
+
+**Loopback result** (`docs/evidence/capacity-loopback/`, `scripts/verify_capacity.py`): the pool
+ran it. Layers 7 / 17 / 13 (the iPhone's 13 include `output.weight`), peak allocations 562 / 1,348 /
+1,299 MiB against budgets 768 / 2048 / 1536, combined 3,209 MiB. Tokens equal the single-process
+reference, text " Paris. The capital of Spain is Madrid. The capital of Italy is Rome." Two
+negative controls (the Q4 file, and the 0.5B model) make the script fail, as intended.
+
+**What changed in the code:**
+- `download_split_model.py` has two pinned profiles, `proof` (unchanged) and `capacity`.
+- The coordinator takes `--reference FILE`: tokens pinned from a larger machine
+  (`native/split/reference-capacity.json`, checked against this runtime revision, model checksum,
+  prompt and token count) replace the unsplit local baseline. A mismatch says "pinned reference",
+  not "local baseline". Without the flag nothing changes.
+- Every report now has `baseline_source` and a `capacity` block (`combined_peak_bytes`,
+  `largest_worker_budget_bytes`, `exceeds_largest_worker_budget`). Only when the combined
+  allocations exceed the largest budget does `capacity_note` stop saying "does not prove a model
+  larger than any one device fits", and then it says what the claim is: a budget result.
+- The launcher's dashboard has a model choice. Capacity uses its own file (`model-capacity.gguf`, so
+  it never evicts the 469 MiB model), a one-hour generation limit instead of five minutes (the
+  first upload alone is longer than five), and checks free disk space before downloading.
+
+**A decision recorded rather than taken for the operator: no laptop-alone attempt.** The plan said
+"with a laptop-only run expected to fail". The unsplit baseline is a memory-mapped load, and
+Windows will page a 3.4 GB mapping through about 1.2 GB of free RAM instead of refusing it, so the
+outcome could be a very slow success or a machine that stops responding. The run would also need
+to happen before the split, with the phones already connected. The capacity claim is therefore
+made from worker budgets, which this project controls, and the report says so.
+
+**Memory, measured because the laptop has 4 GB.** Peak real (anonymous) memory per process: laptop
+worker 570 MiB, iPhone-role worker 1,278 MiB, Android-role worker 1,352 MiB, and the laptop-side
+probe 391 MiB plus 3,455 MiB of mapped model file, which the OS can drop and re-read. On the physical
+laptop that is about 570 + 391 MiB plus the launcher and Windows, against roughly 1.2 GB free in F37's
+worker log.
+
+**Verified:**
+- Single-worker refusals and the Q4/Q8 table above, by `verify_capacity.py` and an earlier ad-hoc
+  copy of the same method.
+- The pooled split, five times, all equal to the reference. The launcher itself, run headless with
+  the capacity choice and two Linux workers standing in for the phones, loaded the pinned reference,
+  ran the whole generation with tokens equal to it, and then was rejected by the physical-proof gate
+  ("Physical proof requires Android and native iOS workers"), which is that gate working.
+- `test_split_cluster.py` (22 tests) and `test_split_launcher.py` (13), with negative controls on
+  the reference and capacity checks. One of the new tests fails if the shipped reference stops
+  matching the pinned runtime revision.
+
+**Not verified:**
+- **Everything physical.** Wi-Fi upload time, the 1-hour limit being enough, the iPhone's memory
+  limit with a 1,299 MiB share, Android's low-memory killer, thermal throttling over a longer run,
+  and the Windows laptop with about 1.2 GB free.
+- **Cross-architecture token identity.** The reference was made on x86-64 Linux. F37 showed the 0.5B
+  model's tokens agree across x86-64 Windows, ARM Android and ARM iOS; a model six times larger can
+  differ legitimately, and the strict gate would then report FAIL for a numerically benign reason.
+- **The launcher's capacity path on Windows.** Linux only here; CI runs the unit tests on Windows.
+- **The new dashboard markup** was served and its choice offered (the page contained the option), but
+  no browser rendered it.
+- **Apps.** No phone code changed. The installed apps work as they are, but nothing in them was
+  re-tested with the 3B model, including how the weight cache behaves at 2.5 GB of files.
+- **Disk.** The phones will keep about 2.5 GB of cached 3B weights until the operator clears them,
+  on top of the 0.5B cache from F39.
+
+**Consequence:** the physical run can now fail in a way that means something. A PASS shows three
+physical devices computing a model that no single worker budget could hold, with tokens equal to a
+reference made elsewhere. A FAIL with `Split greedy tokens differ from the pinned reference` is
+ambiguous between a real fault and benign numerical drift, and the logs of both runs would be
+needed to tell which.
+
+### F40 addendum — corrections after review of PR #34
+
+Three review findings were checked against the code and all three held.
+
+- **The `capacity` block counted lifetime peaks, which phones carry between runs.** F40 above names
+  `combined_peak_bytes`, built from each worker's `peak_bytes`. A phone's native worker lives as long
+  as its app, and `sc_rpc_peak()` is a high-water mark for that whole life, so a 0.5B run made after a
+  3B run, without closing the apps, would have summed the phones' old 1,348 and 1,299 MiB with the
+  laptop's fresh 59 MiB and labelled the small model a capacity result. The block now holds
+  `combined_run_allocated_bytes`, built from `run_allocated_bytes`: the most each worker's live
+  `allocated_bytes` reached, sampled from its telemetry every 100 ms while the split generation ran.
+  Both phone apps already send `allocated_bytes`, so no app changed. The loopback figures are
+  unchanged (562.2 / 1,348.3 / 1,298.6 MiB, combined 3,209.1 MiB), and the 0.5B model reproduces F37's
+  peaks exactly (59,005,184 / 133,527,296 / 257,146,368 bytes) while still being reported as not a
+  capacity result. A new unit test fails on the old behaviour. **Not verified:** the stale-peak case on real
+  phones, because it needs a 3B run followed by a quick run on the same open apps.
+- **`verify_capacity.py` did not read the worker's output while the probe ran.** The worker writes four
+  stats lines a second and logs to the same pipe, which fills in under two minutes. A slow machine would
+  then stall the worker and the probe, and the control could record an intermediate peak. The output is
+  now drained on a thread. The runs here finish in 10 to 20 seconds, so the fault was reachable on a
+  slower runner and was not seen here.
+- **The quickstart pointed the capacity instructions at a kit that cannot do them.** Build `7ba06cc` has no
+  model choice. The quickstart now says so and tells the reader to take a kit from a `main` build after #34.

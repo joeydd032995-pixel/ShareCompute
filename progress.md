@@ -752,3 +752,26 @@ between runs (`docs/evidence/physical-weight-cache/`, F39).
 - **The warm bytes equal the loopback run's** (16,175,106 to Android, 9,443,194 to the iPhone).
 - **Still not shown on hardware.** The damaged-file rejection, survival of an app kill or reboot, and
   the OS purging cache storage.
+
+## 3B capacity test, prepared — 2026-10-08
+
+Started at the owner's request ("start the 3B test"). F40 has the full record. In short:
+
+- **A premise in the plan was wrong.** The plan's 3B Q4 model (2.1 GB) runs on the Android phone alone,
+  inside its 2,048 MiB budget (1,890 MiB peak), so it cannot show that pooling is needed. The same model
+  at Q8_0 needs 3,183 MiB on one worker. Every real budget refuses it, the 3 pooled budgets
+  (4,352 MiB) hold it. That is the test.
+- **What changed.**
+  - `download_split_model.py` has a `proof` and a `capacity` profile, both pinned and checksummed.
+  - The coordinator takes `--reference`: tokens pinned from a Linux run replace the unsplit local
+    baseline, which the 4 GB laptop should not be asked to run. Reports gain `baseline_source` and a
+    `capacity` block.
+  - The launcher's dashboard has a model choice; capacity uses its own file, a one-hour limit and a
+    disk-space check.
+  - `scripts/verify_capacity.py` checks the claim: each budget refuses the model, a large budget
+    accepts it, the pool passes against the reference.
+- **Loopback, real model.** All pass: the single-worker refusals, the pooled split (peaks 562 / 1,348 /
+  1,299 MiB against 768 / 2048 / 1536), the launcher end to end up to the physical-proof gate, 22 + 13
+  unit tests, and two negative controls.
+- **Not run.** Any physical device. The laptop is the worry: about 570 MiB for its worker plus 391 MiB for
+  the probe against roughly 1.2 GB free. Evidence: `docs/evidence/capacity-loopback/`.

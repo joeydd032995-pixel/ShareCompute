@@ -10,7 +10,8 @@ This is a bounded proof, not a production inference service. Start with the pinn
 Qwen2.5-0.5B-Instruct Q4_K_M model (491,400,032 bytes), a 512-token context, and 24
 generated tokens. The small model makes installation, transport, and numerical
 verification possible before increasing memory use. It does not demonstrate a model
-larger than any single device's capacity.
+larger than any single device's capacity. The capacity test below does, and has so far run on
+loopback only.
 
 ## What combining RAM means here
 
@@ -57,6 +58,33 @@ Desktop workers started by `split_cluster.py` use a cache only with `--cache-dir
 each worker `DIR/<node>`. The laptop's own worker leaves it off by default: its shard travels over
 loopback, so caching it saves nothing. `report.json` records each worker's cache hits, stores and
 rejections for the run under `workers.<node>.cache`.
+
+## Capacity test
+
+The 0.5B model fits on every worker, so it proves splitting and not pooling. The capacity profile
+is Qwen2.5-3B-Instruct at **Q8_0** (3,616,088,480 bytes, pinned in `scripts/download_split_model.py`).
+The Q4_K_M file of the same model was the first choice and is not enough: one worker holds it in
+1,890 MiB, inside the Android budget (F40).
+
+| One worker needs for the whole Q8_0 model | 3,183 MiB |
+|---|---:|
+| Largest single budget (Android) | 2,048 MiB |
+| The three budgets together | 4,352 MiB |
+
+On Linux loopback the three budgets pooled and ran it: peak allocations 562 / 1,348 / 1,299 MiB
+(laptop / Android / iPhone), tokens equal to the reference (`evidence/capacity-loopback/`). The
+physical run is the next step.
+
+- **Reference, not baseline.** The laptop never runs this model unsplit. The coordinator takes
+  `--reference native/split/reference-capacity.json`, tokens recorded from the same runtime on a Linux
+  PC, and `report.json` says `"baseline_source": "pinned-reference"`.
+- **What the claim is.** `report.json` has a `capacity` block. When what the workers held during the run
+  (`run_allocated_bytes`, not their lifetime peaks) adds up to more than the largest budget it says so and replaces the "small-model" note. This is a
+  statement about worker budgets, not about physical memory limits.
+- **Limits.** The generation is allowed an hour, since the first upload sends about 2,580 MiB to the
+  phones. The laptop's real memory use is about 570 MiB for its worker and 391 MiB for the probe.
+- **Reproduce on loopback:** `python3 scripts/download_split_model.py --profile capacity`, then
+  `python3 scripts/verify_capacity.py --bin-dir build/desktop/bin --model models/split-capacity.gguf --out split-runs/capacity`.
 
 ## Get the builds
 
