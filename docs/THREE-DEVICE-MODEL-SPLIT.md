@@ -47,6 +47,12 @@ every cached file against its hash before using it; a damaged or partial file is
 again, never computed with (F38). On loopback a warm run sent the Android worker 16 MB instead of
 125 MB, and the iPhone worker 9 MB instead of 215 MB.
 
+On the operator's physical Android phone and iPhone the second of two back-to-back runs sent them
+24.4 MiB instead of 325.0 MiB (−92.5%) and took 18.4 s instead of 69.6 s. Every cached byte was a
+hit and none was rejected (F39, `evidence/physical-weight-cache/`). The Wi-Fi saving there is a measured
+byte count. Survival across an app kill or reboot, and the damaged-file case on a phone, have not
+been observed.
+
 Desktop workers started by `split_cluster.py` use a cache only with `--cache-dir DIR`, which gives
 each worker `DIR/<node>`. The laptop's own worker leaves it off by default: its shard travels over
 loopback, so caching it saves nothing. `report.json` records each worker's cache hits, stores and
@@ -55,12 +61,12 @@ rejections for the run under `workers.<node>.cache`.
 ## Get the builds
 
 1. Check out `main`.
-2. Open the [current Actions run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204)
-   for commit `4e2ce7e` and download the matching
-   [Windows](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298081934),
-   [Linux](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298281280),
-   [Android ARM64](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298006786), and
-   [iPhone IPA](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298360715)
+2. Open the [current Actions run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657)
+   for commit `7ba06cc` and download the matching
+   [Windows](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11521311221),
+   [Linux](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11521241439),
+   [Android ARM64](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11520542858), and
+   [iPhone IPA](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11520304646)
    artifacts as appropriate. Builds older than September 29 lack QR pairing, and
    builds older than October 4 lack the readable join errors and the Android
    foreground service. These CI artifacts expire; use a later successful run of

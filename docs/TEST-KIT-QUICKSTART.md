@@ -4,18 +4,16 @@ This kit is for a 4 GB laptop, 8 GB Android phone, and 8 GB iPhone. It splits on
 
 ## Downloads
 
-[Current build](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204) from `main` at commit `4e2ce7e`. Sign in to GitHub to download artifacts. Take the laptop kit and both phone apps from this same build.
+[Current build](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657) from `main` at commit `7ba06cc`. Sign in to GitHub to download artifacts. Take the laptop kit and both phone apps from this same build.
 
 | Device | Download |
 | --- | --- |
-| Windows 10/11 x86-64 laptop | [Standalone Windows kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11297872662) |
-| Ubuntu 24.04+ x86-64 laptop | [Standalone Linux kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11297807818) |
-| Android 9+ ARM64 | [Worker APK](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298395664) |
-| iPhone iOS 16+ | [Worker IPA (requires signing)](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37187826204/artifacts/11298360715) |
+| Windows 10/11 x86-64 laptop | [Standalone Windows kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11521311221) |
+| Ubuntu 24.04+ x86-64 laptop | [Standalone Linux kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11521241439) |
+| Android 9+ ARM64 | [Worker APK](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11520542858) |
+| iPhone iOS 16+ | [Worker IPA (requires signing)](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37707858657/artifacts/11520304646) |
 
-Both packaged laptop executables passed real-model three-process inference tests in CI, and the iPhone app passed native inference in the iOS simulator. On 2026-10-07 this kit passed on a real Windows laptop, Android phone and iPhone ([evidence](evidence/physical-three-device/)). These artifacts expire on 2027-01-02; a later successful run of the same workflow on `main` produces replacements.
-
-**The linked `4e2ce7e` build predates the phone weight cache** (PR #31). To get it, take all four downloads from the newest successful [Native three-device model split](https://github.com/joeydd032995-pixel/ShareCompute/actions/workflows/three-device-split.yml?query=branch%3Amain) run on `main` after PR #31 merged, until the links above are updated.
+Both packaged laptop executables passed real-model three-process inference tests in CI, and the iPhone app passed native inference in the iOS simulator. On 2026-10-07 the kit passed on a real Windows laptop, Android phone and iPhone ([evidence](evidence/physical-three-device/)), and on 2026-10-08 a build with the weight cache passed twice in a row on the same devices ([evidence](evidence/physical-weight-cache/)). The reports do not record the exact commit of the build the operator used. These artifacts expire on 2027-01-06; a later successful run of the same workflow on `main` produces replacements.
 
 ## First use
 
@@ -27,7 +25,7 @@ If Windows asks about network access, permit the launcher on your private networ
 
 ## Every later test
 
-Open the laptop launcher, click **Start test**, then scan/connect both phone apps. The model is reused. With phone apps built after the weight cache landed (PR #31; see Downloads), each phone also keeps the model data it was sent, so a repeat test with the same model uploads only a small fraction over Wi-Fi and starts much sooner; the first test after installing, clearing, or changing the model still uploads everything. Both apps show how much is cached and have a **Clear cached model data** button. If the iPhone signature expired, refresh it in SideStore first. No development environment is required. Tap Connect again after a test disconnects.
+Open the laptop launcher, click **Start test**, then scan/connect both phone apps. The model is reused. Each phone keeps the model data it was sent, so a repeat test with the same model uploads only a small fraction over Wi-Fi and starts much sooner; the first test after installing, clearing, or changing the model still uploads everything. On the real devices, the second run sent the phones 24.4 MiB instead of 325.0 MiB and finished in 18 s instead of 70 s ([evidence](evidence/physical-weight-cache/)). Both apps show how much is cached and have a **Clear cached model data** button. If the iPhone signature expired, refresh it in SideStore first. No development environment is required. Tap Connect again after a test disconnects.
 
 ## What PASS means
 

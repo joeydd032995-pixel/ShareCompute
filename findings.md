@@ -2397,3 +2397,80 @@ full, later attempts mostly do not. It also adds a third instance of a rule this
 re-learning (facts #4 and #10): **an optimisation that skips work on a "yes" must verify the yes**.
 An unchecked skip turns a damaged file into wrong output, and here the wrong output was fluent
 English.
+
+
+## F39 — The weight cache works on the operator's physical Android phone and iPhone: 92.5% less data over Wi-Fi on the second run, identical output
+
+F38 built the cache and ran it on loopback, and listed "physical devices" first among what it had not
+verified. The operator then ran the test kit twice in a row on the same laptop, Android phone and
+iPhone as F37, keeping the phone apps' caches between the runs. Both reports and logs are in
+`docs/evidence/physical-weight-cache/{cold,warm}/`, masked as F37's were.
+
+| | Cold | Warm |
+|---|---:|---:|
+| Bytes to Android | 125,378,346 | 16,175,106 (−87.1%) |
+| Bytes to iPhone | 215,447,670 | 9,443,194 (−95.6%) |
+| Both phones | 325.0 MiB | 24.4 MiB (−92.5%) |
+| Android cache | 109,191,936 stored | 109,191,936 hit |
+| iPhone cache | 205,997,568 stored | 205,997,568 hit |
+| Rejected by the hash check | 0 | 0 |
+| Split wall time | 69,577 ms | 18,409 ms (−73.5%) |
+
+Both runs: `PASS`, `physical_devices: true`, layers 0–4 / 5–16 / 17–24, buffer peaks 59,005,184 /
+133,527,296 / 257,146,368 bytes (identical to each other and to F37), 16 graph calls per worker,
+and 16 token IDs equal to the laptop-only baseline.
+
+**What the numbers establish:**
+
+- **The cache path works on both phone platforms, on real hardware.** The Android native worker and
+  the iOS native worker each stored files on the first run and served them on the second. Each
+  phone's warm `cache_hit_bytes` equals its cold `cache_stored_bytes` exactly, so nothing it stored was
+  missed.
+- **The hit path is correct, as far as one run shows.** The hash check ran on every hit, nothing was
+  rejected, and the output is token-identical to the baseline. F38's control showed what an unchecked
+  hit does to output; this run is the checked path producing the right one.
+- **F38's prediction held to the byte.** The tensor table said 1 MiB makes 104.1 MiB of Android's
+  share and 196.5 MiB of the iPhone's cacheable (F38, first table). The phones served 104.1 MiB and
+  196.5 MiB.
+- **The post-hit traffic is network-independent.** Warm bytes to Android and iPhone, 16,175,106 and
+  9,443,194, are the same two numbers F38 measured on Linux loopback. What is still sent after a hit
+  is the small tensors under 1 MiB, the graph traffic and the protocol, which depend on the model and
+  the placement and not on the link.
+- **The cache moves upload time and nothing else.** Prefill and decode differ by 5.2% and 5.7%
+  between the runs; the wall time fell by 51.2 s.
+
+**Not a claim of speedup over the laptop.** In the warm pass the laptop-only baseline took 12,982 ms
+and the split took 18,409 ms. The split's compute phase was about half the laptop's (5.65 s against
+11.87 s), as in F37, but a 0.5B model fits on the 4 GB laptop and splitting it does not win on wall
+time. The 5.4 s by which the split exceeds the laptop is not decomposed.
+
+**Verified:**
+- Both `report.json` files parse, and every figure above was computed from them with Python, not
+  copied by eye.
+- The five files of each pass were scanned for the user name and LAN addresses before and after
+  masking: none remain. The masked files differ from the originals only on the lines that held them.
+- The laptop's worker log shows `local cache : n/a` and zero cache counters in both runs, as designed
+  (`docs/THREE-DEVICE-MODEL-SPLIT.md`, Weight cache).
+
+**Not verified:**
+- **The damaged-file path on hardware.** Nothing was rejected, so the case that matters most for the
+  cache's safety (F38's control) has run on loopback only. Making it happen on a phone means
+  corrupting a file in an app's private storage, which neither platform offers without developer
+  tooling.
+- **Persistence.** The reports do not say whether either app was closed, killed, locked or left idle
+  between the runs, or for how long. Survival across an app kill, a reboot, or the OS purging cache
+  storage is unobserved. Android may clear `cacheDir` and iOS may purge `Library/Caches` when storage
+  is low; both are documentation, not observation.
+- **Which build.** The reports do not record the kit's commit. The cache fields prove it includes
+  PR #31, and the runtime revision is `4da6337…`.
+- **Phone storage.** About 301 MiB is now cached across the two phones. Neither phone's free space
+  was recorded, and the cache is never evicted until the operator clears it.
+- **One pair of runs.** The wall-time change is two samples over home Wi-Fi with no record of other
+  traffic. The byte counts are the reliable result; the −73.5% is indicative.
+- **Anything larger than the 0.5B proof model.** The cache's value at 3B depends on how many tensors
+  clear the 1 MiB threshold, which is a property of that model, not something this run measured.
+
+**Consequence:** the 3B capacity test can now be iterated without re-uploading the model each
+attempt. The first attempt on a new model still uploads everything, and for a model that does not
+fit on the laptop that first upload will be the slow part, so it is worth running it once with the
+operator watching for storage use on both phones.

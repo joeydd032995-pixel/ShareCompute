@@ -20,9 +20,10 @@ than any one device.
 1. **Capacity.** Run a model the 4 GB laptop cannot load alone, such as a 3B Q4 model of about
    1.9 GB, with a laptop-only run expected to fail. This is the first test of the actual reason
    for pooling. Risk: iOS memory limits under the larger iPhone share.
-2. **Weight caching — built, loopback-verified (F38); physical run pending.** Enable llama.cpp's RPC tensor cache on each worker. About 60 of the 66 s
-   physical wall time was uploading weights over Wi-Fi, and a larger model makes that cost
-   prohibitive.
+2. **Weight caching — done: loopback (F38) and physical phones (F39).** llama.cpp's RPC tensor
+   cache is enabled on the phone workers. About 60 of the 66 s physical wall time was uploading
+   weights over Wi-Fi, and a larger model makes that cost prohibitive. A second physical run sent
+   the phones 92.5% less (325.0 MiB to 24.4 MiB) and took 18.4 s instead of 69.6 s.
 3. **Hardware repeatability and failure.** Repeat runs, a run with the Android phone locked
    (PR #28), and closing a phone app mid-run (expect a clean, named FAIL).
 4. ~~**Roster.**~~ **Done 2026-10-07, by the owner's decision.** `windows-*`, `linux-*` and
