@@ -739,4 +739,16 @@ the whole model over Wi-Fi. F38 has the full record. In short:
   Warm runs send the phone workers 26 MB instead of 341 MB.
 - **Control.** The same build with hash checking disabled, on an identically damaged cache, failed
   with fluent wrong output.
-- **Not run.** Physical phones. Swift not compiled here (CI). Windows only via CI.
+- **Not run in this session.** Swift was not compiled here (CI did). Windows only via CI.
+
+### Physical run — 2026-10-08
+
+The operator ran the kit twice on the laptop, Android phone and iPhone with the phone caches kept
+between runs (`docs/evidence/physical-weight-cache/`, F39).
+
+- **Result.** Both runs PASS with tokens equal to the baseline. Bytes to the phones: 325.0 MiB, then
+  24.4 MiB (−92.5%). Each phone's warm cache hits equal its cold stores exactly. None rejected.
+  Split wall time 69.6 s, then 18.4 s.
+- **The warm bytes equal the loopback run's** (16,175,106 to Android, 9,443,194 to the iPhone).
+- **Still not shown on hardware.** The damaged-file rejection, survival of an app kill or reboot, and
+  the OS purging cache storage.
