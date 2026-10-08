@@ -12,6 +12,25 @@ import time
 def run(*args, timeout=180):
     print(' '.join(args), flush=True)
     return subprocess.run(args, check=True, timeout=timeout)
+
+def boot(udid, booted, attempts=2):
+    """Boot the simulator, erasing it and trying again if it never finishes booting.
+
+    Hosted macOS runners sometimes hang a first boot in a system migration (CoreLocationMigrator
+    was seen on PR #28, and the main-branch run for PR #31 timed out the same way). Nothing of
+    ours has run at that point, and a factory-reset device boots cleanly.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            if not booted: run('xcrun','simctl','boot',udid)
+            run('xcrun','simctl','bootstatus',udid,'-b', timeout=300)
+            return
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+            if attempt == attempts: raise
+            print(f'Simulator boot attempt {attempt} failed ({type(e).__name__}); erasing and retrying', flush=True)
+            subprocess.run(['xcrun','simctl','shutdown',udid], check=False, timeout=120)
+            run('xcrun','simctl','erase',udid, timeout=300)
+            booted = False
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--app', type=Path, required=True)
     p.add_argument('--bin-dir', type=Path, required=True); p.add_argument('--model', type=Path, required=True)
@@ -19,8 +38,7 @@ def main():
     devices = json.loads(subprocess.check_output(['xcrun','simctl','list','devices','available','--json']))
     phone = next(d for group in devices['devices'].values() for d in group if 'iPhone' in d['name'] and d.get('isAvailable'))
     udid = phone['udid']
-    if phone['state'] != 'Booted': run('xcrun','simctl','boot',udid)
-    run('xcrun','simctl','bootstatus',udid,'-b', timeout=300)
+    boot(udid, phone['state'] == 'Booted')
     run('xcrun','simctl','install',udid,str(a.app.resolve()))
     command = [sys.executable,str(Path(__file__).with_name('split_cluster.py')),'simulator',
                '--worker-binary',str(a.bin_dir/'sc-rpc-worker'),'--probe-binary',str(a.bin_dir/'sc-split-probe'),
