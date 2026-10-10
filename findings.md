@@ -2630,3 +2630,29 @@ chunks and checks a `threading.Event` between them, which `file_sha256` sets whe
 cover it, one with a negative control (the flag never set) that fails; the real coordinator with a
 15 second checksum still passes and records the right digest. **Not verified:** Stop during a real
 3.4 GB checksum on the laptop.
+
+## F42 — A missed heartbeat said only `TimeoutError`, and could not say whose fault it was
+
+**Report.** The operator ran the 3B capacity test and saw `Test failed: iPhone control disconnected: TimeOutError`
+(after F41's report about the iPhone not connecting at all).
+
+**What the message means.** The iPhone had connected and joined. The laptop then read nothing from its control
+channel for 10 seconds (`receive` wraps every read in `asyncio.wait_for(..., 10)`), and the relay failed the run. The
+text came from the generic branch, `str(e) or type(e).__name__`, so the operator got an exception class name.
+
+**Two causes with opposite fixes produce the same text.**
+1. The phone went quiet: screen locked, app backgrounded, Wi-Fi dropped.
+2. The laptop stopped running: the event loop is single-threaded, and an overdue 10 s timeout wins over bytes that
+   already arrived. F41 was one such cause (a checksum blocking the loop). Memory pressure on a 4 GB machine
+   with about 1.2 GB free would do the same, and nothing in this repository measures that.
+
+**Change.** The relay now runs a loop-lag monitor (0.5 s ticks; a tick more than 2 s late prints `Laptop stalled for N s`
+and is remembered for 30 s). A timed-out control read is reported by `describe_silence`: if the loop itself stalled for
+more than 3 s the message blames the laptop and says to close other programs; otherwise it says the phone sent no heartbeat
+for 10 s while the laptop was responding and to keep the app on screen, unlocked, on the same Wi-Fi.
+`RECEIVE_LIMIT` is a module constant so tests can shorten it. Three tests cover the two messages and the two relay
+paths (a silent phone; the whole process blocked for 4 s).
+
+**Not verified:** that either message matches the operator's failure. The cause of their report is **unknown**: no log
+has been seen. The stall threshold (3 s) and the 30 s memory are judgement calls, not measurements. The
+monitor itself runs on the loop, so a stall that ends before the next tick can only be inferred from `last_tick`.

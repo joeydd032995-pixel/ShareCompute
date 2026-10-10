@@ -72,8 +72,21 @@ async def send(writer, obj):
 class PeerClosed(ConnectionError):
     pass
 
-async def receive(reader, timeout=10):
-    line = await asyncio.wait_for(reader.readline(), timeout)
+# A phone sends a heartbeat twice a second. If none is read for this long, the session is dropped.
+RECEIVE_LIMIT = 10
+
+def describe_silence(node, stalled):
+    """Say whose fault a missed heartbeat was. They need opposite fixes: the laptop froze, or the phone went quiet."""
+    if stalled > 3:
+        return (f'{node} control disconnected: the laptop itself stopped responding for about {stalled:.0f} s, so it '
+                f'could not read the {node} app\'s heartbeat. The laptop is probably short of memory: close other '
+                f'programs on it and try again.')
+    return (f'{node} control disconnected: no heartbeat from the {node} app for {RECEIVE_LIMIT} s while the laptop was '
+            f'responding. The app was probably locked, in the background or off Wi-Fi: keep it on screen with the '
+            f'phone unlocked and on the same Wi-Fi.')
+
+async def receive(reader, timeout=None):
+    line = await asyncio.wait_for(reader.readline(), RECEIVE_LIMIT if timeout is None else timeout)
     if not line: raise PeerClosed('The other side closed the connection')
     if len(line) > 8192: raise ConnectionError('Oversized protocol message')
     result = json.loads(line)
@@ -114,6 +127,7 @@ class Relay:
         self.config = config; self.directory = directory
         self.nodes = {}; self.pending = {}; self.tasks = set(); self.writers = set(); self.listeners = []
         self.failure = asyncio.Event(); self.reason = ''; self.closing = False
+        self.last_tick = time.monotonic(); self.worst_stall = 0.0; self.stall_at = 0.0; self.monitor = None
 
     def fail(self, reason):
         if not self.closing:
@@ -125,6 +139,21 @@ class Relay:
         self.server = await asyncio.start_server(self.accept, '0.0.0.0', self.config['port'], ssl=ctx,
                                                  ssl_handshake_timeout=10, limit=16384)
         self.port = self.server.sockets[0].getsockname()[1]
+        self.monitor = asyncio.create_task(self.watch_loop())
+
+    async def watch_loop(self):
+        """Notice when this process stops running, which makes every device look silent at once."""
+        while True:
+            before = time.monotonic(); await asyncio.sleep(.5); now = time.monotonic()
+            late = now - before - .5; self.last_tick = now
+            if late > 2:
+                self.worst_stall = max(self.worst_stall, late); self.stall_at = now
+                print(f'Laptop stalled for {late:.1f} s: this program did not run (low memory or a busy disk).', flush=True)
+
+    def stalled_for(self):
+        """Seconds this loop has recently gone without running, whether or not the monitor has caught up yet."""
+        now = time.monotonic()
+        return max(now - self.last_tick - .5, self.worst_stall if now - self.stall_at < 30 else 0.0)
 
     async def accept(self, reader, writer):
         task = asyncio.current_task(); self.tasks.add(task); self.writers.add(writer)
@@ -170,6 +199,7 @@ class Relay:
                 self.fail(f'{node} control disconnected: the {node} app closed the connection '
                           f'(it left the screen, was disconnected, or stopped). Keep both phone apps open '
                           f'until the result appears, then press Start test and scan again.')
+            elif control and isinstance(e, (asyncio.TimeoutError, TimeoutError)): self.fail(describe_silence(node, self.stalled_for()))
             elif control: self.fail(f'{node} control disconnected: {str(e) or type(e).__name__}')
             else:
                 # Name only known values; the hello is unauthenticated and must not be echoed.
@@ -198,6 +228,7 @@ class Relay:
 
     async def stop(self):
         self.closing = True
+        if self.monitor: self.monitor.cancel(); await asyncio.gather(self.monitor, return_exceptions=True)
         listeners = [self.server, *self.listeners]
         for listener in listeners: listener.close()
         # Python 3.12+ waits for accepted connections in Server.wait_closed().
