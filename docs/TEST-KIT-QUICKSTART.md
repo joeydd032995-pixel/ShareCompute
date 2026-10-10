@@ -51,6 +51,10 @@ A failure is only diagnosable if there is a record of it. There was none for the
 3. **The iPhone log.** Open the ShareCompute app, find **Event log**, and use the share button. The
    same file is also in the Files app under the app's folder.
 
+All three matter, not just the one that looks broken: each log carries a UTC timestamp on every line
+(`ts` on the laptop and iPhone, `wall` on Android), and that is what makes it possible to say which
+device noticed the trouble first. One log on its own can only show that something went wrong nearby.
+
 Each log says which build it is, what it was doing, and what the phone's memory and temperature were
 doing at the time, so a phone that looks like it went quiet can be asked what it saw.
 

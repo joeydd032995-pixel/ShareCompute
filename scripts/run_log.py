@@ -13,6 +13,7 @@ Nothing here may fail a run: an unreadable counter is recorded as absent, never 
 `null` is honest; guessing is not, and crashing an overnight physical run over a metric is worse than
 both.
 """
+import datetime
 import json
 import os
 from pathlib import Path
@@ -68,25 +69,62 @@ class EventLog:
 
     Append-only and bounded only by disk: the whole point is to survive the failure that produced it,
     so nothing is buffered for later and nothing is overwritten.
+
+    Every record carries both clocks. `at_ms` is elapsed milliseconds since this log began, which is
+    what you read within one log; `ts` is UTC, which is the only way to line this log up against the
+    phones' own exports. The phone processes start long before a run, so their elapsed values have a
+    different origin entirely — without `ts` the three logs cannot be ordered, and "which device saw
+    the failure first" is the question F42 could not answer. iOS writes the same `ts`; Android writes
+    the identical field as `wall`.
+
+    **A logging failure never reaches the caller.** A full, read-only or detached disk makes `write`
+    raise, and these calls sit inside the coordinator's own coroutines and its cleanup path, so an
+    escaping error would take out the run and the report with it — the diagnostic facility failing
+    the thing it exists to diagnose. The file sink is dropped on the first error and the in-memory
+    records continue, so `report.json` still carries the timeline.
     """
     def __init__(self, path=None, echo=None, clock=time.monotonic):
         self.path = Path(path) if path else None
         self.clock = clock; self.start = clock(); self.echo = echo; self.records = []
-        self.handle = None
+        self.handle = None; self.write_error = None
         if self.path:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.handle = self.path.open('w', encoding='utf-8')
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.handle = self.path.open('w', encoding='utf-8')
+            except OSError as error:
+                self.write_error = f'{type(error).__name__}: {error}'
+
+    @staticmethod
+    def _utc():
+        # One reading, formatted to milliseconds: two calls to now() could straddle a millisecond
+        # boundary and stamp a record with a time it was never at.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond // 1000:03d}Z'
 
     def event(self, name, **fields):
-        record = {'at_ms': round((self.clock() - self.start) * 1000, 1), 'ev': name, **fields}
+        record = {'at_ms': round((self.clock() - self.start) * 1000, 1), 'ts': self._utc(), 'ev': name, **fields}
         self.records.append(record)
         if self.handle:
-            self.handle.write(json.dumps(record, separators=(',', ':'), default=str) + '\n'); self.handle.flush()
-        if self.echo: self.echo(record)
+            try:
+                self.handle.write(json.dumps(record, separators=(',', ':'), default=str) + '\n')
+                self.handle.flush()
+            except (OSError, ValueError) as error:
+                # Dropped rather than retried: if the disk is full every later line fails too, and
+                # one failed write per event would be a second failure mode on top of the first.
+                self.write_error = f'{type(error).__name__}: {error}'
+                try: self.handle.close()
+                except OSError: pass
+                self.handle = None
+        if self.echo:
+            try: self.echo(record)
+            except Exception: pass  # An echo is a convenience for the operator's terminal, never a run's fate.
         return record
 
     def close(self):
-        if self.handle: self.handle.close(); self.handle = None
+        if self.handle:
+            try: self.handle.close()
+            except OSError as error: self.write_error = self.write_error or f'{type(error).__name__}: {error}'
+            self.handle = None
 
 class Timeline:
     """Durations of the phases of a run, in the order they happened.

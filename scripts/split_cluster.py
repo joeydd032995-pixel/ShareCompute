@@ -430,21 +430,27 @@ BUILD_NOTE = ('Each worker reports the ShareCompute commit its native runtime wa
               'surrounding app or kit and is recorded but not compared, because a wrapper may legitimately be '
               'stamped differently from the library that computes.')
 
-def build_summary(records):
+def build_summary(records, probe=None):
     """Which build each component ran, and whether they agree.
 
     Mixed builds are not comparable evidence, so `validate_proof` refuses a PASS when two components
     name different commits. A component that cannot name its build at all is reported separately: that
     is missing provenance rather than a contradiction, and it is the state every run before F44 was in.
+
+    The probe is compared alongside the workers: it executes both the baseline and the split, so a
+    probe from another commit makes the two token streams the proof rests on incomparable, which is
+    exactly what this gate exists to catch. `records` holds only the workers that have joined so far,
+    so this is safe to call on a failure path.
     """
-    stamps = {'coordinator': KIT_BUILD}
+    stamps = {'coordinator': KIT_BUILD, 'probe': {'commit': probe}}
     apps = {}
     for node, rec in records.items():
         hello = rec.get('hello', {})
         stamps[f'{node}-worker'] = {'commit': hello.get('build')}
         apps[node] = hello.get('app_build')
     summary = build_stamp.compare(stamps)
-    return {'coordinator': KIT_BUILD, 'workers': {n: records[n].get('hello', {}).get('build') for n in records},
+    return {'coordinator': KIT_BUILD, 'probe': probe,
+            'workers': {n: records[n].get('hello', {}).get('build') for n in records},
             'app_builds': apps, 'note': BUILD_NOTE, **summary}
 
 def validate_proof(baseline, result, log, records, before, physical, build=None):
@@ -492,9 +498,11 @@ async def run_coordinator(a):
               'scope': 'physical-LAN' if physical else ('native-ios-simulator' if a.mode == 'simulator' else 'three-process-loopback'),
               'identity_note': 'Platform and simulator flags are worker reports, not hardware attestation.',
               'capacity_note': SMALL_MODEL_NOTE}
+    probe_build = build_stamp.UNKNOWN  # set below; defined here so the failure path can report it
     try:
         with timeline.span('startup'):
             check_binary(a.worker_binary); check_binary(a.probe_binary)
+            probe_build = binary_build(a.probe_binary)
             await relay.start()
         async def watch_memory():
             """Headroom on a 4 GB laptop, which F43 did not record.
@@ -534,7 +542,7 @@ async def run_coordinator(a):
                 await asyncio.sleep(.1)
             waiting.note(joined=sorted(relay.nodes))
         # Recorded as soon as every worker has spoken, so a run that fails later still says which builds ran.
-        report['build'] = build_summary(relay.nodes)
+        report['build'] = build_summary(relay.nodes, probe_build)
         if report['build']['mismatch']:
             print('WARNING mixed builds: ' + '; '.join(f'{c[:7]} = {", ".join(w)}'
                   for c, w in sorted(report['build']['commits'].items())), flush=True)
@@ -616,6 +624,9 @@ async def run_coordinator(a):
         await asyncio.gather(*tasks, return_exceptions=True)
         if hasattr(relay, 'server'): await relay.stop()
         # Measurement is attached even to a failed run: its timings are the diagnostic.
+        # Recomputed here as well as on the success path: a run that fails while workers are still
+        # joining never reaches that line, and provenance is most useful on exactly those runs.
+        report['build'] = build_summary(relay.nodes, probe_build)
         report['phases'] = timeline.summary()
         report['host_memory'] = memory
         report['loop_stalls'] = {'count': len(relay.stalls), 'worst_seconds': round(relay.worst_stall, 2),

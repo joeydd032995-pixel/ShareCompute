@@ -168,11 +168,11 @@ class MixedBuildTests(unittest.TestCase):
         self.records = {n: {'stats': {'peak_bytes': 10, 'graph_calls': 3}, 'bytes': [20, 30],
                             'hello': {'platform': 'linux', 'simulator': False, 'budget_mib': 64,
                                       'build': 'a' * 40, 'app_build': 'a' * 40}, 'peer': '127.0.0.1'} for n in NODES}
-    def summary(self):
+    def summary(self, probe='a' * 40):
         with mock.patch.object(build_stamp, 'read', return_value={'commit': 'a' * 40, 'short': 'a' * 7}):
             import split_cluster
             with mock.patch.object(split_cluster, 'KIT_BUILD', {'commit': 'a' * 40, 'short': 'a' * 7}):
-                return build_summary(self.records)
+                return build_summary(self.records, probe)
     def test_matching_builds_pass(self):
         build = self.summary()
         self.assertFalse(build['mismatch'])
@@ -193,6 +193,26 @@ class MixedBuildTests(unittest.TestCase):
         build = self.summary()
         self.assertFalse(build['mismatch']); self.assertEqual(build['unknown'], ['android-worker'])
         validate_proof(self.result, self.result, self.log, self.records, self.before, False, build)
+    def test_a_probe_from_another_commit_refuses_the_pass(self):
+        # The probe runs both the baseline and the split, so a probe from another commit makes the
+        # two token streams the whole proof compares incomparable. Codex raised this as P1 on PR #41.
+        build = self.summary(probe='b' * 40)
+        self.assertTrue(build['mismatch'])
+        self.assertEqual(build['commits']['b' * 40], ['probe'])
+        with self.assertRaises(ValueError) as caught:
+            validate_proof(self.result, self.result, self.log, self.records, self.before, False, build)
+        self.assertIn('different commits', str(caught.exception))
+        self.assertIn('probe', str(caught.exception))
+
+    def test_a_probe_that_cannot_name_its_build_is_recorded_not_failed(self):
+        # A probe built before --build existed, treated like any other unknown component.
+        build = self.summary(probe=None)
+        self.assertFalse(build['mismatch']); self.assertIn('probe', build['unknown'])
+        validate_proof(self.result, self.result, self.log, self.records, self.before, False, build)
+
+    def test_the_probe_build_is_reported(self):
+        self.assertEqual(self.summary()['probe'], 'a' * 40)
+
     def test_app_build_is_recorded_but_not_compared(self):
         # A wrapper may legitimately be stamped differently from the library that computes.
         self.records['laptop']['hello']['app_build'] = 'f' * 40
@@ -246,6 +266,34 @@ class RunLogTests(unittest.TestCase):
     def test_an_unserialisable_field_does_not_raise(self):
         log = run_log.EventLog()
         log.event('odd', path=Path('/tmp/x'), when=object())  # default=str keeps logging non-fatal
+    def test_a_disk_error_mid_run_is_recorded_not_raised(self):
+        # Codex P2 on PR #41: these calls sit inside the coordinator's coroutines and its cleanup
+        # path, so an escaping OSError would take out the run and report.json with it -- the
+        # diagnostic facility failing the thing it exists to diagnose.
+        class Full:
+            def write(self, *_): raise OSError(28, 'No space left on device')
+            def flush(self): pass
+            def close(self): pass
+        log = run_log.EventLog()
+        log.handle = Full()
+        log.event('join', node='android')              # must not raise
+        self.assertIsNone(log.handle)                  # sink dropped, not retried on every event
+        self.assertIn('No space left on device', log.write_error)
+        log.event('after')
+        self.assertEqual([r['ev'] for r in log.records], ['join', 'after'])
+
+    def test_a_sink_that_cannot_be_opened_degrades_to_memory(self):
+        log = run_log.EventLog(path=Path('/proc/nonexistent-dir/events.jsonl'))
+        log.event('still_recorded')
+        self.assertIsNone(log.handle); self.assertTrue(log.write_error)
+        self.assertEqual(log.records[0]['ev'], 'still_recorded')
+
+    def test_every_record_carries_utc_so_the_three_logs_can_be_lined_up(self):
+        # The phones' elapsed clocks start when their processes do, long before a run, so at_ms
+        # alone cannot order the laptop's log against theirs. iOS writes ts; Android writes wall.
+        record = run_log.EventLog().event('join')
+        self.assertRegex(record['ts'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$')
+
     def test_host_memory_answers_with_the_keys_and_never_raises(self):
         reading = run_log.host_memory()
         self.assertEqual(set(reading), {'total_bytes', 'available_bytes'})

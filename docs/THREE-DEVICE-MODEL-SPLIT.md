@@ -247,7 +247,7 @@ when the run fails** — a failed run's measurements are the diagnostic.
 
 | In `report.json` | What it answers |
 |---|---|
-| `build.coordinator`, `build.workers`, `build.app_builds` | Which commit each component was built from. `unknown` where a component cannot say. |
+| `build.coordinator`, `build.probe`, `build.workers`, `build.app_builds` | Which commit each component was built from. `unknown` where a component cannot say. The probe is listed because it runs **both** the baseline and the split, so a probe from another commit makes the two token streams the proof compares incomparable. |
 | `build.mismatch`, `build.commits` | Whether two components disagree. A run with mixed builds executes and keeps its timings, but **cannot be a PASS**: it is not comparable evidence. |
 | `build.unknown` | Components that reported no commit. That is missing provenance, not a contradiction, so it does not fail the run — it warns. |
 | `model_checksum.seconds`, `.mib_per_s` | How long checksumming the model took, and how fast. |
@@ -257,8 +257,22 @@ when the run fails** — a failed run's measurements are the diagnostic.
 | `loop_stalls` | Every time the coordinator's event loop stopped running, with its length. An alternative cause of a dropped heartbeat (F42), now distinguishable from a quiet phone. |
 
 `events.jsonl` beside the report is one JSON object per line, flushed as it happens, so a run that is
-killed still leaves its history. Each line has `at_ms` and `ev`; joins carry each worker's build,
-platform, peer and budget.
+killed still leaves its history. Each line has `at_ms`, `ts` and `ev`; joins carry each worker's
+build, platform, peer and budget.
+
+**Use `ts`, not `at_ms`, to compare the three logs.** Each device's `at_ms` counts from when *its
+own* log began, and the phone apps start long before a run does, so their elapsed values have
+unrelated origins — lining the logs up on `at_ms` puts events in the wrong order. `ts` is UTC and is
+the same field on every device: the laptop and iPhone both call it `ts`, and Android writes the
+identical value as `wall`. "Which device saw the failure first" is the question F42 could not answer,
+and `ts` is what answers it.
+
+Two limits worth knowing. A logging failure never fails a run: if the disk fills or goes read-only
+the file sink is dropped, `events.jsonl` stops there, and the run and `report.json` continue — the
+timeline is still in the report. And the mixed-build gate compares commits only, so it does not
+notice a component built from a *modified* checkout; `build.coordinator.dirty` records that for the
+laptop, but a worker binary carries only the bare commit it was branched from. That can only arise
+when building from source — a packaged kit and the CI-built phone apps are never in that state.
 
 Both phone apps keep their own log and can export it, so a phone that appears to go silent can be
 asked what it saw. The quickstart has the buttons.

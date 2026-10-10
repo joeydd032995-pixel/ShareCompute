@@ -855,3 +855,28 @@ keeps its timings but cannot be a PASS**, and it all lands as one PR.
   shared tree and recovered it; I verified my own work survived before continuing.
 - **The honest gap is iOS.** There is no Swift toolchain in this container — not even `swiftc -parse`.
   CI is the first thing that will compile it. F44 says so.
+
+## 2026-10-10 — PR #41 review round: the probe joins the mixed-build gate (F44 addendum)
+
+CI on `b943c20` went green on all seven jobs, closing F44's largest stated gap: the iOS Swift had
+never been compiled anywhere, and both `ios` and `ios-simulator` now build it, with
+`ios-simulator` running a real split with the iPhone app as a worker. `desktop (windows-latest)`
+executed the previously unrun Windows `host_memory` branch.
+
+Codex raised five issues on `03a5f32`; all five were real and four needed fixing (the fifth, the
+workflow path filters, was already fixed in `b943c20`).
+
+- `sc-split-probe` gained `--build` and joined `build_summary`. It runs both the baseline and the
+  split, so it decides whether the compared token streams are comparable — and it was the only
+  executable outside the gate. `--version` left byte-identical, because `check_binary` compares it
+  exactly.
+- `report['build']` is recomputed in the `finally` block, so a run that fails *while workers are
+  joining* — F42's scenario — keeps its provenance instead of the coordinator-only stub.
+- `EventLog` drops its file sink on a write error instead of raising into the coordinator's
+  coroutines and cleanup path.
+- Every coordinator record carries a UTC `ts`, so the laptop's log can be ordered against the
+  phones' (`ts` on iOS, `wall` on Android).
+
+Tests 52 + 13 pass. `verify_split_runtime.py` exit 0; all seven of its reports carry the probe
+stamp, including its two deliberate failures. Negative controls: a 3 s join timeout keeps full
+provenance in the FAIL report, and removing only the `finally` recomputation reduces it to the stub.

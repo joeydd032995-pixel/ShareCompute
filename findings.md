@@ -2879,3 +2879,89 @@ call in the method added) failing as it should.
 results cannot quietly enter the record. The next heartbeat failure should be explainable from three
 files instead of none. What this does *not* do is make any past run diagnosable: F42 stays unsettleable,
 and that remains the argument for having built this.
+
+### F44 addendum — CI closed the iOS gap, and review found a hole in the gate itself
+
+Two parts: what CI proved about the half of F44 this container could not check, and five defects
+Codex raised on PR #41, all of which were real.
+
+**The iOS gap is closed.** F44 said the iOS Swift had never been compiled anywhere — no Swift
+toolchain exists here, so not even `swiftc -parse` ran. CI's `ios` and `ios-simulator` jobs both
+build it, and both pass. `ios-simulator` goes further: it runs a real split with the native iPhone
+app as a worker, with the new event log and the mixed-build gate active, and PASSes. So
+`os_proc_available_memory`, the `ShareLink`/`FileRepresentation` signatures and the `project.yml`
+post-build stamp phase all hold, and the stamp phase demonstrably runs rather than silently
+no-opping — the job log prints `SCBuildCommit=cc5560f75b5ada77f8486b5512721542b6d17924`. The Android
+APK builds, and `desktop (windows-latest)` executes the Windows `host_memory` branch that was
+previously unrun, both directly and through four `verify_split_runtime.py` runs. All seven jobs green.
+
+A detail worth recording because it could have looked like a defect: in CI the resolved commit is
+GitHub's *merge* commit, not the PR head, because `resolve` prefers `GITHUB_SHA`. That is consistent
+across components — `actions/checkout` leaves `git rev-parse HEAD` at the same merge commit, so
+`read`'s git fallback agrees with `resolve`'s environment variable — so the gate does not fire in CI.
+A disagreement there would have been a false mismatch on every pull request.
+
+**The gate had a hole in the one component that produces the evidence.** `sc-split-probe` executes
+both the baseline and the split, so its build decides whether the two token streams the proof
+compares are comparable at all — and it was the only executable left out of `build_summary`. It did
+not even answer `--build`. This is worth more than the fix: the gate was assembled from the
+components that *report* a build (coordinator, worker hellos) rather than from the components that
+*determine the result*, and the probe is invisible in that framing because it never joins the relay.
+`--build` now exists on the probe (`--version` deliberately untouched, since `check_binary` compares
+it byte for byte) and the probe is compared with everything else.
+
+**A run that failed while workers were still joining lost its provenance** — which is precisely
+F42's scenario, the one this work exists to make diagnosable. `report['build']` was assigned after
+the all-workers-joined wait, under a comment of mine claiming a later failure would still say which
+builds ran; a failure *during* the wait skipped it. The report initializer seeds a stub
+`{'coordinator', 'note'}`, so the key was present but held `probe: None`, `workers: None`,
+`commits: {}` — no verdict, and a `KeyError` for anything reading `build['mismatch']`. The summary is
+now recomputed in the `finally` block from whichever workers have joined. **The lesson is about
+where a comment's claim is checked:** the comment was true of the line's intent and false of its
+position, and nothing tested the path it described.
+
+**The event log could fail the run it exists to diagnose.** `EventLog.event` wrote and flushed
+without a guard, while the module docstring promised that nothing there may fail a run. These calls
+sit inside the coordinator's coroutines and its cleanup path, so a full, read-only or detached disk
+would have raised through `Relay.accept` and again from the handler, preventing cleanup and
+`report.json` itself. The sink is dropped on the first error, `write_error` records why, and the
+in-memory records continue, so the report keeps the timeline.
+
+**Three logs could not be ordered against each other.** The phones carry a UTC field (`ts` on iOS,
+`wall` on Android) specifically so they can be lined up; the coordinator wrote only `at_ms`, elapsed
+from the start of its own log. The phone processes start long before a run, so their elapsed values
+have unrelated origins, and "which device saw the failure first" — F42's question — was still
+unanswerable with all three logs in hand. Coordinator records now carry `ts`, formatted from a single
+clock reading so two `now()` calls cannot straddle a millisecond boundary.
+
+A fifth finding, that `build_stamp.py` and `run_log.py` matched none of the split workflow's path
+filters, had already been fixed in `b943c20`: `split_cluster.py` imports both, so a change to either
+would have merged without any of the seven jobs running.
+
+**Verified:** `test_split_cluster.py` 52 tests (6 new: a mismatched probe refused and named, a probe
+that cannot name its build recorded not failed, the probe build reported, a mid-run disk error
+recorded rather than raised with the sink dropped and records intact, an unopenable sink degrading to
+memory, and the UTC format); `test_split_launcher.py` 13. The rebuilt probe answers `--build` with
+the commit while `--version` is unchanged byte for byte. A real loopback split reached `status: PASS`
+with coordinator, probe and all three workers agreeing (`complete: true`) and `ts` on every event
+line. `verify_split_runtime.py` passed end to end, exit 0; all seven of its reports carry the probe
+stamp with `complete: true`, **including its two deliberate failures** (`worker-death`,
+`memory-refusal`), which is independent confirmation that the failure path keeps provenance.
+**Negative controls:** a 3 s `--join-timeout` with nothing connected produced a FAIL report carrying
+the probe, the coordinator and the one worker that joined, plus phases, host memory and the event
+log; removing only the `finally` recomputation reduced the same run to the empty stub above.
+
+**Not verified:**
+- **Nothing in this addendum ran on a phone.** Neither export button, neither share sheet, no file
+  rotation, no thermal or memory callback, no `LogProvider` URI grant. The `ts`/`wall` correlation is
+  therefore reasoned from the field definitions, not demonstrated across three real device logs.
+- **The probe's place in the gate is proven only where all components share a commit.** CI builds the
+  iOS worker and the desktop probe in two separate `build_split_runtime.py` invocations; both resolve
+  through `GITHUB_SHA`, so they agree, but a build arrangement that staged them differently would now
+  fail runs that previously passed. That is the intended behaviour and also a new way to break a run.
+- **The gate still compares commits only, not tree state.** A worker binary carries the bare commit
+  through `-DSC_BUILD_COMMIT`, so one built from a modified checkout reports the clean commit it was
+  branched from. `build.coordinator.dirty` records this for the laptop only. It cannot arise for the
+  operator — a packaged kit reads a file stamp and the phone apps are CI-built — and widening the
+  gate to treat dirtiness as a mismatch would fail every build-from-source loopback run, so it is
+  recorded rather than enforced.

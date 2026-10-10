@@ -11,6 +11,10 @@ DerivedData/
 build/
 .deps/
 .sc-pairing/
+# `init --dir` can put pairing material anywhere, and it contains a private key and the join
+# tokens. The default directory above is not enough on its own -- this nearly reached a commit.
+.sc-pairing*/
+*.pem
 __pycache__/
 *.gguf
 *.partial
