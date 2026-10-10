@@ -16,6 +16,7 @@ import secrets
 import socket
 import ssl
 import sys
+import threading
 import time
 import uuid
 
@@ -325,9 +326,22 @@ async def file_sha256(path):
     loop itself freezes that for as long as it takes, and a slow laptop takes well over 10 seconds, so every
     connected device was dropped with "control disconnected: TimeoutError" (F41).
     """
-    def run():
-        with Path(path).open('rb') as f: return hashlib.file_digest(f, 'sha256').hexdigest()
-    return await asyncio.to_thread(run)
+    stop = threading.Event()
+    try: return await asyncio.to_thread(_sha256_file, path, stop)
+    except asyncio.CancelledError:
+        # Cancelling the await does not stop the thread, and asyncio.run() waits for it before the launcher
+        # can exit, so Stop would hang for the rest of a multi-gigabyte checksum. The thread checks this.
+        stop.set(); raise
+
+HASH_CHUNK = 8 << 20
+
+def _sha256_file(path, stop):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as f:
+        while chunk := f.read(HASH_CHUNK):
+            if stop.is_set(): raise InterruptedError('Stopped')
+            digest.update(chunk)
+    return digest.hexdigest()
 
 def load_reference(path, model_sha256, prompt, tokens):
     """Tokens produced elsewhere by this runtime, for a model too large to run unsplit on the laptop."""

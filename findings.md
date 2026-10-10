@@ -2619,3 +2619,14 @@ interpreter lock for large reads, so the loop keeps serving heartbeats. A unit t
 **Not verified:** the checksum time on the real laptop, and that this was the cause of any failure the
 operator saw. It is a defect that would have stopped the run; it does not explain a device that never
 connects, because it happens only after all three have joined.
+
+### F41 addendum — the threaded checksum must stop when the run is stopped
+
+Review of #36 found that moving the checksum to `asyncio.to_thread` left it uncancellable. Cancelling the
+await (the operator pressing Stop, or Close) does not stop the thread, and `asyncio.run()` waits for its
+default executor before returning, so the launcher would stay busy for the rest of a multi-gigabyte
+checksum, on the order of the tens of seconds F41 expects on the 4 GB laptop. The checksum now reads in 8 MiB
+chunks and checks a `threading.Event` between them, which `file_sha256` sets when it is cancelled. Two tests
+cover it, one with a negative control (the flag never set) that fails; the real coordinator with a
+15 second checksum still passes and records the right digest. **Not verified:** Stop during a real
+3.4 GB checksum on the laptop.
