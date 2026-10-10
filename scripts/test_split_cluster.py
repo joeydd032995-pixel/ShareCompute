@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from split_cluster import CACHE_STATS, NODES, PROMPT, REV, Relay, cache_delta, capacity_summary, close, file_sha256, _sha256_file, init_cluster, load_reference, paired_connection, receive, send, validate_proof
+from split_cluster import CACHE_STATS, NODES, PROMPT, REV, Relay, cache_delta, capacity_summary, close, describe_silence, file_sha256, _sha256_file, init_cluster, load_reference, paired_connection, receive, send, validate_proof
 
 class ProofTests(unittest.TestCase):
     def setUp(self):
@@ -58,6 +58,13 @@ class ReferenceTests(unittest.TestCase):
         shipped = Path(__file__).resolve().parents[1] / 'native/split/reference-capacity.json'
         ref = load_reference(shipped, models.CAPACITY_SHA256, PROMPT, 16)
         self.assertEqual(len(ref['token_ids']), 16)
+
+class SilenceTests(unittest.TestCase):
+    def test_the_two_causes_give_opposite_advice(self):
+        laptop = describe_silence('iphone', 14); phone = describe_silence('iphone', 0)
+        self.assertIn('laptop itself stopped responding for about 14 s', laptop); self.assertIn('close other programs', laptop)
+        self.assertIn('while the laptop was responding', phone); self.assertIn('keep it on screen', phone)
+        self.assertNotEqual(laptop, phone)
 
 class ChecksumTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_slow_checksum_does_not_stop_the_event_loop(self):
@@ -200,6 +207,30 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(self.relay.failure.wait(), 2)
         # The phone app ended the session (left the foreground, Disconnect, or a crash); say so.
         self.assertIn('iphone control disconnected: the iphone app closed the connection', self.relay.reason)
+    async def test_a_silent_phone_is_named_as_the_phone(self):
+        import split_cluster
+        reader, writer = await self.join()
+        with mock.patch.object(split_cluster, 'RECEIVE_LIMIT', 1), contextlib.redirect_stdout(io.StringIO()):
+            self.relay.fail('reset')  # nothing yet; the heartbeat limit below is what is under test
+            self.relay.reason = ''; self.relay.failure.clear()
+        # The limit was read when the handler began waiting, so open a fresh session under the short limit.
+        await close(writer)
+        self.relay.reason = ''; self.relay.failure.clear(); self.relay.nodes.clear()
+        with mock.patch.object(split_cluster, 'RECEIVE_LIMIT', 1), contextlib.redirect_stdout(io.StringIO()):
+            reader, writer = await self.join()
+            await asyncio.wait_for(self.relay.failure.wait(), 5)   # the phone sends nothing
+        self.assertIn('no heartbeat from the iphone app for 1 s while the laptop was responding', self.relay.reason)
+        await close(writer)
+    async def test_a_frozen_laptop_is_named_as_the_laptop(self):
+        import split_cluster, time
+        with mock.patch.object(split_cluster, 'RECEIVE_LIMIT', 1), contextlib.redirect_stdout(io.StringIO()):
+            reader, writer = await self.join()
+            await asyncio.sleep(.1)
+            time.sleep(4)   # the whole process stops, as when the laptop thrashes
+            await asyncio.wait_for(self.relay.failure.wait(), 5)
+        self.assertIn('the laptop itself stopped responding', self.relay.reason)
+        self.assertNotIn('while the laptop was responding', self.relay.reason)
+        await close(writer)
     async def join(self):
         reader, writer = await paired_connection(self.pair)
         await send(writer, {'kind': 'control', 'node': 'iphone', 'token': self.pair['token'],
