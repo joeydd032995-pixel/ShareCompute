@@ -2588,3 +2588,34 @@ Three review findings were checked against the code and all three held.
   slower runner and was not seen here.
 - **The quickstart pointed the capacity instructions at a kit that cannot do them.** Build `7ba06cc` has no
   model choice. The quickstart now says so and tells the reader to take a kit from a `main` build after #34.
+
+
+## F41 — Checksumming the 3B model on the coordinator's own loop drops every connected device
+
+F40's code computed the model checksum right after all three devices joined, to compare it with the
+pinned reference. Before #34 the checksum ran after the generation, so the move to before it was new.
+It ran on the asyncio loop that reads each device's heartbeat with a 10 second limit
+(`receive(reader)`, `timeout=10`). While the loop is blocked, no heartbeat is read, and when it
+resumes the overdue timeout wins over the data that arrived meanwhile.
+
+**Reproduced.** The real coordinator on Linux loopback, with the 0.5B model and a checksum slowed to
+15 seconds (`hashlib.file_digest` wrapped to sleep first): `FAIL`, `laptop control disconnected:
+TimeoutError`. The same run with the checksum off the loop: `PASS`, tokens equal to the baseline.
+
+**Why F40 missed it.** Every loopback run in F40 checksummed 3.4 GB in about 3 seconds on a fast CPU
+with hardware SHA, so the loop was never blocked long enough. The 4 GB laptop is a 2-core AMD A9-9420e
+with no hardware SHA; its checksum time for 3.4 GB was **not measured**, and a figure above 10 seconds
+needs only about 340 MB/s of throughput to avoid, so I expect it to fail. The 0.5B model (469 MiB)
+is shorter but not safe on slow storage: it fails if the laptop reads it slower than about 47 MB/s.
+
+**Effect.** A capacity run from a build of #34 would have lost all three devices a moment after the
+last one joined, reported as `<node> control disconnected: TimeoutError`. The iPhone app shows this as
+"The laptop closed the connection."
+
+**Fix.** `file_sha256` runs the checksum on a worker thread (`asyncio.to_thread`); `hashlib` releases the
+interpreter lock for large reads, so the loop keeps serving heartbeats. A unit test ticks the loop while a
+0.6 s checksum runs and fails on the old behaviour (negative control run).
+
+**Not verified:** the checksum time on the real laptop, and that this was the cause of any failure the
+operator saw. It is a defect that would have stopped the run; it does not explain a device that never
+connects, because it happens only after all three have joined.
