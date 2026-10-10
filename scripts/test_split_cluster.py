@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from split_cluster import CACHE_STATS, NODES, PROMPT, REV, Relay, cache_delta, capacity_summary, close, init_cluster, load_reference, paired_connection, receive, send, validate_proof
+from split_cluster import CACHE_STATS, NODES, PROMPT, REV, Relay, cache_delta, capacity_summary, close, file_sha256, _sha256_file, init_cluster, load_reference, paired_connection, receive, send, validate_proof
 
 class ProofTests(unittest.TestCase):
     def setUp(self):
@@ -58,6 +58,55 @@ class ReferenceTests(unittest.TestCase):
         shipped = Path(__file__).resolve().parents[1] / 'native/split/reference-capacity.json'
         ref = load_reference(shipped, models.CAPACITY_SHA256, PROMPT, 16)
         self.assertEqual(len(ref['token_ids']), 16)
+
+class ChecksumTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_slow_checksum_does_not_stop_the_event_loop(self):
+        # Heartbeats are read on this loop with a 10 second limit. The 3.4 GB model takes longer than that to
+        # checksum on the 4 GB laptop, so a checksum on the loop drops every connected device (F41).
+        import hashlib, time
+        import split_cluster
+        real = split_cluster._sha256_file
+        def slow(*a, **k):
+            time.sleep(.6); return real(*a, **k)
+        ticks = 0
+        async def ticker():
+            nonlocal ticks
+            while True: await asyncio.sleep(.05); ticks += 1
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(split_cluster, '_sha256_file', slow):
+            path = Path(tmp) / 'model.bin'; path.write_bytes(b'abc')
+            task = asyncio.create_task(ticker())
+            digest = await file_sha256(path)
+            task.cancel(); await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(digest, hashlib.sha256(b'abc').hexdigest())
+        self.assertGreaterEqual(ticks, 6, 'the loop made no progress while the file was being checksummed')
+
+    async def test_stop_does_not_wait_for_the_whole_checksum(self):
+        # Cancelling the await leaves the thread running, and asyncio.run() waits for it before the process can
+        # exit. The thread must notice and stop, so Stop and Close do not hang for a multi-gigabyte checksum.
+        import threading, time
+        import split_cluster
+        seen = {}
+        def watching(path, stop):
+            seen['stop'] = stop
+            for _ in range(200):  # bounded: a test for a hang must not hang
+                if stop.is_set(): break
+                time.sleep(.01)
+            raise InterruptedError('Stopped')
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(split_cluster, '_sha256_file', watching):
+            path = Path(tmp) / 'model.bin'; path.write_bytes(b'abc')
+            task = asyncio.create_task(file_sha256(path)); await asyncio.sleep(.05)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError): await task
+        self.assertTrue(seen['stop'].is_set())
+    def test_the_checksum_loop_honours_the_stop_flag_between_chunks(self):
+        import threading
+        import split_cluster
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(split_cluster, 'HASH_CHUNK', 2):
+            path = Path(tmp) / 'model.bin'; path.write_bytes(b'abcdef')
+            import hashlib
+            self.assertEqual(_sha256_file(path, threading.Event()), hashlib.sha256(b'abcdef').hexdigest())
+            stopped = threading.Event(); stopped.set()
+            with self.assertRaises(InterruptedError): _sha256_file(path, stopped)
 
 class CapacityTests(unittest.TestCase):
     MIB = 1048576
