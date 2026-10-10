@@ -12,18 +12,21 @@ Windows/Linux signing and sideloading remain an operator setup step.
 The implementation uses a pinned llama.cpp CPU runtime, disjoint layer placement,
 per-worker RPC buffer budgets, authenticated TLS reverse tunnels, and a bounded
 subprocess that discards failed generations. Linux loopback computation, platform CI
-and a physical run on the operator's laptop, Android phone and iPhone have all passed (F37,
-2026-10-07). Nothing here claims a single shared 20 GB address space or a model larger
-than any one device.
+and physical runs on the operator's laptop, Android phone and iPhone have all passed: a 0.5B
+model (F37, 2026-10-07) and a 3B Q8_0 model too large for any single worker budget (F43,
+2026-10-10). Nothing here claims a single shared 20 GB address space or a model larger than the
+three devices together.
 
 **Next steps after the physical PASS, in order:**
-1. **Capacity — prepared (F40); physical run pending.** The plan named a 3B Q4 model of about
-   1.9 GB. Measured: that file runs on the Android phone alone (1,890 MiB of a 2,048 MiB budget), so
-   it cannot show pooling. The test is the same model at **Q8_0**, which needs 3,183 MiB on one worker;
-   no single budget holds it and the three pool. Verified on Linux loopback, with the launcher offering
-   it as a model choice. No laptop-only attempt: it would page through ~1.2 GB of free RAM instead of
-   failing (F40). Risks: the laptop's memory, the iPhone's limit under a 1,299 MiB share, and a
-   10-minute first upload.
+1. **Capacity — done: loopback (F40) and physical devices (F43).** The plan named a 3B Q4 model of
+   about 1.9 GB. Measured: that file runs on the Android phone alone (1,890 MiB of a 2,048 MiB
+   budget), so it cannot show pooling. The test is the same model at **Q8_0**, which needs 3,183 MiB
+   on one worker; no single budget holds it and the three pool. Two physical runs passed on
+   2026-10-10 with 3,209.1 MiB pooled against a 2,048 MiB largest budget and tokens equal to the
+   pinned reference, and the allocations matched the loopback rehearsal byte for byte. The risks the
+   plan named did not bite: the laptop held, the iPhone carried its 1,299 MiB share, and the first
+   upload took 8.2 minutes against 2.4 warm. No laptop-only attempt was made, so this remains a
+   worker-budget result rather than a claim about the laptop's physical memory.
 2. **Weight caching — done: loopback (F38) and physical phones (F39).** llama.cpp's RPC tensor
    cache is enabled on the phone workers. About 60 of the 66 s physical wall time was uploading
    weights over Wi-Fi, and a larger model makes that cost prohibitive. A second physical run sent

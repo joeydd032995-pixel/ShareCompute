@@ -1,0 +1,136 @@
+{
+  "status": "PASS",
+  "physical_devices": true,
+  "runtime": "4da6337767f973e2b4d0797e5b323d77d8565e4a",
+  "scope": "physical-LAN",
+  "identity_note": "Platform and simulator flags are worker reports, not hardware attestation.",
+  "capacity_note": "The workers' combined allocations during this run exceed the largest single worker budget, so no one worker budget could have held this model. This is a budget result: it does not show the model would not fit in a device's physical memory, and platform flags are worker reports, not hardware attestation.",
+  "baseline_source": "pinned-reference",
+  "workers": {
+    "laptop": {
+      "layers": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "graph_calls": 16,
+      "peak_bytes": 589458432,
+      "bytes_to_worker": 573890422,
+      "bytes_from_worker": 165063,
+      "platform": "windows",
+      "simulator": false,
+      "peer": "127.0.0.1",
+      "budget_mib": 768,
+      "cache": {
+        "cache_hit_bytes": 0,
+        "cache_stored_bytes": 0,
+        "cache_rejected": 0
+      },
+      "run_allocated_bytes": 589458432
+    },
+    "android": {
+      "layers": [
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23
+      ],
+      "graph_calls": 16,
+      "peak_bytes": 1413839872,
+      "bytes_to_worker": 1393375362,
+      "bytes_from_worker": 165513,
+      "platform": "android",
+      "simulator": false,
+      "peer": "<android-lan-ip>",
+      "budget_mib": 2048,
+      "cache": {
+        "cache_hit_bytes": 0,
+        "cache_stored_bytes": 1373143040,
+        "cache_rejected": 0
+      },
+      "run_allocated_bytes": 1413839872
+    },
+    "iphone": {
+      "layers": [
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36
+      ],
+      "graph_calls": 16,
+      "peak_bytes": 1361664000,
+      "bytes_to_worker": 1314271211,
+      "bytes_from_worker": 9725393,
+      "platform": "ios",
+      "simulator": false,
+      "peer": "<iphone-lan-ip>",
+      "budget_mib": 1536,
+      "cache": {
+        "cache_hit_bytes": 0,
+        "cache_stored_bytes": 1299890176,
+        "cache_rejected": 0
+      },
+      "run_allocated_bytes": 1361664000
+    }
+  },
+  "generation": {
+    "decode_ms": 11623.8478,
+    "ok": true,
+    "prefill_ms": 11321.1919,
+    "prompt_tokens": 5,
+    "text": " Paris. The capital of Spain is Madrid. The capital of Italy is Rome.",
+    "token_ids": [
+      12095,
+      13,
+      576,
+      6722,
+      315,
+      17689,
+      374,
+      24081,
+      13,
+      576,
+      6722,
+      315,
+      15344,
+      374,
+      21718,
+      13
+    ],
+    "wall_ms": 492176.5483
+  },
+  "matches_baseline": true,
+  "model_sha256": "6dcc22694c8654b045ec40bbe350212b88893fd9010e8474bae5b19a43578ba1",
+  "capacity": {
+    "model_file_bytes": 3616088480,
+    "combined_run_allocated_bytes": 3364962304,
+    "largest_worker_budget_bytes": 2147483648,
+    "exceeds_largest_worker_budget": true
+  }
+}
