@@ -29,7 +29,7 @@ Open the laptop launcher, click **Start test**, then scan/connect both phone app
 
 ## The 3B capacity test
 
-The quick test uses a model that fits on any one device. The capacity test uses Qwen2.5-3B at Q8_0, which no single worker budget can hold (3,183 MiB needed; the largest budget is 2,048 MiB), so a PASS means the three devices computed something none of them could have run alone within these limits ([evidence](evidence/capacity-loopback/)). It has not yet been run on the real devices.
+The quick test uses a model that fits on any one device. The capacity test uses Qwen2.5-3B at Q8_0, which no single worker budget can hold (3,183 MiB needed; the largest budget is 2,048 MiB), so a PASS means the three devices computed something none of them could have run alone within these limits. It has passed twice on the operator's own laptop, Android phone and iPhone ([evidence](evidence/physical-3b-capacity/); the loopback rehearsal is [here](evidence/capacity-loopback/)). Allow about 8 minutes for the first run and 2–3 for later ones, once the phones have the weights cached.
 
 1. Before you start: **close other programs on the laptop**. Its worker and the launcher need about 1.1 GB of real memory, and the laptop had roughly 1.2 GB free in the last test. The laptop also needs 3.7 GB of free disk space for the model.
 2. In the dashboard choose **3B capacity test (3.4 GB)** next to the Wi-Fi address, then **Start test**. The model downloads once (several minutes), then you scan the QR codes as usual.

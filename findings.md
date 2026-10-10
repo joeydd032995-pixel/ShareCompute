@@ -2656,3 +2656,81 @@ paths (a silent phone; the whole process blocked for 4 s).
 **Not verified:** that either message matches the operator's failure. The cause of their report is **unknown**: no log
 has been seen. The stall threshold (3 s) and the 30 s memory are judgement calls, not measurements. The
 monitor itself runs on the loop, so a stall that ends before the next tick can only be inferred from `last_tick`.
+
+## F43 — A model no single worker budget could hold ran across the laptop, the Android phone and the iPhone, twice, with tokens equal to the pinned reference
+
+The operator ran the 3B capacity test (Qwen2.5-3B-Instruct **Q8_0**, 3,448.6 MiB, sha256
+`6dcc2269…ba1`) twice in a row on their Windows laptop, Android phone and iPhone on one home Wi-Fi
+network. **Both runs `PASS`**, both with `"physical_devices": true`, `"scope": "physical-LAN"`,
+`"matches_baseline": true` against the pinned reference, and `"exceeds_largest_worker_budget":
+true`. This is the first time this project has run a model larger than any one worker budget on
+physical hardware; F40 had prepared it on Linux loopback only.
+
+**The capacity claim.** laptop 562.2 MiB held (budget 768, layers 0–6), android 1,348.3 MiB
+(2048, layers 7–23), iphone 1,298.6 MiB (1536, layers 24–36, plus `output.weight`). Combined
+**3,209.1 MiB against a largest single budget of 2,048 MiB** — 1,161 MiB more than any one worker
+could have held, while each stayed inside its own budget with 206/700/237 MiB spare. 16 graph calls
+each, no refusals. The per-run `run_allocated_bytes` is what is quoted, not `peak_bytes`, because a
+phone worker outlives a run (F40 addendum); here the two happen to be equal.
+
+**The allocations are byte-identical to the loopback run.** 589,458,432 / 1,413,839,872 /
+1,361,664,000 bytes held, the same layer split, the same cold `bytes_to_worker`, and the same
+combined 3,364,962,304 as `docs/evidence/capacity-loopback/pooled-report.json`. Layer placement and
+buffer sizing are deterministic across x86-64 Windows, ARM Android and ARM iOS — so a loopback dry
+run predicts the physical placement exactly, which makes loopback a usable rehearsal for a
+capacity claim.
+
+**The weight cache holds at 3B scale.** The phones received 2,582.2 MiB cold and **32.97 MiB warm,
+−98.7%**, with each phone's warm `cache_hit_bytes` equal to its cold `cache_stored_bytes` to the
+byte (android 1,373,143,040; iphone 1,299,890,176) and **zero** rejections. Wall time fell from
+492.2 s to 141.0 s (−71.3%). F39 saw −92.5% on the 0.5B model, so the cache removes a larger share
+of a larger model's transfer — but **not** because the residual traffic is constant: the phones'
+warm bytes grew from 25,618,300 (F39) to 34,567,513 here, **+34.9%**. What changed the ratio is that
+the cacheable weights grew **8.5×** over the same step (315,207,716 to 2,673,079,060 bytes, measured
+as cold minus warm) while the residual grew only 1.35×. Expect the cached fraction to keep improving
+with model size, and the per-run floor to keep rising slowly with it.
+
+**Compute did not improve, and most of the wall clock is not compute.** Cold prefill 11,321 ms /
+decode 11,624 ms; warm 12,419 / 13,621 — warm compute is 13% *slower*, consistent with F38/F39's
+claim that the cache removes upload time and nothing else. About 1.2–1.4 tokens/s. Even warm, 115 s
+of the 141 s wall is outside prefill and decode. Against loopback (prefill 1,039 ms, decode
+7,027 ms, wall 31.1 s) prefill is 10.9× slower on real devices and decode 1.7×, which is the same
+direction as F27's finding that the transport, not the number of hops, is the cost.
+
+**Verified:** `docs/evidence/physical-3b-capacity/{cold,warm}/report.json` (status, budgets,
+`run_allocated_bytes`, `cache` deltas, `capacity`, token ids); byte-equality against
+`docs/evidence/capacity-loopback/pooled-report.json` checked field by field in Python;
+`cold/split.log:1149-1152` for the model buffer sizes
+(`CPU_Mapped` 315.30 MiB, RPC0 546.83 / 1252.73 / 1328.03 MiB) and `:2519-2522` for the compute
+buffers matching expectation; `cold/coordinator.log:1-3` for the three joins. The operator's
+devices — not this container, which has no Windows, Android or iOS.
+
+**Not verified:**
+- **Which kit build produced these runs.** The reports record no commit. The `cache` fields prove
+  PR #31 is present; nothing narrows it further. Neither `coordinator.log` contains a
+  `Laptop stalled` line, but that line prints only on a stall, so these logs cannot say whether the
+  kit carries PR #37's loop-lag monitor.
+- **That F41's checksum fix explains the earlier `iPhone control disconnected: TimeoutError`.**
+  Neither run disconnected. A passing run cannot diagnose a failed one, and no log of the failure
+  was ever seen, so **the cause of that report remains unknown**.
+- **That the laptop could not load the model alone.** This is a *worker budget* result, which is
+  this project's own limit. No laptop-alone attempt was made, and a memory-mapped 3.4 GB model may
+  still run on a 4 GB machine, slowly.
+- **Laptop memory headroom during the run,** the iPhone's Jetsam margin, Android's low-memory
+  killer, and thermal behaviour. None is recorded.
+- **Where the 115 s of non-compute warm wall time went.** The reports have no phase breakdown;
+  phone-side hash-checking of 2.6 GB of cached weights, the laptop's uncached 547 MiB loopback
+  transfer and model load are all candidates and none is measured.
+- **The cache damage-detection path on hardware** (0 rejections twice now; loopback only, F38), and
+  **cache persistence** beyond two back-to-back runs.
+- **Coverage:** one prompt, 5 prompt tokens, 16 generated tokens, one cold/warm pair, single-sample
+  timings, Wi-Fi conditions unrecorded. Platform flags are worker reports, not hardware attestation.
+
+**Consequence:** the current objective at the top of `CLAUDE.md` — one model split across laptop,
+Android and iPhone — is met on physical hardware **for a model that fits no single worker budget**,
+not merely for a 0.5B model that did (F37). The state table's "Not run on physical devices" for the
+3B test is now false and is corrected. Loopback is established as a faithful rehearsal for
+placement and byte counts, so future capacity work can be prepared there and confirmed with one
+physical pair of runs. What remains unproven about the split is unchanged by this: no hardware
+failure handling, no re-formation (F35), no laptop-alone comparison, and the supervisor still
+discards a failed generation rather than re-planning.

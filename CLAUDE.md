@@ -11,11 +11,18 @@ Windows/Linux signing and sideloading remain an operator setup step.
 
 The implementation uses a pinned llama.cpp CPU runtime, disjoint layer placement,
 per-worker RPC buffer budgets, authenticated TLS reverse tunnels, and a bounded
-subprocess that discards failed generations. Linux loopback computation, platform CI and
-**a physical-device run have all passed**: on 2026-10-07 the operator's Windows laptop, Android
-phone and iPhone produced a PASS report with baseline-identical tokens (F37,
-`docs/evidence/physical-three-device/`). That is one 16-token run of a 0.5B model. Nothing here
-claims a single shared 20 GB address space, a model larger than one device, or hardware failure handling.
+subprocess that discards failed generations. Linux loopback computation and platform CI pass, and
+**the physical-device runs recorded here passed**: on 2026-10-07 the operator's Windows laptop,
+Android phone and iPhone produced a PASS report with baseline-identical tokens on a 0.5B model (F37,
+`docs/evidence/physical-three-device/`); on 2026-10-08 a back-to-back pair exercised the phones'
+weight cache (F39, `docs/evidence/physical-weight-cache/`); and on 2026-10-10 the same three devices
+ran a **3B Q8_0 model that no single worker budget could hold** — 3,209 MiB pooled against a
+2,048 MiB largest budget — twice, with tokens equal to the pinned reference (F43,
+`docs/evidence/physical-3b-capacity/`). **Not every attempt has passed:** a 3B attempt in between
+failed with an iPhone heartbeat timeout whose cause is still unknown, because no log of it was ever
+seen (F42). Those are 16-token runs of one prompt. Nothing here claims a
+single shared 20 GB address space, a model larger than the three devices together, or hardware
+failure handling.
 
 See [the three-device setup and proof guide](docs/THREE-DEVICE-MODEL-SPLIT.md).
 `Sources/ShareComputeCore` remains unchanged and dependency-free. Historical MLX and
@@ -57,7 +64,7 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | Three-device native split: laptop + Android + iPhone over llama.cpp RPC and pinned TLS | **passed on the operator's physical devices (F37)**; Linux loopback (F36); CI builds and self-tests every platform |
 | Test kit: Windows/Linux launcher, Android APK with foreground service, iOS app with QR | builds in CI; used for the F37 run. Join and disconnect failures now name their cause (PR #26) |
 | Weight cache on the phones (`llama-cache.patch`: 1 MiB threshold, atomic writes, every hit hash-checked) | **executed on loopback (F38)**: warm runs send the phone workers ~26 MB instead of ~341 MB; a damaged file is rejected and resent, while a matched control without the check produced fluent wrong output. **Run on the physical phones (F39)**: a second run sent the phones 24.4 MiB instead of 325.0 MiB (−92.5%), every cached byte hit, none rejected, tokens equal to the baseline. The damaged-file path has not run on hardware |
-| 3B capacity test (Qwen2.5-3B **Q8_0**; the Q4 file fits the Android budget alone, F40) | **prepared and verified on Linux loopback (F40)**: no single worker budget holds it (3,183 MiB needed, largest 2,048), the three pool and match pinned reference tokens. Launcher has a model choice. **Not run on physical devices.** Laptop-side memory is tight (~1.2 GB free) |
+| 3B capacity test (Qwen2.5-3B **Q8_0**; the Q4 file fits the Android budget alone, F40) | **passed on the operator's physical devices (F43)**, twice: 3,209.1 MiB pooled against a 2,048 MiB largest budget, every worker inside its own, tokens equal to the pinned reference. Allocations and cold byte counts are **byte-identical to the loopback rehearsal** (F40), and the cache cut the phones' upload 98.7% (2,582 MiB to 33 MiB) and wall time 71% (492 s to 141 s). About 1.2–1.4 tok/s; warm compute was not faster, and 115 s of the warm 141 s is unexplained non-compute time. No laptop-alone comparison was attempted |
 | ShareComputeCore membership adapters for Linux / Windows / Android | not built. The split runs without them, and its supervisor discards a failed generation instead of re-forming |
 
 Milestone 2 is code-complete and building. The gap is no longer "uncompiled" — it is **"unrun"**:
@@ -265,7 +272,7 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | Three-device split: protocol, relay, proof gate, launcher | **yes** | `python3 scripts/test_split_cluster.py` and `python3 scripts/test_split_launcher.py` (needs `qrcode==8.2`). Real-model loopback: `scripts/verify_split_runtime.py` after `build_split_runtime.py` |
 | Android Java type-check | partial | `javac -Xlint:all` against `android-35/android.jar` from `platform-35_r02.zip` plus ZXing 3.5.3. A type check only: the APK build (Gradle + NDK) is CI's `android` job |
 | Windows | **not here, but yes in CI** | `desktop (windows-latest)` and `test-kit (windows-latest)` build and run the real split |
-| Physical laptop + Android + iPhone | **no** | the operator's devices. Recorded evidence: `docs/evidence/physical-three-device/` (F37) |
+| Physical laptop + Android + iPhone | **no** | the operator's devices. Recorded evidence: `docs/evidence/physical-three-device/` (0.5B, F37), `docs/evidence/physical-weight-cache/` (cache, F39), `docs/evidence/physical-3b-capacity/` (3B capacity, F43) |
 | Multi-**rank** ring | **yes — corrected, F30** | two processes, one machine, loopback hostfile. `size=2` on both ranks, confirmed on a headless CI runner. `Patches/mlx-swift/tests/ring-formation.sh` |
 | Multi-**device** ring, real hardware | **no** | genuinely needs two machines — but that is a *product* requirement, not a testability one |
 

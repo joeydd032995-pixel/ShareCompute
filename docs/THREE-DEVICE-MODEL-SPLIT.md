@@ -10,8 +10,8 @@ This is a bounded proof, not a production inference service. Start with the pinn
 Qwen2.5-0.5B-Instruct Q4_K_M model (491,400,032 bytes), a 512-token context, and 24
 generated tokens. The small model makes installation, transport, and numerical
 verification possible before increasing memory use. It does not demonstrate a model
-larger than any single device's capacity. The capacity test below does, and has so far run on
-loopback only.
+larger than any single device's capacity. The capacity test below does, and has passed on the
+operator's own three devices (F43, `evidence/physical-3b-capacity/`).
 
 ## What combining RAM means here
 
@@ -71,9 +71,13 @@ The Q4_K_M file of the same model was the first choice and is not enough: one wo
 | Largest single budget (Android) | 2,048 MiB |
 | The three budgets together | 4,352 MiB |
 
-On Linux loopback the three budgets pooled and ran it: peak allocations 562 / 1,348 / 1,299 MiB
-(laptop / Android / iPhone), tokens equal to the reference (`evidence/capacity-loopback/`). The
-physical run is the next step.
+On Linux loopback the three budgets pooled and ran it: allocations during the run 562 / 1,348 /
+1,299 MiB (laptop / Android / iPhone), tokens equal to the reference
+(`evidence/capacity-loopback/`). **On 2026-10-10 the same test passed twice on the operator's own
+laptop, Android phone and iPhone**, with those three numbers identical to the byte, 3,209.1 MiB
+pooled against the 2,048 MiB largest budget, and tokens equal to the reference
+(`evidence/physical-3b-capacity/`). Expect roughly 1.2–1.4 tokens/s: the first run took 8.2 minutes
+end to end, and the second, with the phones' weight caches warm, 2.4 minutes.
 
 - **Reference, not baseline.** The laptop never runs this model unsplit. The coordinator takes
   `--reference native/split/reference-capacity.json`, tokens recorded from the same runtime on a Linux

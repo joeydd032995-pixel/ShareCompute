@@ -775,3 +775,24 @@ Started at the owner's request ("start the 3B test"). F40 has the full record. I
   unit tests, and two negative controls.
 - **Not run.** Any physical device. The laptop is the worry: about 570 MiB for its worker plus 391 MiB for
   the probe against roughly 1.2 GB free. Evidence: `docs/evidence/capacity-loopback/`.
+
+## 2026-10-10 — The 3B capacity test passed on the physical devices (F43)
+
+The operator ran it twice on their Windows laptop, Android phone and iPhone and sent both reports.
+Both **PASS**, `physical_devices: true`, `scope: physical-LAN`, tokens equal to the pinned
+reference. F43 has the full record and `docs/evidence/physical-3b-capacity/` the masked logs.
+
+- **The capacity claim holds on hardware.** 562.2 / 1,348.3 / 1,298.6 MiB held against budgets of
+  768 / 2048 / 1536 — **3,209.1 MiB pooled against a largest single budget of 2,048**, so no one
+  worker budget could have held the model. Each worker kept 206 / 700 / 237 MiB spare.
+- **Loopback predicted it exactly.** Held bytes, layer split and cold `bytes_to_worker` are
+  byte-identical to the F40 loopback run. A loopback rehearsal is a faithful preview of placement.
+- **The cache scales.** The phones took 2,582 MiB cold and 33 MiB warm (−98.7%, against −92.5% on
+  the 0.5B model), every cached byte hit, none rejected. Wall time 492 s to 141 s.
+- **Speed is the honest weak point.** About 1.2–1.4 tok/s. Warm compute was 13% *slower* than cold,
+  and 115 s of the warm 141 s is outside prefill and decode with no measurement of where it went.
+- **The risks the plan feared did not bite:** the 4 GB laptop held, the iPhone carried its 1,299 MiB
+  share, and nothing disconnected.
+- **Still unknown:** which kit build these ran on (reports record no commit), and therefore nothing
+  about the earlier `TimeoutError`, whose cause remains undiagnosed. No laptop-alone comparison, no
+  cache-damage path on hardware, no memory headroom recorded.
