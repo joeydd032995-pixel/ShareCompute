@@ -796,3 +796,17 @@ reference. F43 has the full record and `docs/evidence/physical-3b-capacity/` the
 - **Still unknown:** which kit build these ran on (reports record no commit), and therefore nothing
   about the earlier `TimeoutError`, whose cause remains undiagnosed. No laptop-alone comparison, no
   cache-damage path on hardware, no memory headroom recorded.
+
+## 2026-10-10 — The heartbeat timeout is attributed, not solved (F42 addendum)
+
+The operator reported the `TimeoutError` is not reproducible and credited PR #36. Assembling the dates
+backs that: the 3B test became runnable on 2026-10-08 (#34) and the threaded checksum landed 2026-10-10
+(#36), so the failure sits in a two-day window, and the 10 s limit needs 344.9 MiB/s for the 3B file
+against 46.9 MiB/s for the 0.5B one — which is why every 0.5B run on this laptop passed and only the
+7.36× larger file failed. They confirmed the kit was replaced before the two passing runs, making it a
+before-and-after on one variable.
+
+Still not proven: no log of the failure was ever captured, the checksum was never timed on that laptop,
+and a memory-pressure stall gives the identical message. Recorded as an addendum to F42 rather than a
+correction to it, and F43 is left as written — the addendum supersedes its "cause unknown" line the way
+F16 superseded F13.

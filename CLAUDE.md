@@ -19,8 +19,9 @@ weight cache (F39, `docs/evidence/physical-weight-cache/`); and on 2026-10-10 th
 ran a **3B Q8_0 model that no single worker budget could hold** — 3,209 MiB pooled against a
 2,048 MiB largest budget — twice, with tokens equal to the pinned reference (F43,
 `docs/evidence/physical-3b-capacity/`). **Not every attempt has passed:** a 3B attempt in between
-failed with an iPhone heartbeat timeout whose cause is still unknown, because no log of it was ever
-seen (F42). Those are 16-token runs of one prompt. Nothing here claims a
+failed with an iPhone heartbeat timeout. No log of it was captured, but the dates and the file sizes
+point at F41's checksum, and the operator re-downloaded the kit and could not reproduce it (F42
+addendum) — probable, not proven. Those are 16-token runs of one prompt. Nothing here claims a
 single shared 20 GB address space, a model larger than the three devices together, or hardware
 failure handling.
 

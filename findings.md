@@ -2657,6 +2657,57 @@ paths (a silent phone; the whole process blocked for 4 s).
 has been seen. The stall threshold (3 s) and the 30 s memory are judgement calls, not measurements. The
 monitor itself runs on the loop, so a stall that ends before the next tick can only be inferred from `last_tick`.
 
+### F42 addendum — the timeout is most likely F41's checksum, on circumstantial but quantitative grounds
+
+F42 recorded the cause of the operator's `iPhone control disconnected: TimeOutError` as **unknown**, because no
+log of it was ever captured. That stays true, but three things now narrow it enough that "unknown" understates
+the record.
+
+**1. The failure falls inside the window where the defect could bite, and the window is two days wide.**
+The 3B capacity test only became runnable on 2026-10-08 (`73b22c3`, PR #34) — before it there was no
+3.4 GB file for the coordinator to checksum. The threaded checksum landed on 2026-10-10 (`11288d1`,
+PR #36). The operator's failure is between the two.
+
+**2. Only the large model failed, on the same machine and the same code path.** The 10 s read limit is
+tripped when the checksum runs slower than:
+
+| Model | Bytes | Throughput needed to finish inside 10 s |
+|---|---:|---:|
+| 0.5B proof | 491,400,032 | 46.9 MiB/s |
+| 3B capacity | 3,616,088,480 | 344.9 MiB/s |
+
+A laptop anywhere between those two figures passes every 0.5B run and fails every 3B run. That is what
+happened: the 0.5B runs of F37 and F39 passed on this laptop, and the only failure was the test whose file
+is **7.36× larger**. Same code, same machine, same path; only the input size changed, and only the large
+input failed. (F41 quoted these same two numbers as "about 340 MB/s" and "about 47 MB/s" — those are MiB/s
+values, labelled MB/s. The arithmetic was right; the unit was not. Do not re-derive a contradiction from it.)
+
+**3. The operator re-downloaded the kit, then the same test passed twice.** Asked directly, they confirmed
+the kit was replaced between the failing attempt and the two passing 3B runs of F43, and report the failure
+is not reproducible. So the failing run was a pre-#36 build and the passing pair a post-#36 build. That is a
+controlled before-and-after on the one variable, even though nobody set it up as one.
+
+**Verified:** `git log` for the two landing dates (`73b22c3` for the capacity profile, `11288d1` for the
+fix); the two file sizes from `scripts/download_split_model.py`'s `PROFILES`; `RECEIVE_LIMIT = 10` in
+`scripts/split_cluster.py`; the passing reports in `docs/evidence/physical-3b-capacity/`. The
+re-download is the operator's own report, not something this project observed.
+
+**Not verified, and this is why "proven" is still the wrong word:**
+- **No log of the failure exists.** Nothing was captured from the failing run, so the mechanism is inferred
+  from dates and sizes, never seen.
+- **The checksum time on that laptop is still unmeasured.** The band above is arithmetic; whether an
+  A9-9420e without SHA extensions actually falls inside it was never timed.
+- **Which build each run used rests on the operator's report,** because the reports carry no commit.
+- **A laptop stall from memory pressure produces the identical message** (F42 is the fix for exactly that
+  ambiguity) and cannot be excluded for that single run. One failure is not a series.
+
+**Consequence:** treat F41's checksum as the probable cause and stop carrying the timeout as an open
+mystery — but do not delete the alternative, because the next occurrence is the only thing that can
+separate them. F42's diagnostics stay valuable precisely because they make the next one self-diagnosing: a
+kit built from `c7fb789` or later names the laptop or the phone in the error text. If such a kit ever
+reports a laptop stall on this machine, this addendum is wrong and the memory-pressure branch was the cause
+all along.
+
 ## F43 — A model no single worker budget could hold ran across the laptop, the Android phone and the iPhone, twice, with tokens equal to the pinned reference
 
 The operator ran the 3B capacity test (Qwen2.5-3B-Instruct **Q8_0**, 3,448.6 MiB, sha256
