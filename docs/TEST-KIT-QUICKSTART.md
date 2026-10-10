@@ -4,16 +4,16 @@ This kit is for a 4 GB laptop, 8 GB Android phone, and 8 GB iPhone. It splits on
 
 ## Downloads
 
-[Current build](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160) from `main` at commit `5491d2c`. Sign in to GitHub to download artifacts. Take the laptop kit and both phone apps from this same build.
+[Current build](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633) from `main` at commit `c7fb789`. Sign in to GitHub to download artifacts. Take the laptop kit and both phone apps from this same build.
 
 | Device | Download |
 | --- | --- |
-| Windows 10/11 x86-64 laptop | [Standalone Windows kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530417238) |
-| Ubuntu 24.04+ x86-64 laptop | [Standalone Linux kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530423481) |
-| Android 9+ ARM64 | [Worker APK](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530815296) |
-| iPhone iOS 16+ | [Worker IPA (requires signing)](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530221864) |
+| Windows 10/11 x86-64 laptop | [Standalone Windows kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660254154) |
+| Ubuntu 24.04+ x86-64 laptop | [Standalone Linux kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11661396530) |
+| Android 9+ ARM64 | [Worker APK](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660756347) |
+| iPhone iOS 16+ | [Worker IPA (requires signing)](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660432499) |
 
-Both packaged laptop executables passed real-model three-process inference tests in CI, and the iPhone app passed native inference in the iOS simulator. On 2026-10-07 the kit passed on a real Windows laptop, Android phone and iPhone ([evidence](evidence/physical-three-device/)), and on 2026-10-08 a build with the weight cache passed twice in a row on the same devices ([evidence](evidence/physical-weight-cache/)). The reports do not record the exact commit of the build the operator used. These artifacts expire on 2027-01-06; a later successful run of the same workflow on `main` produces replacements.
+Both packaged laptop executables passed real-model three-process inference tests in CI, and the iPhone app passed native inference in the iOS simulator. On 2026-10-07 the kit passed on a real Windows laptop, Android phone and iPhone ([evidence](evidence/physical-three-device/)), and on 2026-10-08 a build with the weight cache passed twice in a row on the same devices ([evidence](evidence/physical-weight-cache/)). The reports do not record the exact commit of the build the operator used. These artifacts expire on 2027-01-08; a later successful run of the same workflow on `main` produces replacements.
 
 ## First use
 
