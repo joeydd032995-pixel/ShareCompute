@@ -283,10 +283,15 @@ class RunLogTests(unittest.TestCase):
         self.assertEqual([r['ev'] for r in log.records], ['join', 'after'])
 
     def test_a_sink_that_cannot_be_opened_degrades_to_memory(self):
-        log = run_log.EventLog(path=Path('/proc/nonexistent-dir/events.jsonl'))
-        log.event('still_recorded')
-        self.assertIsNone(log.handle); self.assertTrue(log.write_error)
-        self.assertEqual(log.records[0]['ev'], 'still_recorded')
+        # The refusal is injected rather than taken from a path the filesystem is supposed to
+        # reject: an earlier version used /proc/nonexistent-dir, which Windows cheerfully created,
+        # so the test failed on a platform where the code was fine.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(Path, 'open', side_effect=OSError(13, 'Permission denied')):
+                log = run_log.EventLog(path=Path(d) / 'events.jsonl')
+            log.event('still_recorded')
+            self.assertIsNone(log.handle); self.assertIn('Permission denied', log.write_error)
+            self.assertEqual(log.records[0]['ev'], 'still_recorded')
 
     def test_every_record_carries_utc_so_the_three_logs_can_be_lined_up(self):
         # The phones' elapsed clocks start when their processes do, long before a run, so at_ms
