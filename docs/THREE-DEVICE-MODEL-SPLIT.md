@@ -89,12 +89,12 @@ physical run is the next step.
 ## Get the builds
 
 1. Check out `main`.
-2. Open the [current Actions run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160)
-   for commit `5491d2c` and download the matching
-   [Windows](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530417238),
-   [Linux](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530423481),
-   [Android ARM64](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530815296), and
-   [iPhone IPA](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/37731777160/artifacts/11530221864)
+2. Open the [current Actions run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633)
+   for commit `c7fb789` and download the matching
+   [Windows](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660254154),
+   [Linux](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11661396530),
+   [Android ARM64](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660756347), and
+   [iPhone IPA](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660432499)
    artifacts as appropriate. Builds older than September 29 lack QR pairing, and
    builds older than October 4 lack the readable join errors and the Android
    foreground service. These CI artifacts expire; use a later successful run of
