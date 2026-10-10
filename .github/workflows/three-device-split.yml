@@ -1,10 +1,10 @@
 name: Native three-device model split
 on:
   pull_request:
-    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'Apps/AndroidWorker/**', 'scripts/*split*', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
+    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'Apps/AndroidWorker/**', 'scripts/*split*', 'scripts/build_stamp.py', 'scripts/run_log.py', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
   push:
     branches: [main]
-    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'Apps/AndroidWorker/**', 'scripts/*split*', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
+    paths: ['native/split/**', 'Apps/ComputeWorker/**', 'Apps/AndroidWorker/**', 'scripts/*split*', 'scripts/build_stamp.py', 'scripts/run_log.py', 'scripts/verify_ios_simulator.py', '.github/workflows/three-device-split.yml']
   workflow_dispatch:
 permissions:
   contents: read

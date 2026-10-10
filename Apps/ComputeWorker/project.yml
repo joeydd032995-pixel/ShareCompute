@@ -19,10 +19,19 @@ targets:
         LIBRARY_SEARCH_PATHS: ['$(inherited)', '${SC_NATIVE_DIR}/lib']
         OTHER_LDFLAGS: ['$(inherited)', '-lsc-worker-core', '-lggml', '-lggml-rpc', '-lggml-cpu', '-lggml-base', '-lc++']
         TARGETED_DEVICE_FAMILY: '1,2'
+        # The stamp script writes into the built Info.plist and runs git, which sandboxing forbids.
+        ENABLE_USER_SCRIPT_SANDBOXING: 'NO'
+    postBuildScripts:
+      - name: Stamp build commit
+        # Not skipped on incremental builds: the commit can change while no input file does.
+        basedOnDependencyAnalysis: false
+        script: sh "$SRCROOT/Scripts/stamp-build-commit.sh"
     info:
       path: Info.plist
       properties:
         CFBundleDisplayName: ShareCompute Worker
+        # Placeholder only: Scripts/stamp-build-commit.sh replaces it in the built app.
+        SCBuildCommit: unknown
         NSCameraUsageDescription: Scan the pairing code displayed by your laptop.
         NSLocalNetworkUsageDescription: Connect to your paired laptop to compute assigned model layers.
         UIFileSharingEnabled: true

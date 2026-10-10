@@ -34,3 +34,4 @@ uint64_t sc_worker_cache_hit_bytes(void) { return sc_rpc_cache_hit_bytes(); }
 uint64_t sc_worker_cache_stored_bytes(void) { return sc_rpc_cache_stored_bytes(); }
 uint64_t sc_worker_cache_rejected(void) { return sc_rpc_cache_rejected(); }
 const char * sc_worker_revision(void) { return SC_REVISION; }
+const char * sc_worker_build(void) { return SC_BUILD_COMMIT; }

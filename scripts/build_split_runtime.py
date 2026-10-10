@@ -4,7 +4,11 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_stamp
 
 ROOT = Path(__file__).resolve().parents[1]
 REV = (ROOT / 'native/split/llama-revision.txt').read_text().strip()
@@ -59,7 +63,10 @@ def main():
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
     if head != REV: raise SystemExit(f'Wrong llama.cpp revision: {head}; expected {REV}')
     apply_patches(source)
-    flags = ['-DCMAKE_BUILD_TYPE=Release', f'-DLLAMA_SOURCE_DIR={source}']
+    stamp = build_stamp.resolve(ROOT)
+    # Compiled into sc-worker-core, which every platform's worker links, so each one can name its build.
+    flags = ['-DCMAKE_BUILD_TYPE=Release', f'-DLLAMA_SOURCE_DIR={source}',
+             f"-DSC_BUILD_COMMIT={stamp['commit']}"]
     ios = a.platform.startswith('ios')
     if ios:
         sdk = 'iphoneos' if a.platform == 'ios' else 'iphonesimulator'
@@ -76,6 +83,8 @@ def main():
     targets = ['sc-worker-core'] if ios else ['sc-rpc-worker', 'sc-split-probe']
     run('cmake', '--build', out, '--config', 'Release', '--parallel', a.jobs, '--target', *targets)
     (out / 'runtime-revision.txt').write_text(REV + '\n')
+    build_stamp.write(out, ROOT, {'platform': a.platform, 'runtime': REV})
+    print(f"Built from ShareCompute {build_stamp.describe(stamp)} (source: {stamp['source']})", flush=True)
     license_text = (source / 'LICENSE').read_text(encoding='utf-8')
     notices = 'llama.cpp / ggml\n' + license_text
     notices += '\nJSON for Modern C++\nCopyright (c) 2013-2025 Niels Lohmann <https://nlohmann.me>\n\n'
@@ -85,6 +94,9 @@ def main():
     notices += '\nllamafile CPU kernel\n' + kernel[:kernel.index('#include')]
     (out / 'THIRD_PARTY_NOTICES.txt').write_text(notices, encoding='utf-8')
     if ios:
-        (out / 'RuntimeRevision.swift').write_text(f'let runtimeRevision = "{REV}"\n')
+        (out / 'RuntimeRevision.swift').write_text(
+            f'let runtimeRevision = "{REV}"\n'
+            f'// The ShareCompute commit this app\'s native runtime was built from (F44).\n'
+            f'let runtimeBuildCommit = "{stamp["commit"]}"\n')
 
 if __name__ == '__main__': main()

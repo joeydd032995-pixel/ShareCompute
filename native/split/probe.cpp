@@ -17,6 +17,10 @@ static void require(bool ok, const char * why) { if (!ok) throw std::runtime_err
 
 int main(int argc, char ** argv) {
     if (argc == 2 && std::string(argv[1]) == "--version") { puts(SC_REVISION); return 0; }
+    // Separate from --version, whose output the coordinator compares exactly against the pinned
+    // revision. The probe produces both the baseline and the split tokens, so the mixed-build gate
+    // has to be able to ask it which commit it came from.
+    if (argc == 2 && std::string(argv[1]) == "--build") { puts(SC_BUILD_COMMIT); return 0; }
     try {
         require(argc == 2, "usage: sc-split-probe CONFIG.json");
         std::ifstream in(argv[1]); json cfg; in >> cfg;

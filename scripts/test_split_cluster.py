@@ -8,7 +8,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from split_cluster import CACHE_STATS, NODES, PROMPT, REV, Relay, cache_delta, capacity_summary, close, describe_silence, file_sha256, _sha256_file, init_cluster, load_reference, paired_connection, receive, send, validate_proof
+import os
+import subprocess
+import build_stamp
+import run_log
+from split_cluster import CACHE_STATS, NODES, PROMPT, REV, Relay, build_summary, cache_delta, capacity_summary, close, describe_silence, file_sha256, _sha256_file, init_cluster, load_reference, paired_connection, receive, send, validate_proof
 
 class ProofTests(unittest.TestCase):
     def setUp(self):
@@ -114,6 +118,192 @@ class ChecksumTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(_sha256_file(path, threading.Event()), hashlib.sha256(b'abcdef').hexdigest())
             stopped = threading.Event(); stopped.set()
             with self.assertRaises(InterruptedError): _sha256_file(path, stopped)
+
+class BuildStampTests(unittest.TestCase):
+    """Provenance must be resolved in order and never invented: `unknown` is the honest answer (F44)."""
+    def test_a_stamp_file_beats_git_so_a_packaged_kit_knows_its_commit(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / build_stamp.STAMP_FILE).write_text(json.dumps({'commit': 'a' * 40}))
+            stamp = build_stamp.read(root)
+            self.assertEqual(stamp['commit'], 'a' * 40)
+            self.assertEqual(stamp['short'], 'aaaaaaa')
+            self.assertEqual(stamp['source'], 'file')
+    def test_no_stamp_and_no_git_is_unknown_not_a_guess(self):
+        with tempfile.TemporaryDirectory() as d:
+            # A directory with no stamp file and no git repository above it.
+            with mock.patch.object(build_stamp, 'from_git', return_value=None):
+                stamp = build_stamp.read(Path(d))
+            self.assertEqual(stamp['commit'], build_stamp.UNKNOWN)
+    def test_a_damaged_stamp_is_unknown_rather_than_an_exception(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); (root / build_stamp.STAMP_FILE).write_text('{not json')
+            with mock.patch.object(build_stamp, 'from_git', return_value=None):
+                self.assertEqual(build_stamp.read(root)['commit'], build_stamp.UNKNOWN)
+    def test_ci_commit_wins_over_the_checkout(self):
+        with mock.patch.dict(os.environ, {'SC_BUILD_COMMIT': 'b' * 40}):
+            self.assertEqual(build_stamp.resolve(Path('.'))['commit'], 'b' * 40)
+        with mock.patch.dict(os.environ, {'SC_BUILD_COMMIT': 'not-a-commit'}, clear=False):
+            # Rejected rather than trusted, so a stray value cannot mislabel a build.
+            self.assertNotEqual(build_stamp.resolve(Path('.'))['commit'], 'not-a-commit')
+    def test_short_commit_normalises_every_absent_form(self):
+        for value in (None, '', 'unknown', 123, []):
+            self.assertEqual(build_stamp.short_commit(value), build_stamp.UNKNOWN)
+        self.assertEqual(build_stamp.short_commit('c' * 40), 'ccccccc')
+    def test_compare_separates_disagreement_from_missing_provenance(self):
+        same = build_stamp.compare({'a': {'commit': 'a' * 40}, 'b': {'commit': 'a' * 40}})
+        self.assertFalse(same['mismatch']); self.assertTrue(same['complete']); self.assertEqual(same['unknown'], [])
+        differ = build_stamp.compare({'a': {'commit': 'a' * 40}, 'b': {'commit': 'b' * 40}})
+        self.assertTrue(differ['mismatch']); self.assertFalse(differ['complete'])
+        missing = build_stamp.compare({'a': {'commit': 'a' * 40}, 'b': {'commit': None}})
+        # One known commit and one silent component is incomplete, but not a contradiction.
+        self.assertFalse(missing['mismatch']); self.assertFalse(missing['complete']); self.assertEqual(missing['unknown'], ['b'])
+
+class MixedBuildTests(unittest.TestCase):
+    """A run whose components were built from different commits cannot be recorded as evidence."""
+    def setUp(self):
+        self.result = {'token_ids': [1, 2, 3]}
+        self.log = '\n'.join(f'layer {i} assigned to device RPC{i}' for i in range(3))
+        self.before = dict.fromkeys(NODES, 0)
+        self.records = {n: {'stats': {'peak_bytes': 10, 'graph_calls': 3}, 'bytes': [20, 30],
+                            'hello': {'platform': 'linux', 'simulator': False, 'budget_mib': 64,
+                                      'build': 'a' * 40, 'app_build': 'a' * 40}, 'peer': '127.0.0.1'} for n in NODES}
+    def summary(self, probe='a' * 40):
+        with mock.patch.object(build_stamp, 'read', return_value={'commit': 'a' * 40, 'short': 'a' * 7}):
+            import split_cluster
+            with mock.patch.object(split_cluster, 'KIT_BUILD', {'commit': 'a' * 40, 'short': 'a' * 7}):
+                return build_summary(self.records, probe)
+    def test_matching_builds_pass(self):
+        build = self.summary()
+        self.assertFalse(build['mismatch'])
+        validate_proof(self.result, self.result, self.log, self.records, self.before, False, build)
+    def test_one_worker_from_another_commit_refuses_the_pass(self):
+        self.records['iphone']['hello']['build'] = 'b' * 40
+        build = self.summary()
+        self.assertTrue(build['mismatch'])
+        with self.assertRaises(ValueError) as caught:
+            validate_proof(self.result, self.result, self.log, self.records, self.before, False, build)
+        self.assertIn('different commits', str(caught.exception))
+        # The message must name which component ran what, or the operator cannot act on it.
+        self.assertIn('iphone-worker', str(caught.exception))
+    def test_a_worker_that_cannot_name_its_build_still_passes_but_is_recorded(self):
+        # Every run before F44 was in this state. It is missing provenance, not a contradiction,
+        # so it is reported rather than failed; failing it would reject the operator's working apps.
+        self.records['android']['hello'].pop('build')
+        build = self.summary()
+        self.assertFalse(build['mismatch']); self.assertEqual(build['unknown'], ['android-worker'])
+        validate_proof(self.result, self.result, self.log, self.records, self.before, False, build)
+    def test_a_probe_from_another_commit_refuses_the_pass(self):
+        # The probe runs both the baseline and the split, so a probe from another commit makes the
+        # two token streams the whole proof compares incomparable. Codex raised this as P1 on PR #41.
+        build = self.summary(probe='b' * 40)
+        self.assertTrue(build['mismatch'])
+        self.assertEqual(build['commits']['b' * 40], ['probe'])
+        with self.assertRaises(ValueError) as caught:
+            validate_proof(self.result, self.result, self.log, self.records, self.before, False, build)
+        self.assertIn('different commits', str(caught.exception))
+        self.assertIn('probe', str(caught.exception))
+
+    def test_a_probe_that_cannot_name_its_build_is_recorded_not_failed(self):
+        # A probe built before --build existed, treated like any other unknown component.
+        build = self.summary(probe=None)
+        self.assertFalse(build['mismatch']); self.assertIn('probe', build['unknown'])
+        validate_proof(self.result, self.result, self.log, self.records, self.before, False, build)
+
+    def test_the_probe_build_is_reported(self):
+        self.assertEqual(self.summary()['probe'], 'a' * 40)
+
+    def test_app_build_is_recorded_but_not_compared(self):
+        # A wrapper may legitimately be stamped differently from the library that computes.
+        self.records['laptop']['hello']['app_build'] = 'f' * 40
+        build = self.summary()
+        self.assertFalse(build['mismatch'])
+        self.assertEqual(build['app_builds']['laptop'], 'f' * 40)
+
+class ChecksumBudgetTests(unittest.TestCase):
+    """The report must say whether a checksum outlasted the heartbeat limit, which is F41's condition."""
+    def test_the_flag_tracks_the_limit_not_the_file_size(self):
+        import split_cluster
+        limit = split_cluster.RECEIVE_LIMIT
+        # A big file on a fast disk is safe; a small file on a loaded machine is not. Only time matters.
+        for seconds, expected in ((limit - 0.1, False), (limit + 0.1, True), (0.5, False), (120.0, True)):
+            self.assertEqual(seconds > limit, expected, f'{seconds}s against a {limit}s limit')
+
+class RunLogTests(unittest.TestCase):
+    """The measurement that F42 and F43 lacked, including that it cannot itself break a run."""
+    def test_a_span_records_its_duration_and_survives_an_exception(self):
+        clock = iter([0, 0, 0, 1.5]); timeline = run_log.Timeline(clock=lambda: next(clock))
+        with self.assertRaises(RuntimeError):
+            with timeline.span('upload'):
+                raise RuntimeError('peer died')
+        phase = timeline.phases[0]
+        self.assertEqual(phase['name'], 'upload')
+        self.assertFalse(phase['ok'])          # a failed phase is still timed; that is the diagnostic
+        self.assertGreater(phase['duration_ms'], 0)
+    def test_summary_reports_the_time_no_phase_claims(self):
+        ticks = iter([0, 0, 0, 1, 10]); timeline = run_log.Timeline(clock=lambda: next(ticks))
+        with timeline.span('measured'): pass
+        summary = timeline.summary()
+        # F43 could not say where 115 s of 141 s went. This is the number that would have said.
+        self.assertEqual(summary['measured_ms'], 1000.0)
+        self.assertEqual(summary['unaccounted_ms'], summary['total_ms'] - 1000.0)
+    def test_note_attaches_measurements_discovered_while_running(self):
+        timeline = run_log.Timeline()
+        with timeline.span('model_checksum', bytes=10) as span: span.note(mib_per_s=42.0)
+        self.assertEqual(timeline.phases[0]['mib_per_s'], 42.0)
+    def test_every_event_is_one_flushed_json_line_so_a_kill_leaves_history(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'events.jsonl'
+            log = run_log.EventLog(path)
+            log.event('join', node='iphone'); log.event('laptop_stall', seconds=4.5)
+            # Read before close: a killed run must still leave readable lines behind.
+            lines = path.read_text().splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(json.loads(lines[0])['ev'], 'join')
+            self.assertEqual(json.loads(lines[1])['seconds'], 4.5)
+            self.assertIn('at_ms', json.loads(lines[0]))
+            log.close()
+    def test_an_unserialisable_field_does_not_raise(self):
+        log = run_log.EventLog()
+        log.event('odd', path=Path('/tmp/x'), when=object())  # default=str keeps logging non-fatal
+    def test_a_disk_error_mid_run_is_recorded_not_raised(self):
+        # Codex P2 on PR #41: these calls sit inside the coordinator's coroutines and its cleanup
+        # path, so an escaping OSError would take out the run and report.json with it -- the
+        # diagnostic facility failing the thing it exists to diagnose.
+        class Full:
+            def write(self, *_): raise OSError(28, 'No space left on device')
+            def flush(self): pass
+            def close(self): pass
+        log = run_log.EventLog()
+        log.handle = Full()
+        log.event('join', node='android')              # must not raise
+        self.assertIsNone(log.handle)                  # sink dropped, not retried on every event
+        self.assertIn('No space left on device', log.write_error)
+        log.event('after')
+        self.assertEqual([r['ev'] for r in log.records], ['join', 'after'])
+
+    def test_a_sink_that_cannot_be_opened_degrades_to_memory(self):
+        # The refusal is injected rather than taken from a path the filesystem is supposed to
+        # reject: an earlier version used /proc/nonexistent-dir, which Windows cheerfully created,
+        # so the test failed on a platform where the code was fine.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(Path, 'open', side_effect=OSError(13, 'Permission denied')):
+                log = run_log.EventLog(path=Path(d) / 'events.jsonl')
+            log.event('still_recorded')
+            self.assertIsNone(log.handle); self.assertIn('Permission denied', log.write_error)
+            self.assertEqual(log.records[0]['ev'], 'still_recorded')
+
+    def test_every_record_carries_utc_so_the_three_logs_can_be_lined_up(self):
+        # The phones' elapsed clocks start when their processes do, long before a run, so at_ms
+        # alone cannot order the laptop's log against theirs. iOS writes ts; Android writes wall.
+        record = run_log.EventLog().event('join')
+        self.assertRegex(record['ts'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$')
+
+    def test_host_memory_answers_with_the_keys_and_never_raises(self):
+        reading = run_log.host_memory()
+        self.assertEqual(set(reading), {'total_bytes', 'available_bytes'})
+        with mock.patch('sys.platform', 'plan9'), mock.patch.object(os, 'name', 'posix'):
+            self.assertEqual(run_log.host_memory(), {'total_bytes': None, 'available_bytes': None})
 
 class CapacityTests(unittest.TestCase):
     MIB = 1048576

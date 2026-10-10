@@ -20,8 +20,15 @@ import threading
 import time
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_stamp
+import run_log
+
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
 REV = (ROOT / 'native/split/llama-revision.txt').read_text().strip()
+# Which build is running. Three physical runs could not say, which is why F42's cause cannot be
+# settled; every component now reports its own and the report records all of them (F44).
+KIT_BUILD = build_stamp.read(ROOT)
 NODES = ('laptop', 'android', 'iphone')
 PROMPT = 'The capital of France is'
 CORE_STATS = ('allocated_bytes', 'peak_bytes', 'graph_calls')
@@ -126,12 +133,15 @@ class Relay:
     def __init__(self, config, directory):
         self.config = config; self.directory = directory
         self.nodes = {}; self.pending = {}; self.tasks = set(); self.writers = set(); self.listeners = []
-        self.failure = asyncio.Event(); self.reason = ''; self.closing = False
+        self.failure = asyncio.Event(); self.reason = ''; self.closing = False; self.start_clock = time.monotonic()
         self.last_tick = time.monotonic(); self.worst_stall = 0.0; self.stall_at = 0.0; self.monitor = None
+        self.stalls = []  # every stall this run, so a report can show whether the laptop kept up (F44)
+        self.events = None  # set by the coordinator; the relay logs joins and faults through it
 
     def fail(self, reason):
         if not self.closing:
             self.reason = self.reason or str(reason); self.failure.set()
+            if self.events: self.events.event('failure', reason=str(reason))
 
     async def start(self):
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -148,6 +158,9 @@ class Relay:
             late = now - before - .5; self.last_tick = now
             if late > 2:
                 self.worst_stall = max(self.worst_stall, late); self.stall_at = now
+                if len(self.stalls) < 200: self.stalls.append({'at_ms': round((now - self.start_clock) * 1000, 1),
+                                                               'seconds': round(late, 2)})
+                if self.events: self.events.event('laptop_stall', seconds=round(late, 2))
                 print(f'Laptop stalled for {late:.1f} s: this program did not run (low memory or a busy disk).', flush=True)
 
     def stalled_for(self):
@@ -177,7 +190,12 @@ class Relay:
                 self.listeners.append(listener)
                 record['endpoint'] = f"127.0.0.1:{listener.sockets[0].getsockname()[1]}"
                 await send(writer, {'ok': True})
-                print(f'Joined {node}: {hello.get("platform")} budget={pair["budget_mib"]} MiB', flush=True)
+                build = build_stamp.short_commit(hello.get('build'))
+                print(f'Joined {node}: {hello.get("platform")} budget={pair["budget_mib"]} MiB build={build}', flush=True)
+                if self.events:
+                    self.events.event('join', node=node, platform=hello.get('platform'), peer=record['peer'],
+                                      build=hello.get('build'), app_build=hello.get('app_build'),
+                                      simulator=hello.get('simulator'), budget_mib=pair['budget_mib'])
                 while True:
                     message = await receive(reader)
                     if message.get('op') != 'stats': raise ValueError('Expected telemetry heartbeat')
@@ -251,9 +269,20 @@ def check_binary(path):
     if subprocess.check_output([str(Path(path).resolve()), '--version'], text=True, timeout=10).strip() != REV:
         raise RuntimeError('Native binary revision does not match this checkout')
 
+def binary_build(path):
+    """The commit a native binary was built from, or 'unknown' for one built before --build existed."""
+    import subprocess
+    try:
+        out = subprocess.run([str(Path(path).resolve()), '--build'], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return build_stamp.UNKNOWN
+    value = out.stdout.strip()
+    return value if out.returncode == 0 and value else build_stamp.UNKNOWN
+
 class Worker:
     def __init__(self, pair, binary, log, cache_dir=None):
         self.pair = pair; self.binary = str(Path(binary).resolve()); self.log = log
+        self.build = build_stamp.UNKNOWN  # filled from the binary itself when the worker starts
         self.cache_dir = cache_dir  # None leaves the native weight cache off
         self.stats = dict.fromkeys(CORE_STATS + CACHE_STATS, 0)
         self.proc = None; self.channels = set(); self.data_failed = asyncio.Event()
@@ -273,7 +302,7 @@ class Worker:
 
     async def run(self):
         if self.pair['runtime'] != REV: raise RuntimeError('Pairing runtime mismatch')
-        check_binary(self.binary)
+        check_binary(self.binary); self.build = binary_build(self.binary)
         with socket.socket() as sock: sock.bind(('127.0.0.1', 0)); self.port = sock.getsockname()[1]
         tasks = []; writer = None
         self.log.parent.mkdir(parents=True, exist_ok=True)
@@ -298,7 +327,8 @@ class Worker:
                 reader, writer = await paired_connection(self.pair)
                 await send(writer, {'kind': 'control', 'node': self.pair['node'], 'token': self.pair['token'],
                                     'runtime': REV, 'platform': 'android' if os.environ.get('ANDROID_ROOT') else platform.system().lower(),
-                                    'simulator': False, 'budget_mib': self.pair['budget_mib'], 'session': uuid.uuid4().hex})
+                                    'simulator': False, 'budget_mib': self.pair['budget_mib'], 'session': uuid.uuid4().hex,
+                                    'build': self.build, 'app_build': KIT_BUILD.get('commit')})
                 if not (await receive(reader)).get('ok'): raise ConnectionError('Control authentication rejected')
                 async def heartbeat():
                     while True: await send(writer, {'op': 'stats', **self.stats}); await asyncio.sleep(.5)
@@ -396,7 +426,34 @@ def capacity_summary(workers, model_file_bytes):
     return {'model_file_bytes': model_file_bytes, 'combined_run_allocated_bytes': combined,
             'largest_worker_budget_bytes': largest, 'exceeds_largest_worker_budget': combined > largest}
 
-def validate_proof(baseline, result, log, records, before, physical):
+BUILD_NOTE = ('Each worker reports the ShareCompute commit its native runtime was built from. `app_build` is the '
+              'surrounding app or kit and is recorded but not compared, because a wrapper may legitimately be '
+              'stamped differently from the library that computes.')
+
+def build_summary(records, probe=None):
+    """Which build each component ran, and whether they agree.
+
+    Mixed builds are not comparable evidence, so `validate_proof` refuses a PASS when two components
+    name different commits. A component that cannot name its build at all is reported separately: that
+    is missing provenance rather than a contradiction, and it is the state every run before F44 was in.
+
+    The probe is compared alongside the workers: it executes both the baseline and the split, so a
+    probe from another commit makes the two token streams the proof rests on incomparable, which is
+    exactly what this gate exists to catch. `records` holds only the workers that have joined so far,
+    so this is safe to call on a failure path.
+    """
+    stamps = {'coordinator': KIT_BUILD, 'probe': {'commit': probe}}
+    apps = {}
+    for node, rec in records.items():
+        hello = rec.get('hello', {})
+        stamps[f'{node}-worker'] = {'commit': hello.get('build')}
+        apps[node] = hello.get('app_build')
+    summary = build_stamp.compare(stamps)
+    return {'coordinator': KIT_BUILD, 'probe': probe,
+            'workers': {n: records[n].get('hello', {}).get('build') for n in records},
+            'app_builds': apps, 'note': BUILD_NOTE, **summary}
+
+def validate_proof(baseline, result, log, records, before, physical, build=None):
     if not baseline.get('token_ids') or result.get('token_ids') != baseline['token_ids']:
         raise ValueError('Split greedy tokens differ from the ' + ('pinned reference' if baseline.get('profile') else 'local baseline'))
     workers = {}; assigned = set()
@@ -412,6 +469,9 @@ def validate_proof(baseline, result, log, records, before, physical):
                          'bytes_to_worker': rec['bytes'][0], 'bytes_from_worker': rec['bytes'][1],
                          'platform': hello.get('platform'), 'simulator': hello.get('simulator'),
                          'peer': rec['peer'], 'budget_mib': hello['budget_mib']}
+    if build and build.get('mismatch'):
+        named = '; '.join(f'{commit[:7]}: {", ".join(who)}' for commit, who in sorted(build['commits'].items()))
+        raise ValueError(f'Components were built from different commits, so this run is not comparable evidence ({named})')
     if physical:
         if workers['android']['platform'] != 'android' or workers['iphone']['platform'] != 'ios':
             raise ValueError('Physical proof requires Android and native iOS workers')
@@ -427,18 +487,51 @@ async def run_coordinator(a):
     directory = out / 'pairing' if local else a.config.resolve().parent
     config = init_cluster(directory, '127.0.0.1', 0, a.budgets) if local else json.loads(a.config.read_text())
     relay = Relay(config, directory); workers = {}; tasks = []; fault = None
+    events = run_log.EventLog(out / 'events.jsonl')
+    timeline = run_log.Timeline(events)
+    relay.events = events
+    memory = {'at_start': await asyncio.to_thread(run_log.host_memory), 'min_available_bytes': None, 'samples': 0}
+    events.event('run_start', mode=a.mode, build=KIT_BUILD.get('commit'), model=str(a.model),
+                 tokens=a.tokens, physical=physical, host_memory=memory['at_start'])
     report = {'status': 'FAIL', 'physical_devices': physical, 'runtime': REV,
+              'build': {'coordinator': KIT_BUILD, 'note': BUILD_NOTE},
               'scope': 'physical-LAN' if physical else ('native-ios-simulator' if a.mode == 'simulator' else 'three-process-loopback'),
               'identity_note': 'Platform and simulator flags are worker reports, not hardware attestation.',
               'capacity_note': SMALL_MODEL_NOTE}
+    probe_build = build_stamp.UNKNOWN  # set below; defined here so the failure path can report it
     try:
-        check_binary(a.worker_binary); check_binary(a.probe_binary)
-        await relay.start()
+        with timeline.span('startup'):
+            check_binary(a.worker_binary); check_binary(a.probe_binary)
+            await relay.start()
+        async def watch_memory():
+            """Headroom on a 4 GB laptop, which F43 did not record.
+
+            Off the loop: the macOS reading spawns `sysctl` and `vm_stat`, and blocking this loop is
+            what F41 cost us. A sampler must never be able to drop a device.
+            """
+            while True:
+                reading = await asyncio.to_thread(run_log.host_memory)
+                available = reading.get('available_bytes')
+                if available is not None:
+                    memory['samples'] += 1
+                    if memory['min_available_bytes'] is None or available < memory['min_available_bytes']:
+                        memory['min_available_bytes'] = available
+                await asyncio.sleep(2)
+        tasks.append(asyncio.create_task(watch_memory()))
         if local:
             for node in NODES:
                 config['nodes'][node]['port'] = relay.port
                 (directory / f'{node}.json').write_text(json.dumps(config['nodes'][node]))
         (out / 'pairing-ready').write_text(str(directory))
+        timeline.mark('pairing_ready')
+        # Deliberately after `pairing-ready`, not in the startup span. `verify_ios_simulator.py`
+        # gives the coordinator 30 s to write that file, and each binary query is a subprocess with
+        # a 10 s timeout; the two `check_binary` calls above can already consume 20 s of it on a
+        # loaded macOS runner, where a `--version` query has timed out before now. A third query in
+        # that window put the worst case exactly at the deadline. The probe's build is not needed
+        # until the report is written, so it is read once the deadline no longer applies.
+        probe_build = binary_build(a.probe_binary)
+        timeline.mark('probe_build', build=build_stamp.short_commit(probe_build))
         for node in (NODES if a.mode == 'loopback' else ('laptop', 'android') if a.mode == 'simulator' else ('laptop',)):
             pair = dict(config['nodes'][node]); pair['host'] = '127.0.0.1'; pair['port'] = relay.port
             cache_dir = getattr(a, 'cache_dir', None)
@@ -449,17 +542,52 @@ async def run_coordinator(a):
                 if not t.cancelled() and t.exception(): relay.fail(f'{n}: {t.exception()}')
             task.add_done_callback(ended)
         deadline = time.monotonic() + a.join_timeout
-        while len(relay.nodes) < 3:
-            if relay.failure.is_set(): raise RuntimeError(relay.reason)
-            if time.monotonic() > deadline: raise TimeoutError('Waiting for all three workers timed out')
-            await asyncio.sleep(.1)
+        with timeline.span('await_workers') as waiting:
+            while len(relay.nodes) < 3:
+                if relay.failure.is_set(): raise RuntimeError(relay.reason)
+                if time.monotonic() > deadline: raise TimeoutError('Waiting for all three workers timed out')
+                await asyncio.sleep(.1)
+            waiting.note(joined=sorted(relay.nodes))
+        # Recorded as soon as every worker has spoken, so a run that fails later still says which builds ran.
+        report['build'] = build_summary(relay.nodes, probe_build)
+        if report['build']['mismatch']:
+            print('WARNING mixed builds: ' + '; '.join(f'{c[:7]} = {", ".join(w)}'
+                  for c, w in sorted(report['build']['commits'].items())), flush=True)
+            print('  The run continues so you keep the timings, but it cannot be recorded as a PASS.', flush=True)
+        elif report['build']['unknown']:
+            print('WARNING provenance incomplete: ' + ', '.join(report['build']['unknown'])
+                  + ' did not report a build commit. Rebuild them from this kit to make runs comparable.', flush=True)
         cfg = {'model': str(a.model.resolve()), 'prompt': a.prompt, 'tokens': a.tokens, 'endpoints': [], 'shares': []}
         reference = getattr(a, 'reference', None)
-        model_sha256 = await file_sha256(a.model)
+        model_bytes = a.model.stat().st_size
+        with timeline.span('model_checksum', bytes=model_bytes) as hashing:
+            model_sha256 = await file_sha256(a.model)
+        seconds = (hashing.record['duration_ms'] or 0) / 1000
+        rate = round(model_bytes / seconds / 1048576, 1) if seconds > 0 else None
+        hashing.note(mib_per_s=rate)
+        # Whether this checksum would have outlasted the heartbeat limit. Before #36 it ran on the event
+        # loop, so a checksum longer than the limit dropped every connected device (F41). The rate is a
+        # property of this machine at this moment — a loaded laptop is far slower than an idle one — so
+        # the comparison is recorded per run rather than assumed once.
+        over = seconds > RECEIVE_LIMIT
+        report['model_checksum'] = {'bytes': model_bytes, 'seconds': round(seconds, 3), 'mib_per_s': rate,
+                                    'heartbeat_limit_s': RECEIVE_LIMIT, 'exceeded_heartbeat_limit': over}
+        print(f'Checksummed the model: {model_bytes / 1048576:.0f} MiB in {seconds:.1f} s'
+              + (f' ({rate:.0f} MiB/s)' if rate else '')
+              + f'; the heartbeat limit is {RECEIVE_LIMIT} s.', flush=True)
+        if over:
+            print(f'  This took longer than the {RECEIVE_LIMIT} s heartbeat limit. It is harmless now, because the'
+                  ' checksum runs off the event loop, but it means this machine was slow enough that a kit older'
+                  ' than PR #36 would have dropped every device here (F41).', flush=True)
+            events.event('checksum_over_heartbeat_limit', seconds=round(seconds, 3), limit_s=RECEIVE_LIMIT)
         if reference:
-            baseline = load_reference(reference, model_sha256, a.prompt, a.tokens); report['baseline_source'] = 'pinned-reference'
+            with timeline.span('load_reference'):
+                baseline = load_reference(reference, model_sha256, a.prompt, a.tokens)
+            report['baseline_source'] = 'pinned-reference'
         else:
-            baseline, _ = await probe(a.probe_binary, cfg, out, 'baseline', a.timeout, relay); report['baseline_source'] = 'local-run'
+            with timeline.span('baseline_generation'):
+                baseline, _ = await probe(a.probe_binary, cfg, out, 'baseline', a.timeout, relay)
+            report['baseline_source'] = 'local-run'
         before = {n: relay.nodes[n]['stats']['graph_calls'] for n in NODES}
         cache_before = {n: dict(relay.nodes[n]['stats']) for n in NODES}
         if a.kill_worker:
@@ -478,27 +606,43 @@ async def run_coordinator(a):
                 for n in NODES: held[n] = max(held[n], relay.nodes[n]['stats']['allocated_bytes'])
                 await asyncio.sleep(.1)
         sampler = asyncio.create_task(sample())
-        try: result, log = await probe(a.probe_binary, cfg, out, 'split', a.timeout, relay)
+        try:
+            with timeline.span('split_generation'):
+                result, log = await probe(a.probe_binary, cfg, out, 'split', a.timeout, relay)
         finally:
             sampler.cancel(); await asyncio.gather(sampler, return_exceptions=True)
-        await asyncio.sleep(.8) # Allow final counters to traverse the heartbeat connection.
+        with timeline.span('settle_counters'):
+            await asyncio.sleep(.8) # Allow final counters to traverse the heartbeat connection.
         if relay.failure.is_set(): raise RuntimeError(relay.reason)
-        report['workers'] = validate_proof(baseline, result, log, relay.nodes, before, physical)
+        report['workers'] = validate_proof(baseline, result, log, relay.nodes, before, physical, report['build'])
         for n in NODES:
             report['workers'][n]['cache'] = cache_delta(cache_before[n], relay.nodes[n]['stats'])
             report['workers'][n]['run_allocated_bytes'] = held[n]
         report['generation'] = result; report['matches_baseline'] = True; report['model_sha256'] = model_sha256
-        report['capacity'] = capacity_summary(report['workers'], a.model.stat().st_size)
+        report['capacity'] = capacity_summary(report['workers'], model_bytes)
         if report['capacity']['exceeds_largest_worker_budget']: report['capacity_note'] = CAPACITY_NOTE
         report['status'] = 'PASS'
     except Exception as e:
-        report['error'] = str(e)
+        report['error'] = str(e); events.event('error', message=str(e), kind=type(e).__name__)
     finally:
         if fault: fault.cancel(); await asyncio.gather(fault, return_exceptions=True)
         relay.closing = True
         for task in tasks: task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         if hasattr(relay, 'server'): await relay.stop()
+        # Measurement is attached even to a failed run: its timings are the diagnostic.
+        # Recomputed here as well as on the success path: a run that fails while workers are still
+        # joining never reaches that line, and provenance is most useful on exactly those runs.
+        report['build'] = build_summary(relay.nodes, probe_build)
+        report['phases'] = timeline.summary()
+        report['host_memory'] = memory
+        report['loop_stalls'] = {'count': len(relay.stalls), 'worst_seconds': round(relay.worst_stall, 2),
+                                 'stalls': relay.stalls}
+        report['event_log'] = 'events.jsonl'
+        events.event('run_end', status=report['status'], error=report.get('error'),
+                     unaccounted_ms=report['phases']['unaccounted_ms'],
+                     min_available_bytes=memory['min_available_bytes'])
+        events.close()
         (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2)); return 0 if report['status'] == 'PASS' else 1
 
