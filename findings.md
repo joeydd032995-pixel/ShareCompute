@@ -2798,3 +2798,84 @@ placement and byte counts, so future capacity work can be prepared there and con
 physical pair of runs. What remains unproven about the split is unchanged by this: no hardware
 failure handling, no re-formation (F35), no laptop-alone comparison, and the supervisor still
 discards a failed generation rather than re-planning.
+
+## F44 — Every component now stamps its build and every run measures itself, so the next failure is diagnosable
+
+F42's cause cannot be settled because no log of the failure was ever captured, and F39, F42 and F43 all
+record the same gap: `report.json` named no commit, so nobody could say which build produced a run.
+F43 could not account for 115 of a 141 second run, and recorded no memory headroom on a 4 GB laptop.
+This change instruments all of that. **It closes measurement gaps; it does not fix a defect, and it
+proves nothing new about the split itself.**
+
+**Build provenance.** `scripts/build_stamp.py` resolves a commit from, in order: a `build-stamp.json`
+written at build time, `git rev-parse` in a checkout, else the literal `unknown`. `SC_BUILD_COMMIT`
+and `GITHUB_SHA` override, and a value that is not 40 hex characters is rejected rather than trusted.
+The native `sc-worker-core` library carries `SC_BUILD_COMMIT` as a compile definition, exposed as
+`sc_worker_build()` — **one hook that stamps all three workers**, because the laptop, Android and iOS
+all link that library. The control hello gained `build` (the native commit) and `app_build` (the
+surrounding app or kit). `report.json` records each, and the coordinator prints each worker's build on
+join.
+
+**Mixed builds cannot become evidence.** When two components name different known commits,
+`validate_proof` refuses the PASS, naming which component ran what. The run still executes and keeps
+its measurements, because the timings of a mismatched run are still worth having; it simply cannot be
+cited. A component that reports *no* commit is recorded as unknown and warned about, but does not fail
+the run: that is missing provenance rather than a contradiction, and it is the state every run before
+this one was in. The owner chose "refuse PASS" over "reject at the handshake".
+
+**Measurement.** `scripts/run_log.py` adds a phase timeline, a flushed `events.jsonl`, and host memory
+sampling. Reports gained `phases` (with `unaccounted_ms` — the share of the wall clock no phase
+claims, which is the number F43 lacked), `model_checksum` (bytes, seconds, MiB/s), `host_memory`,
+`loop_stalls`, and `event_log`. All of it is attached **even to a failed run**, because a failed run's
+timings are the diagnostic. Both phone apps gained their own bounded log with an export button, so a
+phone that appears to go silent can be asked what it saw.
+
+**`model_checksum.exceeded_heartbeat_limit` is the useful one.** It says whether this run's checksum
+outlasted the 10 s heartbeat limit — harmless now that the checksum runs off the event loop, but
+`true` means the machine was slow enough that a pre-#36 kit would have dropped every device (F41).
+F42's addendum could only reason about this arithmetically; the operator's own runs will now answer it.
+
+**A checksum rate is a property of the moment, not the hardware.** Measured here: the same 469 MiB
+file on the same container took **42.1 s (11.1 MiB/s)** during a loopback run with two other agents
+loading the CPU, and **1.45 s (322 MiB/s)** when idle — a 29× spread with no hardware change. So
+`exceeded_heartbeat_limit` is the field to read; comparing rates between runs says more about machine
+load than about machines. This also sharpens F42: a *loaded* laptop can exceed the limit even on the
+small model, which the addendum's arithmetic treated as the safe case.
+
+**Verified:** `scripts/test_split_cluster.py` 46 tests (17 new, covering stamp resolution order, a
+damaged stamp, CI override rejection of a non-commit, `compare`'s split of mismatch from unknown, the
+mixed-build gate with a matching-builds control, span timing through an exception, `unaccounted_ms`,
+and that an unwritable or unserialisable event cannot raise); `test_split_launcher.py` 13.
+`build_split_runtime.py --jobs 4` compiled the stamped native runtime, and the built binary answers
+`--build` with the commit while `--version` is unchanged byte for byte (the coordinator compares that
+one exactly). Real three-worker loopback runs produced populated `build`, `phases`, `model_checksum`,
+`host_memory`, `loop_stalls` and an 18-line `events.jsonl`; `verify_split_runtime.py` passed end to
+end. **End-to-end negative control for the gate:** a `build-stamp.json` with a different commit at the
+repository root made a real run warn, finish, keep its measurements, and reach
+`FAIL — Components were built from different commits`, naming all four components. Android: `javac
+--release 11` against `android-35/android.jar` plus ZXing, exit 0, with a negative control (a wrong-arity
+call in the method added) failing as it should.
+
+**Not verified:**
+- **The iOS Swift has never been compiled.** This container has no Swift toolchain at all — `/opt/swift`
+  does not exist, so not even `swiftc -parse` ran, and F18 records that parsing passed this project's
+  Apple code for its whole life while three real type errors sat in it. The iOS files were checked
+  only by a tree-sitter grammar parse. **CI's `ios` and `ios-simulator` jobs are the first real test**,
+  and the least certain parts are `os_proc_available_memory`, the `ShareLink`/`FileRepresentation`
+  signatures, and whether `project.yml`'s new post-build stamp script runs where intended.
+- **No APK was built.** Gradle and the NDK are absent here, so `buildConfigField`, `buildFeatures`,
+  the manifest's `${applicationId}` placeholder and the JNI link to `sc_worker_build` are untested.
+- **Nothing ran on a phone.** Neither export button, neither share sheet, no file rotation, no thermal
+  or memory callback, and no `LogProvider` URI grant has been exercised on a device.
+- **`project.yml` declares `SWIFT_VERSION: 5.0`**, so the brief's Swift 6 isolation premise was wrong:
+  a Swift 6 isolation error would not be caught by CI either. The iOS isolation argument is reasoning,
+  not a check.
+- **Windows and macOS host memory are unread.** Only the Linux `/proc/meminfo` path has executed; the
+  `GlobalMemoryStatusEx` and `sysctl`/`vm_stat` paths are written but unrun, and the operator's laptop
+  is the Windows one.
+- **No physical run.** Nothing here has produced a report from the operator's devices.
+
+**Consequence:** the question "which build was that?" is answerable from now on, and mixed-build
+results cannot quietly enter the record. The next heartbeat failure should be explainable from three
+files instead of none. What this does *not* do is make any past run diagnosable: F42 stays unsettleable,
+and that remains the argument for having built this.

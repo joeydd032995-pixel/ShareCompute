@@ -19,3 +19,7 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_com_sharecompute_worker_NativeWorke
 extern "C" JNIEXPORT jstring JNICALL Java_com_sharecompute_worker_NativeWorker_revision(JNIEnv *env, jclass) {
     return env->NewStringUTF(sc_worker_revision());
 }
+extern "C" JNIEXPORT jstring JNICALL Java_com_sharecompute_worker_NativeWorker_buildCommit(JNIEnv *env, jclass) {
+    const char * build = sc_worker_build();
+    return env->NewStringUTF(build && *build ? build : "unknown");
+}

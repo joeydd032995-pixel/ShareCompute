@@ -35,6 +35,7 @@ struct ComputeWorkerApp: App {
                         Text("Repeat tests with the same model reuse it instead of uploading again.")
                         Button("Clear cached model data", role: .destructive) { model.clearCache() }
                     }
+                    EventLogSection()
                 }.navigationTitle("ShareCompute")
             }
             .sheet(isPresented: $scanning) {

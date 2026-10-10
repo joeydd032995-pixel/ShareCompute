@@ -39,6 +39,26 @@ The quick test uses a model that fits on any one device. The capacity test uses 
 
 The phones will keep about 2.5 GB of cached model data afterwards. Use **Clear cached model data** in each app when you are finished.
 
+## If something goes wrong, send three things
+
+A failure is only diagnosable if there is a record of it. There was none for the iPhone timeout of
+2026-10-10, which is why that one can never be explained. Send all three:
+
+1. **The laptop's report.** Press **Download report** on the dashboard. The zip holds `report.json`,
+   `events.jsonl` and the logs.
+2. **The Android log.** Open the ShareCompute app and press **Export log**. The share sheet opens so
+   you can send it. The pairing code is not in it.
+3. **The iPhone log.** Open the ShareCompute app, find **Event log**, and use the share button. The
+   same file is also in the Files app under the app's folder.
+
+Each log says which build it is, what it was doing, and what the phone's memory and temperature were
+doing at the time, so a phone that looks like it went quiet can be asked what it saw.
+
+**Every run now names its build.** The laptop window prints the kit's commit at startup, and
+`report.json` records one for each device. If they do not match, the run still finishes and keeps its
+timings but is marked `FAIL`, because results from mixed builds cannot be compared. Take the laptop
+kit and both phone apps from the same build to avoid it.
+
 ## What PASS means
 
 Each physical phone and the laptop completed native model computation with nonzero assigned layers, graph counters, memory allocations, and tunnel traffic; the 16 generated tokens matched a laptop-only baseline. The report records the proof. Phone identities are worker reports, not cryptographic hardware attestation.

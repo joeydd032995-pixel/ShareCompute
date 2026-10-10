@@ -826,3 +826,32 @@ machine has that failure mode, not re-diagnose a logless run).
 The attribution survives on the window and the arithmetic. What does not survive is calling any of it a
 control. With no log of the original failure, that occurrence is no longer settleable by anything
 obtainable — which is the clearest argument yet for F42's diagnostics.
+
+## 2026-10-10 — Comprehensive logging and build provenance (F44)
+
+Owner's request: log the checksum, put the build in the reports, give each phone an exportable log,
+and measure the important metrics. Decisions taken by the owner: a mixed-build run **executes and
+keeps its timings but cannot be a PASS**, and it all lands as one PR.
+
+- **One hook stamps three workers.** `SC_BUILD_COMMIT` is compiled into `sc-worker-core`, which the
+  laptop, Android and iOS workers all link, so `sc_worker_build()` gives each one its commit with no
+  per-platform build-system work. `--version` is untouched byte for byte, because the coordinator
+  compares it exactly.
+- **What a run now records:** `build` (per component, plus `mismatch` and `unknown`),
+  `model_checksum` with `exceeded_heartbeat_limit`, `phases` with `unaccounted_ms`, `host_memory`,
+  `loop_stalls`, and `events.jsonl` beside the report. Attached even when the run fails.
+- **The checksum number is load-dependent, not hardware-dependent.** 469 MiB took 42.1 s (11.1 MiB/s)
+  under load and 1.45 s (322 MiB/s) idle on the same container — a 29× spread. Read
+  `exceeded_heartbeat_limit`, not the rate. This also sharpens F42: a loaded laptop can blow the 10 s
+  limit on the *small* model, which the addendum's arithmetic had treated as safe.
+- **Two defects found in review, both fixed.** My own memory sampler called a function that shells out
+  on macOS — on the event loop, which is precisely what F41 cost us; it now runs through
+  `asyncio.to_thread`. The Android export ran on the UI thread behind a 2 s drain, an ANR risk on a
+  slow phone; it now builds the file on a worker thread.
+- **Dispatched in parallel:** `android-developer` and `ios-developer` built their apps' logs against a
+  written contract. The Android work deviated with reason (a 45-line `LogProvider` instead of adding
+  the AndroidX dependency) and I reviewed the provider's path handling, read-only enforcement and
+  secret scrubbing rather than taking the report on trust. The iOS agent accidentally stashed the
+  shared tree and recovered it; I verified my own work survived before continuing.
+- **The honest gap is iOS.** There is no Swift toolchain in this container — not even `swiftc -parse`.
+  CI is the first thing that will compile it. F44 says so.

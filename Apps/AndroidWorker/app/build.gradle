@@ -1,4 +1,20 @@
 plugins { id 'com.android.application' }
+
+// Same order as scripts/build_stamp.py resolve(): SC_BUILD_COMMIT, then GITHUB_SHA (CI checks out a detached
+// HEAD), then this checkout's HEAD, else 'unknown'. Only a 40-character hex value counts; anything else is skipped.
+def resolveBuildCommit() {
+    def valid = { String v -> (v != null && v.trim().matches('(?i)[0-9a-f]{40}')) ? v.trim().toLowerCase() : null }
+    for (String key : ['SC_BUILD_COMMIT', 'GITHUB_SHA']) {
+        def found = valid(System.getenv(key))
+        if (found) return found
+    }
+    try {
+        def proc = new ProcessBuilder('git', 'rev-parse', 'HEAD').directory(rootProject.projectDir).redirectErrorStream(true).start()
+        def out = proc.inputStream.text
+        if (proc.waitFor() == 0) { def found = valid(out); if (found) return found }
+    } catch (Exception ignored) {}
+    return 'unknown'
+}
 android {
     namespace 'com.sharecompute.worker'
     compileSdk 35
@@ -9,9 +25,12 @@ android {
         targetSdk 35
         versionCode 1
         versionName '0.1-test'
+        // Which commit built this APK; the laptop prints it on join. Never guessed: 'unknown' is the honest answer.
+        buildConfigField 'String', 'APP_BUILD_COMMIT', "\"${resolveBuildCommit()}\""
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_static', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON' } }
     }
+    buildFeatures { buildConfig true }
     externalNativeBuild { cmake { path 'src/main/cpp/CMakeLists.txt'; version '3.22.1' } }
     buildTypes { debug { debuggable true } }
 }

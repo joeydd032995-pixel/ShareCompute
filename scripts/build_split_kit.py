@@ -23,6 +23,9 @@ def main():
         links={wanted[x['name']]:base+'/artifacts/'+str(x['id']) for x in artifacts if x['name'] in wanted}
         if len(links)!=2: raise RuntimeError('Matching phone artifacts are missing')
     (stage/'phone-downloads.json').write_text(json.dumps(links))
+    sys.path.insert(0,str(ROOT/'scripts'));import build_stamp
+    stamp=build_stamp.write(stage,ROOT,{'component':'kit'})
+    print(f"Packaging ShareCompute {build_stamp.describe(stamp)} (source: {stamp['source']})",flush=True)
     licenses=stage/'licenses';licenses.mkdir(exist_ok=True)
     for name in ('cryptography','cffi','qrcode','pyinstaller'):
         distribution=importlib.metadata.distribution(name)
@@ -39,7 +42,8 @@ def main():
     command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--name','ShareCompute','--paths',str(ROOT/'scripts'),'--distpath',str(ROOT/'dist'),'--workpath',str(ROOT/'build/pyinstaller'),'--specpath',str(ROOT/'build'),
         '--add-data',str(ROOT/'native/split/llama-revision.txt')+':native/split',
         '--add-data',str(ROOT/'native/split/reference-capacity.json')+':native/split',
-        '--add-data',str(stage/'phone-downloads.json')+':.', '--add-data',str(licenses)+':licenses']
+        '--add-data',str(stage/'phone-downloads.json')+':.', '--add-data',str(licenses)+':licenses',
+        '--add-data',str(stage/'build-stamp.json')+':.']
     for name in ('sc-rpc-worker','sc-split-probe'):command+=['--add-binary',str(a.bin_dir.resolve()/(name+suffix))+':bin']
     command+=[str(ROOT/'scripts/split_launcher.py')];subprocess.run(command,check=True)
     output=ROOT/'dist/ShareCompute'

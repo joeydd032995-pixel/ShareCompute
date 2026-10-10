@@ -25,3 +25,4 @@ Apps/ComputeWorker/Info.plist
 dist/
 .gradle/
 .cxx/
+build-stamp.json
