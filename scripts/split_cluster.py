@@ -502,7 +502,6 @@ async def run_coordinator(a):
     try:
         with timeline.span('startup'):
             check_binary(a.worker_binary); check_binary(a.probe_binary)
-            probe_build = binary_build(a.probe_binary)
             await relay.start()
         async def watch_memory():
             """Headroom on a 4 GB laptop, which F43 did not record.
@@ -525,6 +524,14 @@ async def run_coordinator(a):
                 (directory / f'{node}.json').write_text(json.dumps(config['nodes'][node]))
         (out / 'pairing-ready').write_text(str(directory))
         timeline.mark('pairing_ready')
+        # Deliberately after `pairing-ready`, not in the startup span. `verify_ios_simulator.py`
+        # gives the coordinator 30 s to write that file, and each binary query is a subprocess with
+        # a 10 s timeout; the two `check_binary` calls above can already consume 20 s of it on a
+        # loaded macOS runner, where a `--version` query has timed out before now. A third query in
+        # that window put the worst case exactly at the deadline. The probe's build is not needed
+        # until the report is written, so it is read once the deadline no longer applies.
+        probe_build = binary_build(a.probe_binary)
+        timeline.mark('probe_build', build=build_stamp.short_commit(probe_build))
         for node in (NODES if a.mode == 'loopback' else ('laptop', 'android') if a.mode == 'simulator' else ('laptop',)):
             pair = dict(config['nodes'][node]); pair['host'] = '127.0.0.1'; pair['port'] = relay.port
             cache_dir = getattr(a, 'cache_dir', None)

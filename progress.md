@@ -880,3 +880,9 @@ workflow path filters, was already fixed in `b943c20`).
 Tests 52 + 13 pass. `verify_split_runtime.py` exit 0; all seven of its reports carry the probe
 stamp, including its two deliberate failures. Negative controls: a 3 s join timeout keeps full
 provenance in the FAIL report, and removing only the `finally` recomputation reduces it to the stub.
+
+Follow-up: `ios (ios-simulator)` failed on `7199460` with `Coordinator did not start`. The probe's
+`binary_build` query sat in the startup span, which has a 30 s deadline in `verify_ios_simulator.py`,
+alongside two `check_binary` subprocesses that can each take 10 s on a loaded runner. Moved after
+`pairing-ready`. Verified: real loopback PASS with all five components agreeing, `startup` 8.5 ms and
+the probe query marked at 14.7 ms, outside the deadline window. The Windows test fix also went green.

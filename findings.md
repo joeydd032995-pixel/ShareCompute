@@ -2965,3 +2965,17 @@ log; removing only the `finally` recomputation reduced the same run to the empty
   operator — a packaged kit reads a file stamp and the phone apps are CI-built — and widening the
   gate to treat dirtiness as a mismatch would fail every build-from-source loopback run, so it is
   recorded rather than enforced.
+
+**A provenance query is a subprocess, and a subprocess has a deadline budget.** Putting
+`binary_build(probe)` in the coordinator's startup span failed `ios (ios-simulator)` with
+`Coordinator did not start`. `verify_ios_simulator.py` allows 30 s for the coordinator to write
+`pairing-ready`; each binary query is a subprocess with a 10 s timeout, and the two `check_binary`
+calls already in that span can consume 20 s of it on a loaded macOS runner — the earlier flake on
+this same job *was* a `--version` query timing out at 10 s. A third query put the worst case exactly
+at the deadline, on a run where `xcrun simctl install` alone took 2 m 6 s. The query now runs after
+`pairing-ready`, where the deadline no longer applies, and nothing needs the value until the report
+is written. Attribution is circumstantial rather than proven — the job passed before the change,
+failed once after it, and the intervening run was cancelled — but the placement is wrong on its own
+terms, so the fix stands regardless of which run would have failed anyway. **The general shape: code
+added for *observability* still competes for the same budgets as the thing it observes.** This is the
+second time in this change that was the defect — the first was the memory sampler on the event loop.
