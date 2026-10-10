@@ -2663,50 +2663,63 @@ F42 recorded the cause of the operator's `iPhone control disconnected: TimeOutEr
 log of it was ever captured. That stays true, but three things now narrow it enough that "unknown" understates
 the record.
 
-**1. The failure falls inside the window where the defect could bite, and the window is two days wide.**
-The 3B capacity test only became runnable on 2026-10-08 (`73b22c3`, PR #34) — before it there was no
-3.4 GB file for the coordinator to checksum. The threaded checksum landed on 2026-10-10 (`11288d1`,
-PR #36). The operator's failure is between the two.
+**1. #34 is what made the defect able to fail a run at all, and the failure falls in the window it opened.**
+Before #34 the coordinator checksummed the model at `scripts/split_cluster.py:393` — *after* the last
+`relay.failure.is_set()` check at `:389`, immediately before `report['status'] = 'PASS'`. A blocked loop
+there could not fail a run however long it stalled, because the failure check had already passed. #34
+(`73b22c3`, 2026-10-08) moved the checksum to `:397`, before generation and upstream of the failure check
+at `:416`, and in the same commit introduced the 3.4 GB capacity model. The threaded fix landed 2026-10-10
+(`11288d1`, #36). The operator's failure sits in that two-day window.
 
-**2. Only the large model failed, on the same machine and the same code path.** The 10 s read limit is
-tripped when the checksum runs slower than:
+**2. The size arithmetic explains why that window was dangerous — but no run has ever confirmed the small
+case.** The 10 s read limit is exceeded when the checksum runs slower than:
 
 | Model | Bytes | Throughput needed to finish inside 10 s |
 |---|---:|---:|
 | 0.5B proof | 491,400,032 | 46.9 MiB/s |
 | 3B capacity | 3,616,088,480 | 344.9 MiB/s |
 
-A laptop anywhere between those two figures passes every 0.5B run and fails every 3B run. That is what
-happened: the 0.5B runs of F37 and F39 passed on this laptop, and the only failure was the test whose file
-is **7.36× larger**. Same code, same machine, same path; only the input size changed, and only the large
-input failed. (F41 quoted these same two numbers as "about 340 MB/s" and "about 47 MB/s" — those are MiB/s
-values, labelled MB/s. The arithmetic was right; the unit was not. Do not re-derive a contradiction from it.)
+A laptop between those figures clears the 0.5B file and not the 3.4 GB one, which is 7.36× larger.
+**This is arithmetic, not an observation.** An earlier draft of this addendum cited F37 and F39 as the
+small-model control — "same code, only the size changed". That was wrong, and review of PR #40 caught it:
+those runs predate #34, so their checksum ran where it could not fail anything. Their PASS reports say
+nothing about whether a 0.5B checksum finishes inside 10 s on this laptop. Two things changed in #34, the
+file size and the checksum's position, and no experiment separates them.
 
-**3. The operator re-downloaded the kit, then the same test passed twice.** Asked directly, they confirmed
-the kit was replaced between the failing attempt and the two passing 3B runs of F43, and report the failure
-is not reproducible. So the failing run was a pre-#36 build and the passing pair a post-#36 build. That is a
-controlled before-and-after on the one variable, even though nobody set it up as one.
+(F41 quoted these same two numbers as "about 340 MB/s" and "about 47 MB/s" — those are MiB/s values
+labelled MB/s. The arithmetic was right; the unit was not. Do not re-derive a contradiction from it.)
 
-**Verified:** `git log` for the two landing dates (`73b22c3` for the capacity profile, `11288d1` for the
-fix); the two file sizes from `scripts/download_split_model.py`'s `PROFILES`; `RECEIVE_LIMIT = 10` in
-`scripts/split_cluster.py`; the passing reports in `docs/evidence/physical-3b-capacity/`. The
-re-download is the operator's own report, not something this project observed.
+**3. The operator replaced the kit, then the same test passed twice — chronology, not a controlled
+comparison.** Asked directly, they confirmed the kit was replaced between the failing attempt and the two
+passing 3B runs of F43, and report the failure is not reproducible. An earlier draft called this "a
+controlled before-and-after on one variable"; it is not. The replacement kit at `c7fb789` carries **both**
+#36 and #37, the reports identify neither build, and nothing recorded the laptop's memory state in either
+run. It is useful circumstantial evidence and no more.
 
-**Not verified, and this is why "proven" is still the wrong word:**
-- **No log of the failure exists.** Nothing was captured from the failing run, so the mechanism is inferred
-  from dates and sizes, never seen.
-- **The checksum time on that laptop is still unmeasured.** The band above is arithmetic; whether an
-  A9-9420e without SHA extensions actually falls inside it was never timed.
+**Verified:** the two checksum positions, quoted above from `git show 73b22c3^:scripts/split_cluster.py`
+and `git show 73b22c3:scripts/split_cluster.py`; the landing dates from `git log`; the two file sizes from
+`PROFILES` in `scripts/download_split_model.py`; `RECEIVE_LIMIT = 10` in `scripts/split_cluster.py`; the
+passing reports in `docs/evidence/physical-3b-capacity/`. The kit replacement is the operator's own
+report, not something this project observed.
+
+**Not verified, and this is why "proven" is the wrong word:**
+- **No log of the failure exists.** The mechanism is inferred from dates, code positions and sizes, never
+  seen.
+- **The checksum was never timed on that laptop**, at either model size. The band above is arithmetic;
+  whether an A9-9420e without SHA extensions falls inside it is unmeasured, and the 0.5B case has no
+  confirming run either.
 - **Which build each run used rests on the operator's report,** because the reports carry no commit.
-- **A laptop stall from memory pressure produces the identical message** (F42 is the fix for exactly that
-  ambiguity) and cannot be excluded for that single run. One failure is not a series.
+- **Memory pressure produces the identical message** (F42 is the fix for exactly that ambiguity) and
+  cannot be excluded for that single run.
 
 **Consequence:** treat F41's checksum as the probable cause and stop carrying the timeout as an open
-mystery — but do not delete the alternative, because the next occurrence is the only thing that can
-separate them. F42's diagnostics stay valuable precisely because they make the next one self-diagnosing: a
-kit built from `c7fb789` or later names the laptop or the phone in the error text. If such a kit ever
-reports a laptop stall on this machine, this addendum is wrong and the memory-pressure branch was the cause
-all along.
+mystery, while leaving the alternative standing. F42's diagnostics remain worth their code because they
+make the *next* occurrence self-diagnosing: a kit built from `c7fb789` or later names the laptop or the
+phone in the error text. Note what such a future run can and cannot do — review of PR #40 caught this too.
+A later laptop stall would establish that this machine *also* has a memory-pressure failure mode; it could
+not reach back and re-diagnose a logless run from 2026-10-10, because separate runs may fail for separate
+reasons. Nothing now obtainable can settle the original occurrence. That is the cost of having no log, and
+it is the reason F42's diagnostics exist.
 
 ## F43 — A model no single worker budget could hold ran across the laptop, the Android phone and the iPhone, twice, with tokens equal to the pinned reference
 

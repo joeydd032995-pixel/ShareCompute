@@ -810,3 +810,19 @@ Still not proven: no log of the failure was ever captured, the checksum was neve
 and a memory-pressure stall gives the identical message. Recorded as an addendum to F42 rather than a
 correction to it, and F43 is left as written — the addendum supersedes its "cause unknown" line the way
 F16 superseded F13.
+
+### Correction to the entry above, from review of PR #40
+
+Codex found three overstatements in the first draft of the F42 addendum, and the second one voided its
+best argument. I had cited F37 and F39 as a same-code control showing a 0.5B checksum stays inside 10 s.
+They are not: before #34 the checksum ran at `split_cluster.py:393`, *after* the last
+`relay.failure.is_set()` check at `:389`, so a blocked loop there could not fail a run however long it
+stalled. #34 moved it to `:397`, before generation. So **two** things changed in #34 — the file size and
+the checksum's position — and nothing separates them. Also dropped: calling the rebuilt-kit runs "a
+controlled before-and-after on one variable" (that kit carries both #36 and #37, and the reports name
+neither), and the claim that a future laptop stall would prove the addendum wrong (it would show the
+machine has that failure mode, not re-diagnose a logless run).
+
+The attribution survives on the window and the arithmetic. What does not survive is calling any of it a
+control. With no log of the original failure, that occurrence is no longer settleable by anything
+obtainable — which is the clearest argument yet for F42's diagnostics.

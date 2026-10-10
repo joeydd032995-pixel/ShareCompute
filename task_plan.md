@@ -16,7 +16,7 @@ the physical runs recorded on the operator's laptop, Android phone and iPhone pa
 (F37, 2026-10-07), a weight-cache pair (F39, 2026-10-08) and a 3B Q8_0 model too large for any
 single worker budget (F43, 2026-10-10). Not every attempt passed: one 3B attempt failed with an
 iPhone heartbeat timeout, probably F41's checksum and not reproducible after a kit rebuild (F42
-addendum), though no log of it was ever captured. Nothing here claims a single shared 20 GB
+addendum); with no log of it, the original occurrence can no longer be settled. Nothing here claims a single shared 20 GB
 address space or a model larger than the three devices together.
 
 **Next steps after the physical PASS, in order:**
