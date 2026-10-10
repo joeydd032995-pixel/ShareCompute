@@ -2683,9 +2683,12 @@ capacity claim.
 **The weight cache holds at 3B scale.** The phones received 2,582.2 MiB cold and **32.97 MiB warm,
 −98.7%**, with each phone's warm `cache_hit_bytes` equal to its cold `cache_stored_bytes` to the
 byte (android 1,373,143,040; iphone 1,299,890,176) and **zero** rejections. Wall time fell from
-492.2 s to 141.0 s (−71.3%). F39 saw −92.5% on the 0.5B model; the larger the model, the larger the
-share of the transfer the cache removes, because the cacheable tensors grow while the per-run
-uncacheable traffic does not.
+492.2 s to 141.0 s (−71.3%). F39 saw −92.5% on the 0.5B model, so the cache removes a larger share
+of a larger model's transfer — but **not** because the residual traffic is constant: the phones'
+warm bytes grew from 25,618,300 (F39) to 34,567,513 here, **+34.9%**. What changed the ratio is that
+the cacheable weights grew **8.5×** over the same step (315,207,716 to 2,673,079,060 bytes, measured
+as cold minus warm) while the residual grew only 1.35×. Expect the cached fraction to keep improving
+with model size, and the per-run floor to keep rising slowly with it.
 
 **Compute did not improve, and most of the wall clock is not compute.** Cold prefill 11,321 ms /
 decode 11,624 ms; warm 12,419 / 13,621 — warm compute is 13% *slower*, consistent with F38/F39's

@@ -11,11 +11,12 @@ Windows/Linux signing and sideloading remain an operator setup step.
 
 The implementation uses a pinned llama.cpp CPU runtime, disjoint layer placement,
 per-worker RPC buffer budgets, authenticated TLS reverse tunnels, and a bounded
-subprocess that discards failed generations. Linux loopback computation, platform CI
-and physical runs on the operator's laptop, Android phone and iPhone have all passed: a 0.5B
-model (F37, 2026-10-07) and a 3B Q8_0 model too large for any single worker budget (F43,
-2026-10-10). Nothing here claims a single shared 20 GB address space or a model larger than the
-three devices together.
+subprocess that discards failed generations. Linux loopback computation and platform CI pass, and
+the physical runs recorded on the operator's laptop, Android phone and iPhone passed: a 0.5B model
+(F37, 2026-10-07), a weight-cache pair (F39, 2026-10-08) and a 3B Q8_0 model too large for any
+single worker budget (F43, 2026-10-10). Not every attempt passed: one 3B attempt failed with an
+iPhone heartbeat timeout that is still undiagnosed (F42). Nothing here claims a single shared 20 GB
+address space or a model larger than the three devices together.
 
 **Next steps after the physical PASS, in order:**
 1. **Capacity — done: loopback (F40) and physical devices (F43).** The plan named a 3B Q4 model of

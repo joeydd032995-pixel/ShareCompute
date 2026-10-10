@@ -11,13 +11,16 @@ Windows/Linux signing and sideloading remain an operator setup step.
 
 The implementation uses a pinned llama.cpp CPU runtime, disjoint layer placement,
 per-worker RPC buffer budgets, authenticated TLS reverse tunnels, and a bounded
-subprocess that discards failed generations. Linux loopback computation, platform CI and
-**physical-device runs have all passed**: on 2026-10-07 the operator's Windows laptop, Android
-phone and iPhone produced a PASS report with baseline-identical tokens on a 0.5B model (F37,
-`docs/evidence/physical-three-device/`), and on 2026-10-10 the same three devices ran a **3B Q8_0
-model that no single worker budget could hold** — 3,209 MiB pooled against a 2,048 MiB largest
-budget — twice, with tokens equal to the pinned reference (F43,
-`docs/evidence/physical-3b-capacity/`). Those are 16-token runs of one prompt. Nothing here claims a
+subprocess that discards failed generations. Linux loopback computation and platform CI pass, and
+**the physical-device runs recorded here passed**: on 2026-10-07 the operator's Windows laptop,
+Android phone and iPhone produced a PASS report with baseline-identical tokens on a 0.5B model (F37,
+`docs/evidence/physical-three-device/`); on 2026-10-08 a back-to-back pair exercised the phones'
+weight cache (F39, `docs/evidence/physical-weight-cache/`); and on 2026-10-10 the same three devices
+ran a **3B Q8_0 model that no single worker budget could hold** — 3,209 MiB pooled against a
+2,048 MiB largest budget — twice, with tokens equal to the pinned reference (F43,
+`docs/evidence/physical-3b-capacity/`). **Not every attempt has passed:** a 3B attempt in between
+failed with an iPhone heartbeat timeout whose cause is still unknown, because no log of it was ever
+seen (F42). Those are 16-token runs of one prompt. Nothing here claims a
 single shared 20 GB address space, a model larger than the three devices together, or hardware
 failure handling.
 
