@@ -886,3 +886,37 @@ Follow-up: `ios (ios-simulator)` failed on `7199460` with `Coordinator did not s
 alongside two `check_binary` subprocesses that can each take 10 s on a loaded runner. Moved after
 `pairing-ready`. Verified: real loopback PASS with all five components agreeing, `startup` 8.5 ms and
 the probe query marked at 14.7 ms, outside the deadline window. The Windows test fix also went green.
+
+## 2026-10-11 — F45: the logging build ran on the three physical devices, twice, and both passed
+
+The operator installed the merged F44 build (`62e5b42e`) on all three devices from CI artifacts and
+ran the 3B capacity test cold then warm. Both PASS, tokens equal to the pinned reference, pooled
+allocation 3,364,962,304 bytes — byte-identical to F43.
+
+What the new instrumentation produced, recorded as **F45** with masked evidence in
+`docs/evidence/physical-f45-logging/`:
+
+- **Provenance confirmed on hardware.** All five components on one commit, `complete: true`,
+  `unknown: []`. The laptop's cache counters match both phones' exported totals exactly, so the
+  three records corroborate rather than merely self-report. The apps' own pin/token scrubbing is
+  visible in the exported logs (`"pin":"redacted"`, `"token":"redacted"`).
+- **F42's mechanism measured, not inferred.** Checksum 25.7 s at 134 MiB/s against the 10 s limit,
+  `exceeded_heartbeat_limit: true`, reproduced twice to within 0.6%. The addendum's arithmetic
+  wanted 344.9 MiB/s; the machine does 134.
+- **F43's 115 unexplained seconds explained.** `unaccounted_ms` 0.2% cold, 0.1% warm. Cold compute
+  is 5.5% of `split_generation`; the rest is transfer at ~45 Mbit/s.
+- **Cache confirmed on the new build.** Wall clock 556.7 s → 165.6 s, phone upload −98.7%, zero
+  rejections. Warm compute unchanged, as F43 also saw.
+- **New finding — the phones are loaded sequentially.** Cache windows overlap by 0.4 s and 0.0 s
+  across two runs differing 5× in length. Now the largest identified saving in the cold path. Cause
+  not established; likely upstream.
+- **New finding — clock skew is a fixed offset.** Laptop ahead of iPhone 828/826 ms and of Android
+  555/548 ms across the two runs. Skew-corrected, the phones agree to 81 ms on when the laptop tore
+  down, versus 354 ms raw. So `ts` needs anchoring on the join handshake before use — a refinement
+  of what F44 claimed for it, not a withdrawal.
+- **Risk surfaced.** Laptop free RAM bottomed at 89.2 MiB of 3,973 on the cold run; Android had a
+  prior `LOW_MEMORY` kill in its history. The first cold run after a reinstall is the dangerous one.
+
+Also corrected while writing the evidence README: the iPhone holds layers 24–36, not 24–35.
+CLAUDE.md's objective paragraph, state table and verification matrix updated — including the
+phone-log row, which F45 moves from "no" to "both export buttons have run on hardware".

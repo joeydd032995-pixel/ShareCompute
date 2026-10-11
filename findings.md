@@ -2979,3 +2979,120 @@ failed once after it, and the intervening run was cancelled — but the placemen
 terms, so the fix stands regardless of which run would have failed anyway. **The general shape: code
 added for *observability* still competes for the same budgets as the thing it observes.** This is the
 second time in this change that was the defect — the first was the memory sampler on the event loop.
+
+## F45 — The logging build ran on the three physical devices twice and passed; it confirmed provenance and the F42 mechanism, and found that the two phones are loaded strictly one after the other
+
+Two back-to-back runs of the 3B capacity test on the operator's laptop, Android phone and iPhone on
+2026-10-11, with the F44 logging build installed fresh from CI. Both **PASS**, `physical-LAN`, tokens
+equal to the pinned reference, pooled `run_allocated_bytes` **3,364,962,304 (3,209.1 MiB)** against a
+2,048 MiB largest budget — **byte-identical to F43 in both runs**, so that figure is now reproduced
+three times across two sessions. Evidence in `docs/evidence/physical-f45-logging/`.
+
+**1. Provenance works on hardware. Every earlier physical run is provenance-blind for good.** All
+five components — coordinator (from `GITHUB_SHA`), probe, and the three workers, plus `app_build` for
+each phone — report `62e5b42e0b7bcd2d3642b8dde41352d8991be4c0`, with `mismatch: false`,
+`complete: true`, `unknown: []`. The single compile-time hook into `sc-worker-core` reaches all three
+platforms as intended (F44), and the two-level split (native `build` versus wrapper `app_build`) is
+populated on both phones. The three records also corroborate each other rather than merely
+self-reporting: the laptop's per-worker cache counters equal the phones' own exported totals exactly
+(Android 1,373,143,040 B, iPhone 1,299,890,176 B).
+
+**2. F42's mechanism is now measured on the operator's own laptop, not inferred.** `model_checksum`
+took **25.735 s at 134.0 MiB/s** (cold) and **25.578 s at 134.8 MiB/s** (warm), both with
+`exceeded_heartbeat_limit: true` against the 10 s `RECEIVE_LIMIT`. The F42 addendum could only
+calculate that 344.9 MiB/s would be needed to stay inside the limit; the machine actually sustains
+134 MiB/s, so the 3B checksum takes **2.6× the limit**, reproduced twice 11 minutes apart to within
+0.6%. Before #36 moved the checksum off the event loop, and after #34 moved it upstream of the
+failure check, that is precisely a run that drops every device with `TimeoutError`. `loop_stalls`
+was `count: 0` in both runs, so nothing else blocked the loop. This does not retroactively observe
+the October failure — no log of it exists and none ever will — but the mechanism is no longer
+arithmetic.
+
+**3. F43's unexplained time is accounted for: it is transfer, not compute.** `unaccounted_ms` was
+**859 ms (0.2%)** cold and **140 ms (0.1%)** warm, against F43's 115 unexplained seconds out of 141.
+Cold, `split_generation` was 504.1 s of which prefill + decode was **27.5 s (5.5%)**; the remaining
+476.6 s moved 2,582.2 MiB to the phones at **5.68 MB/s (~45 Mbit/s)**. Warm, the same compute took
+27.0 s — **the cache buys transfer time and not compute**, as F43 also observed — while total wall
+clock fell 556.7 s → 165.6 s (−70.3%) and bytes to the phones fell 2,582.2 → 33.0 MiB (−98.7%), with
+2,549.2 MiB of hits and **zero rejections**.
+
+**4. The two phones are loaded strictly sequentially, and this is the finding with consequences.**
+The phones' cache windows do not overlap, in either run:
+
+| | iPhone window | Android window | overlap |
+|---|---|---|---:|
+| cold | 06:12:00.708 → 06:14:39.768 (159 s) | 06:14:39.381 → 06:18:19.986 (221 s) | **0.4 s** |
+| warm | 06:22:05.618 → 06:22:32.202 (27 s) | 06:22:32.182 → 06:23:12.433 (40 s) | **0.0 s** |
+
+One phone finishes and the next begins, with the handoff landing inside half a second, across two
+runs whose durations differ by more than 5×. This is what the warm run's non-compute time is:
+99 s of its 126 s is the phones reading cached weights off flash one after the other — the iPhone
+1,240 MiB at ~47 MiB/s, then Android 1,309 MiB at ~32 MiB/s. The order was iPhone-then-Android,
+which is **join order and not layer order** (Android holds layers 7–23, the iPhone 24–36), so what
+determines it is not established.
+
+**5. Memory headroom is the live risk, and it scales with how long the run holds buffers open.** The
+laptop's minimum free RAM was **89.2 MiB of 3,973 MiB** on the cold run and 208.8 MiB on the short
+warm one, from 277 and 83 samples. Android fell to 282 MiB free of 3,472 MiB with RSS peaking at
+1,410 MiB, and its log opens with `prior_exit: LOW_MEMORY` — the OS had already killed the app for
+memory on some earlier occasion. The iPhone logged one `memory_warning` while still holding
+2,071 MB of headroom, which looks system-wide rather than this app being squeezed. Nothing failed,
+but the first cold run after any reinstall is the dangerous one.
+
+**6. Cross-device log correlation works, and the offsets are fixed, not jitter.** The laptop sends
+its join ack **before** it logs the join (`scripts/split_cluster.py:192` then `:196`), so the gap
+between a phone's `join_accepted` and the laptop's `join` is a lower bound on clock skew:
+
+| | laptop ahead of iPhone | laptop ahead of Android |
+|---|---:|---:|
+| cold | 828 ms | 555 ms |
+| warm | 826 ms | 548 ms |
+
+Stable to 2–7 ms across runs 11 minutes apart, so these are **fixed clock offsets**. The correction
+validates itself: on raw timestamps the two phones disagree by 354 ms about when the laptop tore the
+run down, and skew-corrected they agree to **81 ms** (+966 ms and +1,047 ms after the laptop ended
+the phase). So `ts`/`wall` does answer "which device saw it first" — but only after anchoring on the
+join handshake. Raw comparison is wrong by up to 0.83 s, which is irrelevant to a 10 s heartbeat and
+fatal to sub-second ordering.
+
+**Verified:** `docs/evidence/physical-f45-logging/{cold,warm}/report.json` — `status`, `build`
+(`mismatch`/`complete`/`unknown`), `capacity`, `model_checksum`, `phases`, `host_memory`,
+`loop_stalls`, per-worker `run_allocated_bytes`/`peak_bytes`/`bytes_to_worker`/`cache`/`layers`, and
+`generation.token_ids` against `baseline_source: pinned-reference`. Layer placement read from the
+reports: laptop 0–6, android 7–23, iphone 24–36, contiguous, disjoint, union 0–36. Clock offsets and
+cache windows computed from the `ts` fields of `{cold,warm}/events.jsonl` and the `ts`/`wall` fields
+of `{cold,warm}/iphone-log.jsonl` and `{cold,warm}/android-log.json`. Ack-before-log ordering read at
+`scripts/split_cluster.py:192,196`. The APK and IPA installed were checked before the runs: the
+commit appears in the APK's `classes3.dex` and `lib/arm64-v8a/libsc-android.so`, in the IPA's binary
+and its `Info.plist` `SCBuildCommit`, and in the kit's `_internal/build-stamp.json`
+(`source: GITHUB_SHA`) and both `.exe` files.
+
+**Not verified:**
+- **The damaged-cache rejection path still has not run on hardware.** `cache_rejected` was 0 in both
+  runs, which is the healthy case. F38 exercised rejection on loopback only; the hardware path
+  remains untested, as it was after F39.
+- **Why the phones are served sequentially is not established.** The non-overlap is observed, not
+  explained. The plausible cause is that llama.cpp's RPC client pushes tensors to one endpoint at a
+  time from a single thread, in which case parallelising it is an upstream change with the
+  fourth-fork cost F32 warned about — but no code was read to confirm that, and no experiment
+  separates it from a coordinator-side ordering. The potential prize, if it is parallelisable, is the
+  serial 380 s cold window falling toward ~221 s and the 67 s warm window toward ~40 s.
+- **The clock offsets were measured, not corrected anywhere in the code.** Nothing in the kit records
+  or applies them; a reader must derive the offset from the join handshake by hand. The two anchors
+  per run are also both laptop-to-phone, so phone-to-phone skew is inferred by subtraction.
+- **One prompt, 16 tokens, one model, one Wi-Fi network, two runs.** Throughput figures are a
+  property of this network and these devices on this morning. Nothing here measures a different
+  prompt length, a sustained generation, or a second network.
+- **No failure was induced.** Both runs passed, so the diagnostics were exercised on the healthy
+  path. The failure paths they exist for — a heartbeat timeout, a dropped worker, a full disk
+  stopping the event log — remain unobserved on hardware.
+
+**Consequence:** the F44 instrumentation is confirmed end to end on real devices, so from now on a
+physical run that cannot name its build is a kit problem rather than a missing feature, and the
+`<unknown>` state in a report means someone is running a stale app. Three things change what to work
+on next. The sequential phone loading is now the largest identified saving in the cold path and the
+first thing to investigate, ahead of any compute optimisation, because compute is 5.5% of a cold run.
+The laptop's 89.2 MiB floor makes memory headroom a release concern for the 4 GB machine, and the
+operator should expect the first run after a reinstall to be both the slowest and the riskiest. And
+any future cross-device diagnosis must anchor on the join handshake before comparing timestamps —
+`ts` alone is not sufficient, which refines rather than withdraws what F44 claimed for it.

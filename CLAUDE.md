@@ -18,10 +18,16 @@ Android phone and iPhone produced a PASS report with baseline-identical tokens o
 weight cache (F39, `docs/evidence/physical-weight-cache/`); and on 2026-10-10 the same three devices
 ran a **3B Q8_0 model that no single worker budget could hold** — 3,209 MiB pooled against a
 2,048 MiB largest budget — twice, with tokens equal to the pinned reference (F43,
-`docs/evidence/physical-3b-capacity/`). **Not every attempt has passed:** a 3B attempt in between
-failed with an iPhone heartbeat timeout. No log of it was captured, but PR #34 both introduced that
-model and moved the checksum upstream of the failure check, and the operator replaced the kit and
-could not reproduce it (F42 addendum) — probable on circumstantial grounds, and not now settleable. Those are 16-token runs of one prompt. Nothing here claims a
+`docs/evidence/physical-3b-capacity/`); and on 2026-10-11 the same 3B test ran twice more on the
+**F44 logging build**, the first physical runs whose reports name the commit every component was
+built from — all five on one commit, `complete: true` — cutting wall clock 556.7 s to 165.6 s warm
+and the phones' upload 98.7% (F45, `docs/evidence/physical-f45-logging/`). **Not every attempt has
+passed:** a 3B attempt before those failed with an iPhone heartbeat timeout. No log of it was
+captured, but PR #34 both introduced that model and moved the checksum upstream of the failure
+check, and the operator replaced the kit and could not reproduce it (F42 addendum). **F45 measured
+the mechanism on the same laptop:** the 3B checksum takes 25.7 s at 134 MiB/s against a 10 s
+heartbeat limit, 2.6× over, reproduced twice — so the cause is no longer arithmetic, though the
+original occurrence stays unobservable. Those are 16-token runs of one prompt. Nothing here claims a
 single shared 20 GB address space, a model larger than the three devices together, or hardware
 failure handling.
 
@@ -65,7 +71,8 @@ wedged the entire ring indefinitely**, with no detection and no diagnostic.
 | Three-device native split: laptop + Android + iPhone over llama.cpp RPC and pinned TLS | **passed on the operator's physical devices (F37)**; Linux loopback (F36); CI builds and self-tests every platform |
 | Test kit: Windows/Linux launcher, Android APK with foreground service, iOS app with QR | builds in CI; used for the F37 run. Join and disconnect failures now name their cause (PR #26) |
 | Weight cache on the phones (`llama-cache.patch`: 1 MiB threshold, atomic writes, every hit hash-checked) | **executed on loopback (F38)**: warm runs send the phone workers ~26 MB instead of ~341 MB; a damaged file is rejected and resent, while a matched control without the check produced fluent wrong output. **Run on the physical phones (F39)**: a second run sent the phones 24.4 MiB instead of 325.0 MiB (−92.5%), every cached byte hit, none rejected, tokens equal to the baseline. The damaged-file path has not run on hardware |
-| 3B capacity test (Qwen2.5-3B **Q8_0**; the Q4 file fits the Android budget alone, F40) | **passed on the operator's physical devices (F43)**, twice: 3,209.1 MiB pooled against a 2,048 MiB largest budget, every worker inside its own, tokens equal to the pinned reference. Allocations and cold byte counts are **byte-identical to the loopback rehearsal** (F40), and the cache cut the phones' upload 98.7% (2,582 MiB to 33 MiB) and wall time 71% (492 s to 141 s). About 1.2–1.4 tok/s; warm compute was not faster, and 115 s of the warm 141 s is unexplained non-compute time. No laptop-alone comparison was attempted |
+| 3B capacity test (Qwen2.5-3B **Q8_0**; the Q4 file fits the Android budget alone, F40) | **passed on the operator's physical devices (F43)**, twice: 3,209.1 MiB pooled against a 2,048 MiB largest budget, every worker inside its own, tokens equal to the pinned reference. Allocations and cold byte counts are **byte-identical to the loopback rehearsal** (F40), and the cache cut the phones' upload 98.7% (2,582 MiB to 33 MiB) and wall time 71% (492 s to 141 s). About 1.2–1.4 tok/s; warm compute was not faster. **F45 explained the unexplained non-compute time**: it is transfer and cached-weight reading, served to one phone at a time. No laptop-alone comparison was attempted |
+| Build provenance and run measurement on hardware (F44 code, F45 runs) | **passed on the operator's physical devices twice (F45)**, cold and warm. All five components — coordinator, probe, three workers — reported one commit, `complete: true`, so a physical run can finally name its build. `unaccounted_ms` 0.2% and 0.1%, against F43's 115 unexplained seconds. It also measured what was previously inferred: the 3B checksum runs 2.6× over the 10 s heartbeat limit on this laptop, and the laptop's free RAM bottomed at **89.2 MiB of 3,973** on the cold run. **New: the two phones are loaded strictly one after the other** (0.4 s and 0.0 s overlap), which is now the largest identified saving in the cold path — compute is only 5.5% of it. Cause not established; may be upstream llama.cpp |
 | ShareComputeCore membership adapters for Linux / Windows / Android | not built. The split runs without them, and its supervisor discards a failed generation instead of re-forming |
 
 Milestone 2 is code-complete and building. The gap is no longer "uncompiled" — it is **"unrun"**:
@@ -271,11 +278,11 @@ This container is **x86_64 Linux with no macOS, no Xcode, no Android SDK and no 
 | Xcode project builds, patched MLX and all | **not here — but yes in CI** | `.github/workflows/` on a macOS runner. Both jobs green: the patched MLX compiles for `arm64-apple-macos` and iOS Simulator, and the new C symbols link |
 | Actor isolation, runtime behaviour | **no** | needs Apple hardware |
 | Three-device split: protocol, relay, proof gate, launcher | **yes** | `python3 scripts/test_split_cluster.py` and `python3 scripts/test_split_launcher.py` (needs `qrcode==8.2`). Real-model loopback: `scripts/verify_split_runtime.py` after `build_split_runtime.py` |
-| Build provenance and run measurement (F44) | **yes** | the unit tests above, plus a real loopback run: `report.json` carries `build`, `model_checksum`, `phases`, `host_memory`, `loop_stalls`, and `events.jsonl` sits beside it. The mixed-build gate has an end-to-end negative control: put a `build-stamp.json` with a different commit at the repository root and the run reaches `FAIL` with the components named |
-| A phone app's own log and its export button | **no** | CI builds both apps, but only the operator's devices can exercise the share sheet. The laptop side of provenance is checkable here; what a phone records is not |
+| Build provenance and run measurement (F44, confirmed on hardware by F45) | **yes** | the unit tests above, plus a real loopback run: `report.json` carries `build`, `model_checksum`, `phases`, `host_memory`, `loop_stalls`, and `events.jsonl` sits beside it. The mixed-build gate has an end-to-end negative control: put a `build-stamp.json` with a different commit at the repository root and the run reaches `FAIL` with the components named |
+| A phone app's own log and its export button | **no here — but both have now run on hardware (F45)** | CI builds both apps; only the operator's devices can exercise the share sheet, and on 2026-10-11 both did. Exported logs are in `docs/evidence/physical-f45-logging/`. The apps' own pin/token scrubbing is confirmed there too. What a phone records is still not checkable *in this container* |
 | Android Java type-check | partial | `javac -Xlint:all` against `android-35/android.jar` from `platform-35_r02.zip` plus ZXing 3.5.3. A type check only: the APK build (Gradle + NDK) is CI's `android` job |
 | Windows | **not here, but yes in CI** | `desktop (windows-latest)` and `test-kit (windows-latest)` build and run the real split |
-| Physical laptop + Android + iPhone | **no** | the operator's devices. Recorded evidence: `docs/evidence/physical-three-device/` (0.5B, F37), `docs/evidence/physical-weight-cache/` (cache, F39), `docs/evidence/physical-3b-capacity/` (3B capacity, F43) |
+| Physical laptop + Android + iPhone | **no** | the operator's devices. Recorded evidence: `docs/evidence/physical-three-device/` (0.5B, F37), `docs/evidence/physical-weight-cache/` (cache, F39), `docs/evidence/physical-3b-capacity/` (3B capacity, F43), `docs/evidence/physical-f45-logging/` (**the first runs that name their build**, cold and warm, F45) |
 | Multi-**rank** ring | **yes — corrected, F30** | two processes, one machine, loopback hostfile. `size=2` on both ranks, confirmed on a headless CI runner. `Patches/mlx-swift/tests/ring-formation.sh` |
 | Multi-**device** ring, real hardware | **no** | genuinely needs two machines — but that is a *product* requirement, not a testability one |
 
