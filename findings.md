@@ -3390,3 +3390,130 @@ and ended inside `split_generation`, from the coordinator's own clock and at 0.1
 phones' 5-10 s coalesced lines. That should answer what is left of F46's ~40 s unexplained front
 interval, and give the first like-for-like per-node rate without reconstructing it from four logs.
 
+
+## F48 — The spans ran on the physical devices and agree with the phones' own logs; the warm run's 140 s is 98 s of one-at-a-time loading, 21 s of it the laptop's own uncached weights, then 42 s in which no phone computes for the first 29; F46's estimate of the laptop's load was wrong by five times
+
+The first physical runs on the F47 build (`docs/evidence/physical-f48-spans/`): two back-to-back runs of
+the 3B capacity test. Run 2's report shows all five components on `eec404d`; for run 1 only the two phone apps
+report it (in their own logs), and the laptop's side is the same kit but has no report to show it. **Run 1 (cold) has no laptop report** — the operator did
+not save it — so the cold numbers below come from the two phones' logs only and are marked as such. Run 2
+(warm) is complete and has the new spans. Everything is one run of one prompt per condition.
+
+**1. The warm run, from the report.** `split_generation` is 139,985 ms. The segments tile it exactly
+(sum 139,985 ms), times from the start of `split_generation`:
+
+| from | to | what | length |
+|---|---:|---|---:|
+| 0.00 s | 4.66 s | probe starts, before the first bulk bytes | 4.66 s |
+| 4.66 s | 25.81 s | **the laptop's own weights**, 573.9 MB through the relay to its local worker (27.1 MB/s) | 21.16 s |
+| 25.81 s | 60.69 s | the iPhone loads 1,299,890,176 B from its cache (to the `cache:iphone` end) | 34.88 s |
+| 60.69 s | 98.27 s | the Android loads 1,373,143,040 B from its cache (to the `cache:android` end) | 37.58 s |
+| 98.27 s | 139.99 s | prefill 28.95 s, decode 11.46 s, 1.31 s other | 41.72 s |
+
+Loading is 98.3 s (70%) and prefill plus decode 40.4 s (29%). The gaps between windows are 3.0 s (laptop end
+to the iPhone's first completed tensor) and 0.6 s. The laptop upload and the two cache windows do not overlap. The order is laptop,
+iPhone, Android, which is also the join order and the ascending order of the ports (55700, 55714, 55721), so
+this run cannot separate F46's endpoint-name mechanism from join order; F47's loopback runs are what do.
+Over each phone's whole phase (from the previous node's end) the iPhone loaded at 37.3 MB/s and the Android at
+36.5 MB/s, both from their cached files on local flash, not from Wi-Fi: the phones received only 14.4 MB and
+20.2 MB in this run. (An earlier draft divided the bytes by the `cache:*` span alone, 40.8 and 37.1 MB/s; that
+overstates the iPhone because its span starts only when its first 335 MB step had already completed. Timing
+only the bytes after the first step gives 30.3 MB/s for the iPhone and 36.5 for the Android.)
+
+**2. The spans agree with the phones' own logs.** `cache:iphone` is 31,875 ms; the iPhone's first to last
+cache-hit record is 31,879 ms. Against the coordinator's `began_ts` and `ended_ts` the phone's records are
+0.875 s and 0.871 s later, a constant, consistent with the 0.83 s laptop-ahead offset F45 measured for this
+phone. The Android's coarser (10 s) records are 1.4 s and 4.5 s later than the coordinator's edges, inside
+their own coalescing. The laptop worker's allocated bytes step up at `SC_STATS` lines 530-532, which is
+the compute-buffer allocation when loading ends; at the nominal cadence that is within about 0.4 s of
+`cache:android`'s end. The spans' own `resolution_ms` is 1.6-2.0 s, not 0.1 s: the sampler's longest gap,
+once 1.6 s on this loaded laptop, while `loop_stalls` stayed at 0.
+
+**3. The first graph finishes 29 s after the last weight, and the phones are downstream of it.** The laptop
+worker's `graph_calls` first becomes 1 at line 639, about 127.5 s into `split_generation`, 29 s after loading
+ended at 98.3 s. That counter increments when a graph **finishes**, not when it starts
+(`llama-budget.patch`: `sc_calls.fetch_add(1)` after `ggml_backend_graph_compute` returns), and the phones'
+counters work the same way, so zero on a phone does not by itself mean idle: during a phone's first graph it
+reads 0 until that graph is done. What does bound the phones is the pipeline order. The laptop holds layers 0-6
+(`split.log`: `layer 0..6 assigned to device RPC0`, the laptop's 768 MiB budget), the phones hold layers 7 and up, and the
+phones' inputs are the laptop's outputs, so no phone can start its first graph before the laptop's first graph
+has finished. The phones' samples are consistent with that: the Android reads 0 at 14:45:11.2 (11 at 14:45:21.2) and
+the iPhone's count is still its run-1 total of 16 at 14:45:09.0 (27 at 14:45:19.3), against the last weight
+landing at 14:44:42.6 on the laptop clock. So the 28.9 s `prefill_ms` is **almost all before any phone's first
+graph can have started**, and it is one of two things this data cannot tell apart: the probe not yet having
+sent the first graph to the laptop, or the laptop's own first graph running that long (for example paging).
+Once graphs are running, a decode step takes 0.77 s across all three devices (16 calls in 11.5 s). A 5-token
+prefill at that per-token rate would be about 4 s, so at least 25 s of the 28.9 s is above the steady-state rate;
+whether that excess is waiting or slow computing is **not** established. That prefill is twice F45's (14.0 s warm,
+15.3 s cold) and F43's (12.4 s, 11.3 s). The cold run's own tail agrees with the smaller figure: from the
+Android's last cache record to its tunnel closing is 24.6 s, at most 30.6 s with the 10 s coalescing, and decode
+is about 12 s, so the cold prefill was about 12-18 s.
+
+**4. The cold run, from the phone logs only.** The iPhone's data channel opened at 14:32:01.9 and its first
+stored tensor was recorded at 14:33:31.8: **90.0 s**, against 24.9 s for the same interval in the warm run.
+The extra 65.1 s is the time the cold run took beyond the warm run before its first tensor was recorded, which
+includes the first 330,612,736 B tensor crossing Wi-Fi and being written to the cache; it is **not** a Wi-Fi rate,
+because the warm interval it is subtracted from ends in a different operation (a read, a hash and a second read
+of the cached file, `llama-cache.patch`). After it the iPhone stored the remaining 969,277,440 B over 170.0 s
+(5.70 MB/s), then the Android stored 1,364,230,144 B over 220.7 s (6.18 MB/s), with 1.8-2.1 s between them;
+those are store rates, receive plus cache write, not network throughput. Whole-run lengths agree with F45: the iPhone channel was open
+505.3 s, F45's `split_generation` 504.1 s.
+
+**5. What this does to F45 and F46.**
+- **F46's weak-candidate call on the laptop's load was wrong.** F46 put the laptop's 546.83 MiB context at "about
+  4 s" from the checksum's disk rate and called it a much weaker candidate than the first iPhone tensor. It is
+  **21.2 s**, because the laptop's weights are not read from disk into its worker: they go through the same
+  TLS relay as the phones' (27 MB/s), and the laptop worker runs with `cache=off` (banner in
+  `laptop-worker.log`; its cache counters are 0), so all 573.9 MB are re-sent every run.
+- The cold front interval F46 left as "~54 s the first tensor, ~40 s unexplained" is now about 25 s (the
+  warm-run equivalent: probe start plus the laptop's load) and about 65 s more (receiving and caching the first
+  tensor, which F46 put at about 54 s from a rate later in the window; the 11 s difference is not resolved,
+  because the cold and warm endpoints are different operations).
+- **F45's "compute" mixes two things.** F45 counts prefill plus decode as compute (27.5 s cold, 5.5% of the
+  cold path). Decode, 16 tokens at about 0.77 s, is steady-state compute. The prefill's excess over that rate
+  (about 8-14 s cold, 25 s or more in this warm run) is time before any phone can have started, of a kind this
+  data cannot name; it is not shown to be compute and not shown to be waiting.
+
+**Verified:** `docs/evidence/physical-f48-spans/warm/report.json` (phases, children, `generation`, `build`,
+`workers`), `events.jsonl` (the `began_ts` / `ended_ts` of each child), both phones' logs (cache records,
+`channel_open` / `channel_closed`, `tunnel_end`, native and telemetry samples), `laptop-worker.log` (the
+`SC_STATS` lines and the `cache=off` banner), `split.log` (KV and layer sizes, `sched_reserve`),
+`native/split/llama-budget.patch` (where `graph_calls` increments); every figure above was recomputed
+from those files with `python3 -I`, and the segment table sums to `split_generation`. The report and all 789 JSON
+log lines parse.
+
+**Not verified:**
+- **Run 1 has no laptop report.** The cold figures rest on the phones' coalesced logs (5 s on the iPhone, 10 s on
+  the Android), their clocks, and the F45 clock offsets; the cold prefill range is a bracket, not a
+  measurement.
+- **Whether the prefill gap is waiting or computing, why it exists, and why it doubled.** The first graph
+  finishing 29 s after loading is measured; whether the probe sat idle for that time or the laptop's first
+  graph ran that long is not, because `graph_calls` counts completions and nothing here is stamped at graph
+  start. Why it exists is not either. The leading candidate is paging on a 4 GB laptop that read the whole 3.6 GB
+  model to hash it while holding a 547 MiB worker buffer (minimum free RAM 197 MiB), but nothing here
+  tests it. It is one run against F43's and F45's single runs of 11-15 s.
+- **The `SC_STATS` times are inferred.** The lines have no timestamps; I assumed an even cadence from the line
+  count (691 lines over the run) anchored on the laptop's join time, so lines 530-532 and 639 are good to
+  about a second.
+- **Whether the laptop's slow load is the relay or something else.** 27 MB/s is the relay's measured
+  throughput to a local worker on this laptop; I did not separate TLS cost, the Python relay's copying,
+  and the worker's own set-tensor from it.
+- **Whether concurrency would help.** Still no run has had the two phones loading at once. Their warm loads
+  are on separate flash and almost no network, which is why overlapping them would not contend for Wi-Fi,
+  but that is inference.
+- **The endpoint-name ordering is still unseparated physically**, as above.
+- **Single runs.** One cold and one warm run; no variance is known.
+
+**Consequence:** the warm path now has a measured list of what costs time, in order: the phones'
+cached loads (34.9 s and 37.6 s, sequential only because of the loader, F46), the prefill before the first graph finishes (29 s,
+unexplained, and not shown to be waiting rather than computing), the laptop's own weights (21 s, avoidable by caching them or skipping the relay), and
+decode (about 12 s). Three things follow. (1) The laptop's weights are the cheapest saving still on the table, worth up to 21 s a run, cold
+and warm, and how it is done changes how much: a cache hit would still pay hashing (the phones' hits run at
+about 36-37 MB/s over their whole phase, which would be about 15-16 s for 574 MB), while handing the worker the file directly would cost
+about a disk read (about 4 s at the checksum's rate), both unmeasured. (2) The prefill needs its own instrument before anyone optimises it, and it needs a graph-**start** stamp, which
+no counter here provides: timestamps on the `SC_STATS` lines plus a "graph started" mark in the worker
+would say whether the 29 s is the probe not yet sending or the laptop's graph running, and the probe's
+per-phase timing would say what it is doing. (3) The case for the upstream
+non-blocking hash check (F46) is stronger than it was: the two phones' warm loads are 72.5 s of the run,
+on independent flash, and overlapping them would save up to the smaller, 34.9 s, less whatever of the laptop's own hashing of the
+same bytes cannot overlap.
