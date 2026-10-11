@@ -796,3 +796,33 @@ reference. F43 has the full record and `docs/evidence/physical-3b-capacity/` the
 - **Still unknown:** which kit build these ran on (reports record no commit), and therefore nothing
   about the earlier `TimeoutError`, whose cause remains undiagnosed. No laptop-alone comparison, no
   cache-damage path on hardware, no memory headroom recorded.
+
+## 2026-10-10 — The heartbeat timeout is attributed, not solved (F42 addendum)
+
+The operator reported the `TimeoutError` is not reproducible and credited PR #36. Assembling the dates
+backs that: the 3B test became runnable on 2026-10-08 (#34) and the threaded checksum landed 2026-10-10
+(#36), so the failure sits in a two-day window, and the 10 s limit needs 344.9 MiB/s for the 3B file
+against 46.9 MiB/s for the 0.5B one — which is why every 0.5B run on this laptop passed and only the
+7.36× larger file failed. They confirmed the kit was replaced before the two passing runs, making it a
+before-and-after on one variable.
+
+Still not proven: no log of the failure was ever captured, the checksum was never timed on that laptop,
+and a memory-pressure stall gives the identical message. Recorded as an addendum to F42 rather than a
+correction to it, and F43 is left as written — the addendum supersedes its "cause unknown" line the way
+F16 superseded F13.
+
+### Correction to the entry above, from review of PR #40
+
+Codex found three overstatements in the first draft of the F42 addendum, and the second one voided its
+best argument. I had cited F37 and F39 as a same-code control showing a 0.5B checksum stays inside 10 s.
+They are not: before #34 the checksum ran at `split_cluster.py:393`, *after* the last
+`relay.failure.is_set()` check at `:389`, so a blocked loop there could not fail a run however long it
+stalled. #34 moved it to `:397`, before generation. So **two** things changed in #34 — the file size and
+the checksum's position — and nothing separates them. Also dropped: calling the rebuilt-kit runs "a
+controlled before-and-after on one variable" (that kit carries both #36 and #37, and the reports name
+neither), and the claim that a future laptop stall would prove the addendum wrong (it would show the
+machine has that failure mode, not re-diagnose a logless run).
+
+The attribution survives on the window and the arithmetic. What does not survive is calling any of it a
+control. With no log of the original failure, that occurrence is no longer settleable by anything
+obtainable — which is the clearest argument yet for F42's diagnostics.
