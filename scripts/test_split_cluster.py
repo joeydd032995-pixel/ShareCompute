@@ -2,6 +2,7 @@
 import asyncio
 import contextlib
 import copy
+import datetime
 import io
 from unittest import mock
 import json
@@ -12,7 +13,7 @@ import os
 import subprocess
 import build_stamp
 import run_log
-from split_cluster import CACHE_STATS, NODES, PROMPT, REV, Relay, build_summary, cache_delta, capacity_summary, close, describe_silence, file_sha256, _sha256_file, init_cluster, load_reference, paired_connection, receive, send, validate_proof
+from split_cluster import CACHE_STATS, NODES, PROMPT, REV, Relay, build_summary, cache_delta, capacity_summary, close, describe_silence, file_sha256, _sha256_file, init_cluster, load_reference, observe_nodes, paired_connection, receive, send, validate_proof
 
 class ProofTests(unittest.TestCase):
     def setUp(self):
@@ -304,6 +305,181 @@ class RunLogTests(unittest.TestCase):
         self.assertEqual(set(reading), {'total_bytes', 'available_bytes'})
         with mock.patch('sys.platform', 'plan9'), mock.patch.object(os, 'name', 'posix'):
             self.assertEqual(run_log.host_memory(), {'total_bytes': None, 'available_bytes': None})
+
+class Stopwatch:
+    """A clock the test moves by hand, so a test does not depend on how many times it is read."""
+    def __init__(self): self.t = 0.0
+    def __call__(self): return self.t
+
+class NestedSpanTests(unittest.TestCase):
+    """The inside of split_generation: F45 and F46 could not see it because spans could not nest."""
+    def test_a_child_is_detail_inside_its_parent_not_extra_time(self):
+        # Demonstrated before the fix: a 4 s child inside a 10 s parent gave
+        # total_ms=10000, measured_ms=14000, unaccounted_ms=-4000 -- more time than the run had.
+        clock = Stopwatch(); timeline = run_log.Timeline(clock=clock)
+        with timeline.span('split_generation'):
+            clock.t = 2.0
+            timeline.add_span('upload:iphone', 'split_generation', 2.0, 6.0, to_worker=100)
+            clock.t = 10.0
+        summary = timeline.summary()
+        self.assertEqual(summary['total_ms'], 10000.0)
+        self.assertEqual(summary['measured_ms'], 10000.0)
+        self.assertEqual(summary['unaccounted_ms'], 0.0)
+    def test_a_child_records_where_it_sat_inside_the_run(self):
+        clock = Stopwatch(); timeline = run_log.Timeline(clock=clock)
+        child = timeline.add_span('upload:android', 'split_generation', 7.5, 9.0, to_worker=42)
+        self.assertEqual((child['at_ms'], child['duration_ms'], child['parent'], child['to_worker']),
+                         (7500.0, 1500.0, 'split_generation', 42))
+    def test_adding_a_child_does_not_read_the_clock(self):
+        # The existing tests feed an iterator clock and count reads. A child must not shift them.
+        reads = []
+        def clock(): reads.append(1); return 0.0
+        timeline = run_log.Timeline(clock=clock); before = len(reads)
+        timeline.add_span('cache:iphone', 'split_generation', 1.0, 2.0)
+        self.assertEqual(len(reads), before)
+    def test_a_span_can_name_its_parent_and_is_then_left_out_of_the_sum(self):
+        clock = Stopwatch(); timeline = run_log.Timeline(clock=clock)
+        with timeline.span('outer'):
+            with timeline.span('inner', parent='outer'): clock.t = 3.0
+            clock.t = 4.0
+        self.assertEqual(timeline.phases[1]['parent'], 'outer')
+        self.assertNotIn('parent', timeline.phases[0])
+        self.assertEqual(timeline.summary()['measured_ms'], 4000.0)
+    def test_children_reach_the_event_log(self):
+        log = run_log.EventLog(); timeline = run_log.Timeline(log, clock=Stopwatch())
+        timeline.add_span('upload:iphone', 'split_generation', 1.0, 3.0, to_worker=5)
+        event = [r for r in log.records if r['ev'] == 'phase'][0]
+        self.assertEqual((event['phase'], event['parent'], event['duration_ms'], event['to_worker']),
+                         ('upload:iphone', 'split_generation', 2000.0, 5))
+
+class TransferWatchTests(unittest.TestCase):
+    def feed(self, watch, node, group, series, field='to_worker'):
+        for now, value in series: watch.observe(now, node, group, **{field: value})
+    def test_the_window_is_the_bulk_of_the_transfer_not_the_connections_life(self):
+        # Found by running it: the relay counter also counts the handshake and the small per-token
+        # traffic, so first and last change put all three nodes at the start and end of the run.
+        watch = run_log.TransferWatch()
+        series = [(0.0, 0), (0.1, 300),                          # handshake and device queries
+                  (1.0, 300), (2.0, 400_000), (3.0, 800_000), (4.0, 1_000_000), # the weights
+                  (5.0, 1_000_000), (6.0, 1_000_400), (7.0, 1_000_900)]         # per-token compute traffic
+        self.feed(watch, 'iphone', 'upload', series)
+        (span,) = watch.spans()
+        self.assertEqual((span['began'], span['ended']), (2.0, 4.0))   # not (0.1, 7.0)
+        self.assertEqual(span['to_worker'], 1_000_900)
+    def test_the_first_sample_is_a_baseline_not_a_transfer(self):
+        # Phone workers outlive runs and their counters are cumulative (F39).
+        watch = run_log.TransferWatch()
+        self.feed(watch, 'android', 'cache', [(0.0, 1_000_000), (0.1, 1_000_000), (0.2, 1_000_000)], field='hit')
+        self.assertEqual(watch.spans(), [])
+    def test_a_node_that_never_moved_is_absent_rather_than_zero_length(self):
+        watch = run_log.TransferWatch()
+        self.feed(watch, 'laptop', 'upload', [(0.0, 0), (0.1, 7)])
+        self.feed(watch, 'android', 'upload', [(0.0, 0), (0.1, 0)])
+        self.assertEqual([entry['name'] for entry in watch.spans()], ['upload:laptop'])
+    def test_a_group_with_several_counters_moves_when_any_does(self):
+        watch = run_log.TransferWatch()
+        for now, hit, stored in ((0.0, 0, 0), (0.1, 0, 0), (1.0, 100, 0), (2.0, 100, 100)):
+            watch.observe(now, 'iphone', 'cache', hit=hit, stored=stored)
+        (span,) = watch.spans()
+        self.assertEqual((span['began'], span['ended'], span['hit'], span['stored']), (1.0, 2.0, 100, 100))
+    def test_resolution_is_the_longest_gap_between_samples(self):
+        # A stalled event loop widens the gap; the span must say how loosely it was observed.
+        watch = run_log.TransferWatch()
+        self.feed(watch, 'iphone', 'upload', [(0.0, 0), (0.1, 0), (2.1, 9)])
+        self.assertEqual(watch.spans()[0]['resolution_ms'], 2000.0)
+    def test_a_counter_that_goes_backwards_is_rebaselined_and_forgets_what_came_before(self):
+        # A worker process restarting resets its totals; that is not 5 GB moving the other way.
+        watch = run_log.TransferWatch()
+        self.feed(watch, 'android', 'cache', [(0.0, 900), (0.5, 1000), (0.6, 10), (0.7, 40), (0.8, 40)], field='hit')
+        (span,) = watch.spans()
+        self.assertEqual((span['began'], span['hit']), (0.7, 30))
+    def test_spans_come_back_in_the_order_the_bulk_began(self):
+        watch = run_log.TransferWatch()
+        for node, start in (('android', 0.5), ('iphone', 0.2)):
+            self.feed(watch, node, 'upload', [(0.0, 0), (start, 1_000)])
+        self.assertEqual([entry['name'] for entry in watch.spans()], ['upload:iphone', 'upload:android'])
+
+class ObserveNodesTests(unittest.TestCase):
+    """Which relay counter means what: a wrong index here would report downloads as uploads."""
+    def node(self, to_worker, from_worker, hit, stored, at):
+        return {'bytes': [to_worker, from_worker], 'stats_at': at,
+                'stats': {'cache_hit_bytes': hit, 'cache_stored_bytes': stored, 'cache_rejected': 0}}
+    def test_upload_is_the_bytes_forwarded_toward_the_worker(self):
+        nodes = {'iphone': self.node(0, 0, 0, 0, 1.0)}; watch = run_log.TransferWatch()
+        observe_nodes(watch, 0.0, nodes)
+        nodes['iphone'] = self.node(1000, 3, 0, 0, 1.0)  # reply traffic is tiny; weights are the upload
+        observe_nodes(watch, 0.1, nodes)
+        names = {entry['name']: entry for entry in watch.spans()}
+        self.assertEqual(names['upload:iphone']['to_worker'], 1000)
+        self.assertNotIn('cache:iphone', names)
+    def test_cache_counters_come_from_the_workers_heartbeat(self):
+        nodes = {'android': self.node(0, 0, 0, 0, 1.0)}; watch = run_log.TransferWatch()
+        observe_nodes(watch, 0.0, nodes)
+        nodes['android'] = self.node(0, 0, 300, 20, 1.5)
+        observe_nodes(watch, 0.1, nodes)
+        (span,) = watch.spans()
+        self.assertEqual((span['name'], span['hit'], span['stored']), ('cache:android', 300, 20))
+    def test_a_snapshot_is_stamped_when_it_arrived_and_resolution_is_the_heartbeat_gap(self):
+        # Codex P2 on PR #44: polling one snapshot every 0.1 s must not claim 0.1 s resolution when
+        # the value only changes every 500 ms.
+        nodes = {'iphone': self.node(0, 0, 0, 0, 10.0)}; watch = run_log.TransferWatch()
+        beats = [(10.0, 0), (10.5, 0), (11.0, 50), (11.5, 100)]
+        for arrived, hit in beats:
+            nodes['iphone'] = self.node(0, 0, hit, 0, arrived)
+            for poll in range(5): observe_nodes(watch, arrived + poll * 0.1, nodes)   # same snapshot, five polls
+        cache = {entry['name']: entry for entry in watch.spans()}['cache:iphone']
+        self.assertEqual(cache['resolution_ms'], 500.0)
+        self.assertEqual((cache['began'], cache['ended']), (11.0, 11.5))   # arrival times, not poll times
+    def test_cache_is_not_sampled_before_the_first_heartbeat(self):
+        # The placeholder zeros are not a baseline: the first real snapshot is cumulative (F39).
+        nodes = {'android': self.node(0, 0, 0, 0, None)}; watch = run_log.TransferWatch()
+        observe_nodes(watch, 0.0, nodes)
+        nodes['android'] = self.node(0, 0, 900, 0, 1.0); observe_nodes(watch, 0.1, nodes)
+        nodes['android'] = self.node(0, 0, 900, 0, 1.5); observe_nodes(watch, 0.2, nodes)
+        self.assertEqual(watch.spans(), [])
+
+class SettledChildTests(unittest.TestCase):
+    """Codex P2s on PR #44 about what a child span claims."""
+    def test_a_big_first_step_is_reported_not_hidden(self):
+        # `hit` advances only after a whole tensor is hashed, read and installed, so the first step
+        # is the completion of work that began earlier, by an unknown amount.
+        watch = run_log.TransferWatch()
+        for now, hit in ((0.0, 0), (0.5, 0), (3.0, 900), (3.5, 1000)):
+            watch.observe(now, 'iphone', 'cache', hit=hit)
+        (span,) = watch.spans()
+        self.assertEqual((span['first_step'], span['first_step_share']), (900, 0.9))
+    def test_a_single_unit_of_work_shows_as_all_first_step(self):
+        watch = run_log.TransferWatch()
+        for now, hit in ((0.0, 0), (0.5, 0), (3.0, 1000)): watch.observe(now, 'android', 'cache', hit=hit)
+        (span,) = watch.spans()
+        self.assertEqual((span['began'], span['ended'], span['first_step_share']), (3.0, 3.0, 1.0))
+    def test_a_smooth_counter_has_a_small_first_step(self):
+        watch = run_log.TransferWatch()
+        for n in range(0, 101): watch.observe(n * 0.1, 'laptop', 'upload', to_worker=n * 1000)
+        (span,) = watch.spans()
+        self.assertLess(span['first_step_share'], 0.02)
+    def test_a_report_after_the_run_ended_is_clamped_to_the_run(self):
+        # A heartbeat can lag the probe's exit; the work it reports happened before.
+        watch = run_log.TransferWatch()
+        for now, hit in ((0.0, 0), (1.0, 100), (2.0, 100), (5.2, 400)): watch.observe(now, 'iphone', 'cache', hit=hit)
+        (span,) = watch.spans(until=5.0)
+        self.assertEqual((span['began'], span['ended']), (1.0, 5.0))
+        (unclamped,) = watch.spans()
+        self.assertEqual(unclamped['ended'], 5.2)
+    def test_a_cut_short_child_is_marked_not_ok(self):
+        timeline = run_log.Timeline(clock=Stopwatch())
+        child = timeline.add_span('upload:android', 'split_generation', 1.0, 2.0, ok=False)
+        self.assertFalse(child['ok'])
+        self.assertTrue(timeline.add_span('upload:iphone', 'split_generation', 1.0, 2.0)['ok'])
+    def test_the_event_carries_when_the_child_happened_not_when_it_was_written(self):
+        log = run_log.EventLog(); clock = Stopwatch(); timeline = run_log.Timeline(log, clock=clock)
+        clock.t = 100.0                                  # written long after it happened
+        timeline.add_span('upload:iphone', 'split_generation', 2.0, 5.5, to_worker=1)
+        event = [r for r in log.records if r['ev'] == 'phase'][0]
+        self.assertEqual((event['began_ms'], event['ended_ms']), (2000.0, 5500.0))
+        parse = lambda text: datetime.datetime.strptime(text, '%Y-%m-%dT%H:%M:%S.%fZ')
+        self.assertEqual((parse(event['ended_ts']) - parse(event['began_ts'])).total_seconds(), 3.5)
+        self.assertRegex(event['began_ts'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$')
 
 class CapacityTests(unittest.TestCase):
     MIB = 1048576

@@ -964,3 +964,29 @@ Corrected while writing it: I had mixed line numbers from the pinned file and th
 tree in conversation, and the warm-run node mapping in my first check matched by bytes sent, which is
 near zero for warm phones, so it labelled every endpoint "laptop". Both are redone against the pinned
 revision and model-buffer size.
+
+## 2026-10-11 — Spans inside split_generation, and F47
+
+Closes the instrumentation gap F45 and F46 named: `split_generation` was one span around one
+subprocess call.
+
+- `Timeline.span(..., parent=)` and `Timeline.add_span(...)`; `summary()` counts only parentless
+  spans. Before the change a 4 s child inside a 10 s parent gave `measured_ms` 14000 and
+  `unaccounted_ms` -4000.
+- `run_log.TransferWatch` and `split_cluster.observe_nodes`: the existing 0.1 s sampler also feeds the
+  relay's `bytes[0]` (toward the worker) and the workers' cache counters, and the children are added
+  in the `finally`, so a run that dies mid-transfer still says how far each node had got.
+- First design reported first-to-last change and was wrong on the first loopback run (all three nodes
+  began together and ended with the run). Now 1%-99% of the node's eventual total.
+- First loopback attempt reported FAIL: the runtime in `build/desktop` was from `7199460`, the
+  coordinator from `3171f46`. The mixed-build gate was right; rebuilt the runtime and the next runs
+  PASSED.
+- Recorded as F47: loopback upload order follows endpoint-name order, not join order.
+
+Codex reviewed #44 with five P2s, all correct and all fixed: the cache `began` was a completion time
+(now `first_step` / `first_step_share`), the sampler stopped before the settle (now runs through it, with a
+clamp to the probe's return), children were `ok: true` after a failure, event lines were stamped at write
+time (now `began_ts` / `ended_ts`), and cache `resolution_ms` was the poll rather than the heartbeat (now
+sampled on new snapshots). Loopback again needed a runtime rebuilt at the commit under test to get past the
+mixed-build gate; both runs PASS and each `cache:*` total equals the report's cache delta.
+

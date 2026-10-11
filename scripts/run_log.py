@@ -64,6 +64,10 @@ def host_memory():
         pass
     return {'total_bytes': None, 'available_bytes': None}
 
+def utc_text(moment):
+    """A UTC datetime in the same millisecond format every `ts` in every log uses."""
+    return moment.strftime('%Y-%m-%dT%H:%M:%S.') + f'{moment.microsecond // 1000:03d}Z'
+
 class EventLog:
     """One JSON object per line, flushed as it goes, so a killed run still leaves its history.
 
@@ -98,8 +102,7 @@ class EventLog:
     def _utc():
         # One reading, formatted to milliseconds: two calls to now() could straddle a millisecond
         # boundary and stamp a record with a time it was never at.
-        now = datetime.datetime.now(datetime.timezone.utc)
-        return now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond // 1000:03d}Z'
+        return utc_text(datetime.datetime.now(datetime.timezone.utc))
 
     def event(self, name, **fields):
         record = {'at_ms': round((self.clock() - self.start) * 1000, 1), 'ts': self._utc(), 'ev': name, **fields}
@@ -132,9 +135,15 @@ class Timeline:
     `span` is for work with a clear start and end; `mark` is for a moment, such as a worker joining.
     A phase that raises is still recorded, with `ok: False` — a failed run's timings are the
     interesting ones.
+
+    A span may name a `parent`. Children are detail *inside* their parent, so `summary` counts only
+    parentless spans toward `measured_ms`; counting both would report more time than the run had.
     """
     def __init__(self, log=None, clock=time.monotonic):
         self.clock = clock; self.start = clock(); self.phases = []; self.log = log
+        # One wall reading so a child observed earlier can be stamped with when it happened, not
+        # with when it was written down. Reading the injected clock again would shift its ticks.
+        self.wall_start = datetime.datetime.now(datetime.timezone.utc)
 
     def mark(self, name, **fields):
         at = round((self.clock() - self.start) * 1000, 1)
@@ -158,20 +167,110 @@ class Timeline:
                                         ok=self.record['ok'], **self.fields)
             return False
 
-    def span(self, name, **fields):
+    def span(self, name, parent=None, **fields):
         at = round((self.clock() - self.start) * 1000, 1)
+        if parent is not None: fields = {'parent': parent, **fields}
         record = {'name': name, 'at_ms': at, 'duration_ms': None, 'ok': None, **fields}
         self.phases.append(record)
         if self.log: self.log.event('phase_start', phase=name, **fields)
         return Timeline._Span(self, record, name, dict(fields))
 
+    def _wall(self, reading):
+        return utc_text(self.wall_start + datetime.timedelta(seconds=reading - self.start))
+
+    def add_span(self, name, parent, began, ended, ok=True, **fields):
+        """Record a child span whose start and end were observed elsewhere.
+
+        `began` and `ended` are readings of this timeline's own clock. Nothing here reads the clock,
+        so adding a child never shifts the timing of the spans around it. `ok=False` marks a child
+        that was cut short, such as one observed in a run that then failed. The event carries the
+        observed times (`began_ts`, `ended_ts`, UTC) because the log line itself is written later.
+        """
+        record = {'name': name, 'at_ms': round((began - self.start) * 1000, 1),
+                  'duration_ms': round((ended - began) * 1000, 1), 'ok': ok, 'parent': parent, **fields}
+        self.phases.append(record)
+        if self.log:
+            self.log.event('phase', phase=name, parent=parent, duration_ms=record['duration_ms'], ok=ok,
+                           began_ms=record['at_ms'], ended_ms=round((ended - self.start) * 1000, 1),
+                           began_ts=self._wall(began), ended_ts=self._wall(ended), **fields)
+        return record
+
     def summary(self):
         """The phases, plus the accounted and unaccounted share of the elapsed time.
 
         `unaccounted_ms` is the gap F43 could not explain. Spans may not overlap for it to mean
-        anything, so only top-level spans are timed.
+        anything, so only top-level spans are timed: a child (one with a `parent`) is detail inside
+        its parent and is left out of the sum.
         """
         total = round((self.clock() - self.start) * 1000, 1)
-        measured = sum(p['duration_ms'] or 0 for p in self.phases)
+        measured = sum(p['duration_ms'] or 0 for p in self.phases if 'parent' not in p)
         return {'total_ms': total, 'measured_ms': round(measured, 1),
                 'unaccounted_ms': round(total - measured, 1), 'phases': self.phases}
+
+class TransferWatch:
+    """When cumulative counters did their bulk of moving, from periodic samples.
+
+    A run's biggest phase is one subprocess call, so its inside is invisible from the coordinator
+    except through counters that already exist: bytes the relay has forwarded to each worker, and
+    the workers' cache counters. Feed `observe` a sample of each on a timer and `spans` says when
+    each node's counter was doing its work. That is F45's missing "when did each phone start
+    receiving, and when did it stop" -- recovered at the sampler's resolution instead of from the
+    phones' own log lines, which they coalesce to 5-10 s.
+
+    The window is from the moment the counter had covered `low` of its eventual total to the moment
+    it had covered `high` of it, not from its first change to its last. A relay counter also counts
+    the handshake at connect and the small per-token traffic until the run ends, so first and last
+    change would span the connection's whole life and say nothing about the weights (measured on a
+    loopback run before this was changed: all three nodes "began" in the same sample and "ended"
+    at the end of the run).
+
+    The first sample of a counter is its baseline, so only movement during the watch is reported.
+    A counter that goes backwards (a worker process restarted) is re-baselined, and what it had
+    already counted is forgotten. `resolution_ms` is the longest gap between two samples of that
+    counter: either edge of the window is that uncertain. Feed it the time a value was *produced*,
+    not the time it was polled: the workers' cache counters arrive as heartbeat snapshots every
+    250-500 ms, and polling one snapshot ten times would claim 100 ms.
+
+    A counter that only moves when a whole unit of work finishes (the cache's `hit` and `stored`,
+    which advance after a tensor has been hashed, read and installed) reports its first unit's
+    completion, not its start. `first_step` is the size of the step that crossed `low` and
+    `first_step_share` its fraction of the total: when that is large, `began` is when the first
+    unit finished and the work on it happened before, for an unknown time.
+    """
+    def __init__(self, low=0.01, high=0.99):
+        self.low, self.high, self.series, self.stamps = low, high, {}, {}
+
+    def observe(self, now, node, group, **values):
+        key = (group, node)
+        item = self.series.get(key)
+        if item is None:
+            self.series[key] = {'base': dict(values), 'last': dict(values), 'seen': now, 'gap': 0.0, 'points': []}
+            return
+        item['gap'] = max(item['gap'], now - item['seen']); item['seen'] = now
+        if any(values[name] < item['last'][name] for name in values):
+            item.update(base=dict(values), last=dict(values), points=[]); return
+        if any(values[name] != item['last'][name] for name in values):
+            item['points'].append((now, sum(values[name] - item['base'][name] for name in values)))
+        item['last'] = dict(values)
+
+    def spans(self, until=None):
+        """One entry per counter that moved, in the order the bulk of its movement began.
+
+        `until` clamps both edges. A snapshot that reports work after the run's measured phase has
+        ended (a heartbeat lagging the probe's exit) describes work that happened before it.
+        """
+        found = []
+        for (group, node), item in self.series.items():
+            points = item['points']
+            if not points: continue
+            total = points[-1][1]
+            first = next(n for n, (_, moved) in enumerate(points) if moved >= self.low * total)
+            last = next(n for n, (_, moved) in enumerate(points) if moved >= self.high * total)
+            began, ended = points[first][0], points[last][0]
+            if until is not None: began, ended = min(began, until), min(ended, until)
+            step = points[first][1] - (points[first - 1][1] if first else 0)
+            moved = {name: item['last'][name] - item['base'][name] for name in item['last']}
+            found.append({'name': f'{group}:{node}', 'began': began, 'ended': ended,
+                          'resolution_ms': round(item['gap'] * 1000, 1), 'first_step': step,
+                          'first_step_share': round(step / total, 3), **moved})
+        return sorted(found, key=lambda entry: entry['began'])
