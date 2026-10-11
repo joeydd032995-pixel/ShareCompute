@@ -39,6 +39,19 @@ def cache_delta(before, after):
     """Cache activity during one run. Phone workers outlive runs, so their counters are cumulative."""
     return {k: after.get(k, 0) - before.get(k, 0) for k in CACHE_STATS}
 
+def observe_nodes(watch, now, nodes):
+    """Sample every node's transfer counters into `watch`.
+
+    `bytes[0]` is what the relay has forwarded from the probe toward the worker (the upload);
+    `bytes[1]` is the reverse. It is counted after the write drains, so it is what the relay's
+    socket to the worker has accepted, which can run ahead of what the worker has received.
+    The cache counters are the workers' own, as last reported by their heartbeat.
+    """
+    for node, record in nodes.items():
+        watch.observe(now, node, 'upload', to_worker=record['bytes'][0])
+        stats = record['stats']
+        watch.observe(now, node, 'cache', hit=stats['cache_hit_bytes'], stored=stats['cache_stored_bytes'])
+
 def private_json(path, obj):
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(fd, 'w') as f: json.dump(obj, f, indent=2)
@@ -601,9 +614,16 @@ async def run_coordinator(a):
         cfg['endpoints'] = [relay.nodes[n]['endpoint'] for n in NODES]
         cfg['shares'] = [config['nodes'][n]['budget_mib'] for n in NODES]
         held = dict.fromkeys(NODES, 0)
+        watch = run_log.TransferWatch(); watching = True
         async def sample():
+            nonlocal watching
             while True:
                 for n in NODES: held[n] = max(held[n], relay.nodes[n]['stats']['allocated_bytes'])
+                if watching:
+                    # Instrumentation must not take the capacity measurement above down with it.
+                    try: observe_nodes(watch, timeline.clock(), relay.nodes)
+                    except Exception as e:
+                        watching = False; events.event('transfer_watch_error', error=f'{type(e).__name__}: {e}')
                 await asyncio.sleep(.1)
         sampler = asyncio.create_task(sample())
         try:
@@ -611,6 +631,9 @@ async def run_coordinator(a):
                 result, log = await probe(a.probe_binary, cfg, out, 'split', a.timeout, relay)
         finally:
             sampler.cancel(); await asyncio.gather(sampler, return_exceptions=True)
+            # In `finally` so a run that dies mid-transfer still says how far each node had got.
+            for moved in watch.spans():
+                timeline.add_span(moved.pop('name'), 'split_generation', moved.pop('began'), moved.pop('ended'), **moved)
         with timeline.span('settle_counters'):
             await asyncio.sleep(.8) # Allow final counters to traverse the heartbeat connection.
         if relay.failure.is_set(): raise RuntimeError(relay.reason)

@@ -3312,3 +3312,64 @@ rates add. Independently, F45's blind spot is now concrete. A phase marker at th
 would have produced the table in item 4 without reconstructing it by hand from four logs, and the
 coordinator can derive it from the workers' heartbeat cache counters. That also fixes the slack
 above: the relay sees counters every 0.25-0.5 s, where the phones' own lines are coalesced to 5-10 s.
+
+## F47 — On loopback the nodes are uploaded to in endpoint-name order, not join order, in 4 of 4 cold runs and one warm run; F46's ordering mechanism survived a case the physical runs could not test
+
+F46 explained the sequential loading from source and predicted the order from a `strcmp` on
+`"RPC0[127.0.0.1:<port>]"`. The physical runs could not test it: their ports ascended with join order
+(F46 part 3), so name order and join order gave the same answer. This change adds child spans to
+`split_generation` (`upload:<node>`, `cache:<node>`, from the relay's byte counters and the workers'
+cache counters sampled every 0.1 s), and loopback is the place where the two orders can come apart,
+because the kernel hands out ephemeral ports at random.
+
+Five real-model loopback runs on the 16-token proof model (`models/split-proof.gguf`, runtime rebuilt
+at the same commit so the mixed-build gate passed), each PASS, joins always `laptop, android,
+iphone`:
+
+| run | endpoints sorted by string | observed order of the upload windows |
+|---|---|---|
+| 1 | iphone, android, laptop | iphone, android, laptop |
+| 2 | iphone, laptop, android | iphone, laptop, android |
+| 3 | iphone, laptop, android | iphone, laptop, android |
+| 4 (cold cache) | laptop, iphone, android | laptop, iphone, android |
+| 5 (warm cache) | iphone, laptop, android | iphone, laptop, android |
+
+Three different orders appear and none is the join order, so the order follows the endpoint string and
+not the join sequence, the probe's device index (laptop is `RPC0`, android `RPC1`, iphone `RPC2` in
+every run) or buffer size. In runs 1-4 the windows do not overlap (pairwise overlap 0, 0 and 0.1 ms computed for runs 1-3; run 4 read off its start and end times),
+which is F45's "strictly one after the other" reproduced on loopback with the new spans. Run 5 is a
+warm run whose upload windows are mostly compute traffic (see below), so I count it as agreeing but
+do not lean on it.
+
+**What changed in the instrumentation because of running it.** The first version took a node's upload
+window as its counter's first to last change. On loopback all three nodes "began" in the same sample
+and "ended" with the run: the relay counter also counts the handshake and the small per-token traffic,
+so first and last change span the connection's life. The window is now 1% to 99% of the node's
+eventual total. A test pins this (`test_the_window_is_the_bulk_of_the_transfer_not_the_connections_life`)
+and fails when the thresholds are set to 0% and 100%.
+
+**Verified:** `python3 scripts/test_split_cluster.py` (66 tests); negative controls: summing children
+into `measured_ms` fails two tests, reading `bytes[1]` instead of `bytes[0]` fails the mapping test, and
+a 0%/100% window fails the bulk-window test. Five loopback runs as tabled, `report.json` and
+`events.jsonl` in each; the order was read from `report.json` span start times against the endpoints
+in `split.log`. `cache:*` spans appeared in the cold and warm cache runs with the expected `stored` and
+`hit` bytes (laptop / iphone / android: 45.6 / 206.0 / 109.2 MB stored cold, the same bytes as hits warm).
+
+**Not verified:**
+- **Five runs, three orders.** Three nodes have six possible orders and three of them appeared. That
+  is strong against "join order" and "device index", but it is five draws of a port allocator, not a
+  proof that the comparator is the cause. The F46 prediction that joining Android first
+  flips the physical order is still untested.
+- **Loopback is not the physical link.** It says which node goes when, not how fast: the loopback
+  windows are 0.2-2.8 s, and nothing here bears on whether the phones' Wi-Fi links are independent.
+- **The 3B model was not run.** The proof model's windows are short against the 0.1 s sampling.
+- **Physical runs have not used the spans.** On a phone the relay's counter runs ahead of the worker
+  (it counts what the socket accepted), so `upload:*` edges lead the phones' own cache lines.
+- **A warm run's `upload:*` window is not the weights.** The total is small and compute traffic is a
+  large share of it; `cache:*` is the span to read.
+
+**Consequence:** the next physical run will report, for the first time, when each node's upload began
+and ended inside `split_generation`, from the coordinator's own clock and at 0.1 s instead of the
+phones' 5-10 s coalesced lines. That should answer what is left of F46's ~40 s unexplained front
+interval, and give the first like-for-like per-node rate without reconstructing it from four logs.
+
