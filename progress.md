@@ -990,3 +990,17 @@ time (now `began_ts` / `ended_ts`), and cache `resolution_ms` was the poll rathe
 sampled on new snapshots). Loopback again needed a runtime rebuilt at the commit under test to get past the
 mixed-build gate; both runs PASS and each `cache:*` total equals the report's cache delta.
 
+## 2026-10-11 — F48: the per-node spans on the physical devices
+
+Operator ran cold and warm on the PR #44 build (all components `eec404d`) and uploaded both phones' logs for
+both runs plus the laptop report for run 2 only; the laptop's cold report was not saved.
+
+- The segments of the warm `split_generation` tile it exactly: 4.7 s start, 21.2 s the laptop's own weights,
+  34.9 s iPhone, 37.6 s Android, 41.7 s prefill and decode. The iPhone's `cache:*` span matches its own log to 4 ms
+  after a constant 0.87 s clock offset.
+- Corrects F46: the laptop's load is 21 s (relay, `cache=off`), not the ~4 s I estimated from the checksum rate.
+- The warm prefill of 28.9 s (14-15 s in F45) is almost entirely a wait before the first graph; neither phone
+  computed for 27-29 s after the last weight landed. Cause not found; paging on the 4 GB laptop is a
+  hypothesis only.
+- Evidence masked as before (LAN IPs, the Windows user name).
+
