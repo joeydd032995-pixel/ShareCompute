@@ -992,15 +992,20 @@ mixed-build gate; both runs PASS and each `cache:*` total equals the report's ca
 
 ## 2026-10-11 — F48: the per-node spans on the physical devices
 
-Operator ran cold and warm on the PR #44 build (all components `eec404d`) and uploaded both phones' logs for
+Operator ran cold and warm on the PR #44 build (run 2's report shows all five components on `eec404d`; for run 1
+only the two phone apps report it) and uploaded both phones' logs for
 both runs plus the laptop report for run 2 only; the laptop's cold report was not saved.
 
 - The segments of the warm `split_generation` tile it exactly: 4.7 s start, 21.2 s the laptop's own weights,
   34.9 s iPhone, 37.6 s Android, 41.7 s prefill and decode. The iPhone's `cache:*` span matches its own log to 4 ms
   after a constant 0.87 s clock offset.
 - Corrects F46: the laptop's load is 21 s (relay, `cache=off`), not the ~4 s I estimated from the checksum rate.
-- The warm prefill of 28.9 s (14-15 s in F45) is almost entirely a wait before the first graph; neither phone
-  computed for 27-29 s after the last weight landed. Cause not found; paging on the 4 GB laptop is a
-  hypothesis only.
+- The warm prefill of 28.9 s (14-15 s in F45) ends 29 s after the last weight with the laptop's first graph
+  finishing; the phones are downstream of the laptop (layers 0-6), so none can have started before then. Whether
+  the 29 s is the probe not yet sending or the laptop's graph running (paging on the 4 GB laptop is a hypothesis) is
+  not established: `graph_calls` counts completions, so there is no graph-start stamp.
+- Codex's review of #45 corrected three of my overstatements: zero `graph_calls` on a phone does not mean idle;
+  the 65 s cold-minus-warm difference is not a Wi-Fi rate; and a rate over a span that starts after its first
+  step overstates it (iPhone 37.3 MB/s over its phase, not 40.8).
 - Evidence masked as before (LAN IPs, the Windows user name).
 
