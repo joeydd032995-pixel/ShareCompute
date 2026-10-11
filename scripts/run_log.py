@@ -64,6 +64,10 @@ def host_memory():
         pass
     return {'total_bytes': None, 'available_bytes': None}
 
+def utc_text(moment):
+    """A UTC datetime in the same millisecond format every `ts` in every log uses."""
+    return moment.strftime('%Y-%m-%dT%H:%M:%S.') + f'{moment.microsecond // 1000:03d}Z'
+
 class EventLog:
     """One JSON object per line, flushed as it goes, so a killed run still leaves its history.
 
@@ -98,8 +102,7 @@ class EventLog:
     def _utc():
         # One reading, formatted to milliseconds: two calls to now() could straddle a millisecond
         # boundary and stamp a record with a time it was never at.
-        now = datetime.datetime.now(datetime.timezone.utc)
-        return now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond // 1000:03d}Z'
+        return utc_text(datetime.datetime.now(datetime.timezone.utc))
 
     def event(self, name, **fields):
         record = {'at_ms': round((self.clock() - self.start) * 1000, 1), 'ts': self._utc(), 'ev': name, **fields}
@@ -138,6 +141,9 @@ class Timeline:
     """
     def __init__(self, log=None, clock=time.monotonic):
         self.clock = clock; self.start = clock(); self.phases = []; self.log = log
+        # One wall reading so a child observed earlier can be stamped with when it happened, not
+        # with when it was written down. Reading the injected clock again would shift its ticks.
+        self.wall_start = datetime.datetime.now(datetime.timezone.utc)
 
     def mark(self, name, **fields):
         at = round((self.clock() - self.start) * 1000, 1)
@@ -169,17 +175,24 @@ class Timeline:
         if self.log: self.log.event('phase_start', phase=name, **fields)
         return Timeline._Span(self, record, name, dict(fields))
 
-    def add_span(self, name, parent, began, ended, **fields):
+    def _wall(self, reading):
+        return utc_text(self.wall_start + datetime.timedelta(seconds=reading - self.start))
+
+    def add_span(self, name, parent, began, ended, ok=True, **fields):
         """Record a child span whose start and end were observed elsewhere.
 
         `began` and `ended` are readings of this timeline's own clock. Nothing here reads the clock,
-        so adding a child never shifts the timing of the spans around it.
+        so adding a child never shifts the timing of the spans around it. `ok=False` marks a child
+        that was cut short, such as one observed in a run that then failed. The event carries the
+        observed times (`began_ts`, `ended_ts`, UTC) because the log line itself is written later.
         """
         record = {'name': name, 'at_ms': round((began - self.start) * 1000, 1),
-                  'duration_ms': round((ended - began) * 1000, 1), 'ok': True, 'parent': parent, **fields}
+                  'duration_ms': round((ended - began) * 1000, 1), 'ok': ok, 'parent': parent, **fields}
         self.phases.append(record)
         if self.log:
-            self.log.event('phase', phase=name, parent=parent, duration_ms=record['duration_ms'], ok=True, **fields)
+            self.log.event('phase', phase=name, parent=parent, duration_ms=record['duration_ms'], ok=ok,
+                           began_ms=record['at_ms'], ended_ms=round((ended - self.start) * 1000, 1),
+                           began_ts=self._wall(began), ended_ts=self._wall(ended), **fields)
         return record
 
     def summary(self):
@@ -214,10 +227,18 @@ class TransferWatch:
     The first sample of a counter is its baseline, so only movement during the watch is reported.
     A counter that goes backwards (a worker process restarted) is re-baselined, and what it had
     already counted is forgotten. `resolution_ms` is the longest gap between two samples of that
-    counter: either edge of the window is that uncertain.
+    counter: either edge of the window is that uncertain. Feed it the time a value was *produced*,
+    not the time it was polled: the workers' cache counters arrive as heartbeat snapshots every
+    250-500 ms, and polling one snapshot ten times would claim 100 ms.
+
+    A counter that only moves when a whole unit of work finishes (the cache's `hit` and `stored`,
+    which advance after a tensor has been hashed, read and installed) reports its first unit's
+    completion, not its start. `first_step` is the size of the step that crossed `low` and
+    `first_step_share` its fraction of the total: when that is large, `began` is when the first
+    unit finished and the work on it happened before, for an unknown time.
     """
     def __init__(self, low=0.01, high=0.99):
-        self.low, self.high, self.series = low, high, {}
+        self.low, self.high, self.series, self.stamps = low, high, {}, {}
 
     def observe(self, now, node, group, **values):
         key = (group, node)
@@ -232,15 +253,24 @@ class TransferWatch:
             item['points'].append((now, sum(values[name] - item['base'][name] for name in values)))
         item['last'] = dict(values)
 
-    def spans(self):
-        """One entry per counter that moved, in the order the bulk of its movement began."""
+    def spans(self, until=None):
+        """One entry per counter that moved, in the order the bulk of its movement began.
+
+        `until` clamps both edges. A snapshot that reports work after the run's measured phase has
+        ended (a heartbeat lagging the probe's exit) describes work that happened before it.
+        """
         found = []
         for (group, node), item in self.series.items():
-            if not item['points']: continue
-            total = item['points'][-1][1]
-            began = next(at for at, moved in item['points'] if moved >= self.low * total)
-            ended = next(at for at, moved in item['points'] if moved >= self.high * total)
+            points = item['points']
+            if not points: continue
+            total = points[-1][1]
+            first = next(n for n, (_, moved) in enumerate(points) if moved >= self.low * total)
+            last = next(n for n, (_, moved) in enumerate(points) if moved >= self.high * total)
+            began, ended = points[first][0], points[last][0]
+            if until is not None: began, ended = min(began, until), min(ended, until)
+            step = points[first][1] - (points[first - 1][1] if first else 0)
             moved = {name: item['last'][name] - item['base'][name] for name in item['last']}
             found.append({'name': f'{group}:{node}', 'began': began, 'ended': ended,
-                          'resolution_ms': round(item['gap'] * 1000, 1), **moved})
+                          'resolution_ms': round(item['gap'] * 1000, 1), 'first_step': step,
+                          'first_step_share': round(step / total, 3), **moved})
         return sorted(found, key=lambda entry: entry['began'])

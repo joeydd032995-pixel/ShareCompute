@@ -983,3 +983,10 @@ subprocess call.
   PASSED.
 - Recorded as F47: loopback upload order follows endpoint-name order, not join order.
 
+Codex reviewed #44 with five P2s, all correct and all fixed: the cache `began` was a completion time
+(now `first_step` / `first_step_share`), the sampler stopped before the settle (now runs through it, with a
+clamp to the probe's return), children were `ok: true` after a failure, event lines were stamped at write
+time (now `began_ts` / `ended_ts`), and cache `resolution_ms` was the poll rather than the heartbeat (now
+sampled on new snapshots). Loopback again needed a runtime rebuilt at the commit under test to get past the
+mixed-build gate; both runs PASS and each `cache:*` total equals the report's cache delta.
+

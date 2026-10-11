@@ -2,6 +2,7 @@
 import asyncio
 import contextlib
 import copy
+import datetime
 import io
 from unittest import mock
 import json
@@ -400,24 +401,85 @@ class TransferWatchTests(unittest.TestCase):
 
 class ObserveNodesTests(unittest.TestCase):
     """Which relay counter means what: a wrong index here would report downloads as uploads."""
-    def node(self, to_worker, from_worker, hit, stored):
-        return {'bytes': [to_worker, from_worker],
+    def node(self, to_worker, from_worker, hit, stored, at):
+        return {'bytes': [to_worker, from_worker], 'stats_at': at,
                 'stats': {'cache_hit_bytes': hit, 'cache_stored_bytes': stored, 'cache_rejected': 0}}
     def test_upload_is_the_bytes_forwarded_toward_the_worker(self):
-        nodes = {'iphone': self.node(0, 0, 0, 0)}; watch = run_log.TransferWatch()
+        nodes = {'iphone': self.node(0, 0, 0, 0, 1.0)}; watch = run_log.TransferWatch()
         observe_nodes(watch, 0.0, nodes)
-        nodes['iphone'] = self.node(1000, 3, 0, 0)       # reply traffic is tiny; weights are the upload
+        nodes['iphone'] = self.node(1000, 3, 0, 0, 1.0)  # reply traffic is tiny; weights are the upload
         observe_nodes(watch, 0.1, nodes)
         names = {entry['name']: entry for entry in watch.spans()}
         self.assertEqual(names['upload:iphone']['to_worker'], 1000)
         self.assertNotIn('cache:iphone', names)
     def test_cache_counters_come_from_the_workers_heartbeat(self):
-        nodes = {'android': self.node(0, 0, 0, 0)}; watch = run_log.TransferWatch()
+        nodes = {'android': self.node(0, 0, 0, 0, 1.0)}; watch = run_log.TransferWatch()
         observe_nodes(watch, 0.0, nodes)
-        nodes['android'] = self.node(0, 0, 300, 20)
+        nodes['android'] = self.node(0, 0, 300, 20, 1.5)
         observe_nodes(watch, 0.1, nodes)
         (span,) = watch.spans()
         self.assertEqual((span['name'], span['hit'], span['stored']), ('cache:android', 300, 20))
+    def test_a_snapshot_is_stamped_when_it_arrived_and_resolution_is_the_heartbeat_gap(self):
+        # Codex P2 on PR #44: polling one snapshot every 0.1 s must not claim 0.1 s resolution when
+        # the value only changes every 500 ms.
+        nodes = {'iphone': self.node(0, 0, 0, 0, 10.0)}; watch = run_log.TransferWatch()
+        beats = [(10.0, 0), (10.5, 0), (11.0, 50), (11.5, 100)]
+        for arrived, hit in beats:
+            nodes['iphone'] = self.node(0, 0, hit, 0, arrived)
+            for poll in range(5): observe_nodes(watch, arrived + poll * 0.1, nodes)   # same snapshot, five polls
+        cache = {entry['name']: entry for entry in watch.spans()}['cache:iphone']
+        self.assertEqual(cache['resolution_ms'], 500.0)
+        self.assertEqual((cache['began'], cache['ended']), (11.0, 11.5))   # arrival times, not poll times
+    def test_cache_is_not_sampled_before_the_first_heartbeat(self):
+        # The placeholder zeros are not a baseline: the first real snapshot is cumulative (F39).
+        nodes = {'android': self.node(0, 0, 0, 0, None)}; watch = run_log.TransferWatch()
+        observe_nodes(watch, 0.0, nodes)
+        nodes['android'] = self.node(0, 0, 900, 0, 1.0); observe_nodes(watch, 0.1, nodes)
+        nodes['android'] = self.node(0, 0, 900, 0, 1.5); observe_nodes(watch, 0.2, nodes)
+        self.assertEqual(watch.spans(), [])
+
+class SettledChildTests(unittest.TestCase):
+    """Codex P2s on PR #44 about what a child span claims."""
+    def test_a_big_first_step_is_reported_not_hidden(self):
+        # `hit` advances only after a whole tensor is hashed, read and installed, so the first step
+        # is the completion of work that began earlier, by an unknown amount.
+        watch = run_log.TransferWatch()
+        for now, hit in ((0.0, 0), (0.5, 0), (3.0, 900), (3.5, 1000)):
+            watch.observe(now, 'iphone', 'cache', hit=hit)
+        (span,) = watch.spans()
+        self.assertEqual((span['first_step'], span['first_step_share']), (900, 0.9))
+    def test_a_single_unit_of_work_shows_as_all_first_step(self):
+        watch = run_log.TransferWatch()
+        for now, hit in ((0.0, 0), (0.5, 0), (3.0, 1000)): watch.observe(now, 'android', 'cache', hit=hit)
+        (span,) = watch.spans()
+        self.assertEqual((span['began'], span['ended'], span['first_step_share']), (3.0, 3.0, 1.0))
+    def test_a_smooth_counter_has_a_small_first_step(self):
+        watch = run_log.TransferWatch()
+        for n in range(0, 101): watch.observe(n * 0.1, 'laptop', 'upload', to_worker=n * 1000)
+        (span,) = watch.spans()
+        self.assertLess(span['first_step_share'], 0.02)
+    def test_a_report_after_the_run_ended_is_clamped_to_the_run(self):
+        # A heartbeat can lag the probe's exit; the work it reports happened before.
+        watch = run_log.TransferWatch()
+        for now, hit in ((0.0, 0), (1.0, 100), (2.0, 100), (5.2, 400)): watch.observe(now, 'iphone', 'cache', hit=hit)
+        (span,) = watch.spans(until=5.0)
+        self.assertEqual((span['began'], span['ended']), (1.0, 5.0))
+        (unclamped,) = watch.spans()
+        self.assertEqual(unclamped['ended'], 5.2)
+    def test_a_cut_short_child_is_marked_not_ok(self):
+        timeline = run_log.Timeline(clock=Stopwatch())
+        child = timeline.add_span('upload:android', 'split_generation', 1.0, 2.0, ok=False)
+        self.assertFalse(child['ok'])
+        self.assertTrue(timeline.add_span('upload:iphone', 'split_generation', 1.0, 2.0)['ok'])
+    def test_the_event_carries_when_the_child_happened_not_when_it_was_written(self):
+        log = run_log.EventLog(); clock = Stopwatch(); timeline = run_log.Timeline(log, clock=clock)
+        clock.t = 100.0                                  # written long after it happened
+        timeline.add_span('upload:iphone', 'split_generation', 2.0, 5.5, to_worker=1)
+        event = [r for r in log.records if r['ev'] == 'phase'][0]
+        self.assertEqual((event['began_ms'], event['ended_ms']), (2000.0, 5500.0))
+        parse = lambda text: datetime.datetime.strptime(text, '%Y-%m-%dT%H:%M:%S.%fZ')
+        self.assertEqual((parse(event['ended_ts']) - parse(event['began_ts'])).total_seconds(), 3.5)
+        self.assertRegex(event['began_ts'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$')
 
 class CapacityTests(unittest.TestCase):
     MIB = 1048576

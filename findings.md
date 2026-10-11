@@ -3353,7 +3353,22 @@ into `measured_ms` fails two tests, reading `bytes[1]` instead of `bytes[0]` fai
 a 0%/100% window fails the bulk-window test. Five loopback runs as tabled, `report.json` and
 `events.jsonl` in each; the order was read from `report.json` span start times against the endpoints
 in `split.log`. `cache:*` spans appeared in the cold and warm cache runs with the expected `stored` and
-`hit` bytes (laptop / iphone / android: 45.6 / 206.0 / 109.2 MB stored cold, the same bytes as hits warm).
+`hit` bytes (laptop / iphone / android: 45.6 / 206.0 / 109.2 MB stored cold, the same bytes as hits warm),
+and after the review round below each span's totals equal the report's per-worker cache delta exactly.
+On the proof model the warm `cache:*` spans are nearly all one step (`first_step_share` 0.97-1.0, zero-length
+for two of three nodes): the counter jumps whole tensors between heartbeats, so a small model's warm cache
+span says when the work *finished* and little else. A 3B warm run advances over many heartbeats (F45 logged six
+cache lines per phone), where the span is informative.
+
+**Review round (Codex, five P2s, all correct).** The cache counters advance only after a whole tensor is hashed,
+read and installed (`llama-cache.patch`, `sc_cache_hit.fetch_add(size)` after the read), so the first sample
+over 1% is a completion; spans now carry `first_step` and `first_step_share`. The sampler was cancelled before
+`settle_counters`, so the last heartbeat could miss the cache spans; it now runs through the settle and a
+report arriving after the probe returned is clamped to the probe's return. Children were written with
+`ok: true` even when the run failed mid-transfer; they are `ok: false` then. Event lines were stamped when
+written, not when observed; they now carry `began_ts` and `ended_ts`. And `resolution_ms` for cache was the
+100 ms poll rather than the 250-500 ms heartbeat; cache is now sampled on new snapshots and stamped with
+their arrival.
 
 **Not verified:**
 - **Five runs, three orders.** Three nodes have six possible orders and three of them appeared. That
@@ -3365,6 +3380,8 @@ in `split.log`. `cache:*` spans appeared in the cold and warm cache runs with th
 - **The 3B model was not run.** The proof model's windows are short against the 0.1 s sampling.
 - **Physical runs have not used the spans.** On a phone the relay's counter runs ahead of the worker
   (it counts what the socket accepted), so `upload:*` edges lead the phones' own cache lines.
+- **The failure path was run once on the previous commit** (`--kill-worker android`: children `ok: false`, report
+  written), not again after the review round's restructure, which only moved when the children are added.
 - **A warm run's `upload:*` window is not the weights.** The total is small and compute traffic is a
   large share of it; `cache:*` is the span to read.
 
