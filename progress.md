@@ -898,25 +898,39 @@ What the new instrumentation produced, recorded as **F45** with masked evidence 
 
 - **Provenance confirmed on hardware.** All five components on one commit, `complete: true`,
   `unknown: []`. The laptop's cache counters match both phones' exported totals exactly, so the
-  three records corroborate rather than merely self-report. The apps' own pin/token scrubbing is
+  the laptop's counters match both phones' exported totals exactly — a consistency check on the
+  reporting path, not independent corroboration, since both read one native counter. The apps' own
+  pin/token scrubbing is
   visible in the exported logs (`"pin":"redacted"`, `"token":"redacted"`).
 - **F42's mechanism measured, not inferred.** Checksum 25.7 s at 134 MiB/s against the 10 s limit,
   `exceeded_heartbeat_limit: true`, reproduced twice to within 0.6%. The addendum's arithmetic
   wanted 344.9 MiB/s; the machine does 134.
-- **F43's 115 unexplained seconds explained.** `unaccounted_ms` 0.2% cold, 0.1% warm. Cold compute
-  is 5.5% of `split_generation`; the rest is transfer at ~45 Mbit/s.
+- **F43's 115 unexplained seconds narrowed, not closed.** `unaccounted_ms` 0.2% cold, 0.1% warm,
+  which means the phases tile the run — not that the inside of `split_generation` is decomposed.
+  Cold compute is 5.5% of it and most of the rest is transfer, but 96.9 s cold and 32.1 s warm are
+  still unattributed.
 - **Cache confirmed on the new build.** Wall clock 556.7 s → 165.6 s, phone upload −98.7%, zero
   rejections. Warm compute unchanged, as F43 also saw.
 - **New finding — the phones are loaded sequentially.** Cache windows overlap by 0.4 s and 0.0 s
   across two runs differing 5× in length. Now the largest identified saving in the cold path. Cause
   not established; likely upstream.
-- **New finding — clock skew is a fixed offset.** Laptop ahead of iPhone 828/826 ms and of Android
+- **New finding — the per-device offset is persistent.** Laptop ahead of iPhone 828/826 ms and of Android
   555/548 ms across the two runs. Skew-corrected, the phones agree to 81 ms on when the laptop tore
   down, versus 354 ms raw. So `ts` needs anchoring on the join handshake before use — a refinement
   of what F44 claimed for it, not a withdrawal.
 - **Risk surfaced.** Laptop free RAM bottomed at 89.2 MiB of 3,973 on the cold run; Android had a
-  prior `LOW_MEMORY` kill in its history. The first cold run after a reinstall is the dangerous one.
+  prior `LOW_MEMORY` kill in its history (predating both runs). The driver is what a run allocates
+  plus its starting state, **not** duration: the warm run consumed 1,631 MiB against the cold run's
+  928 MiB, from a start 823 MiB higher.
 
 Also corrected while writing the evidence README: the iPhone holds layers 24–36, not 24–35.
 CLAUDE.md's objective paragraph, state table and verification matrix updated — including the
 phone-log row, which F45 moves from "no" to "both export buttons have run on hardware".
+
+Codex raised four P2 findings on PR #42, all on `findings.md`, and all four were correct — three were
+plain overstatements and one needed reformulating. Corrected in place rather than by addendum,
+because F45 was unmerged (the precedent is PR #40's `3682ced`, where the F42 addendum's
+overstatements were fixed the same way; append-only protects *merged* findings). The one I got
+flatly backwards: memory pressure does not scale with run duration — the shorter warm run consumed
+1.8× more memory than the cold one, which a subtraction I should have done before writing would
+have shown.

@@ -2993,9 +2993,14 @@ five components — coordinator (from `GITHUB_SHA`), probe, and the three worker
 each phone — report `62e5b42e0b7bcd2d3642b8dde41352d8991be4c0`, with `mismatch: false`,
 `complete: true`, `unknown: []`. The single compile-time hook into `sc-worker-core` reaches all three
 platforms as intended (F44), and the two-level split (native `build` versus wrapper `app_build`) is
-populated on both phones. The three records also corroborate each other rather than merely
-self-reporting: the laptop's per-worker cache counters equal the phones' own exported totals exactly
-(Android 1,373,143,040 B, iPhone 1,299,890,176 B).
+populated on both phones. The laptop's per-worker cache counters equal the phones' own exported
+totals exactly (Android 1,373,143,040 B, iPhone 1,299,890,176 B) — but **that is a consistency check
+on the reporting path, not independent corroboration.** `Relay.accept` fills `record['stats']`
+straight from each phone's heartbeat (`scripts/split_cluster.py:202-204`), and the heartbeat and the
+phone's own exported log both read the same native counters (`sc_worker_cache_*`, declared at
+`native/split/worker.h:11-13`; the Android heartbeat packs them at `WorkerSession.java:97`). Exact
+agreement proves the value survived two serialisations of one source. It says nothing further about
+the cache activity underneath, which remains worker self-reporting.
 
 **2. F42's mechanism is now measured on the operator's own laptop, not inferred.** `model_checksum`
 took **25.735 s at 134.0 MiB/s** (cold) and **25.578 s at 134.8 MiB/s** (warm), both with
@@ -3025,35 +3030,66 @@ The phones' cache windows do not overlap, in either run:
 | warm | 06:22:05.618 → 06:22:32.202 (27 s) | 06:22:32.182 → 06:23:12.433 (40 s) | **0.0 s** |
 
 One phone finishes and the next begins, with the handoff landing inside half a second, across two
-runs whose durations differ by more than 5×. This is what the warm run's non-compute time is:
-99 s of its 126 s is the phones reading cached weights off flash one after the other — the iPhone
-1,240 MiB at ~47 MiB/s, then Android 1,309 MiB at ~32 MiB/s. The order was iPhone-then-Android,
-which is **join order and not layer order** (Android holds layers 7–23, the iPhone 24–36), so what
-determines it is not established.
+runs whose durations differ by more than 5×. In the warm run the iPhone read 1,240 MiB at
+~47 MiB/s and then Android 1,309 MiB at ~32 MiB/s. The order was iPhone-then-Android, which is
+**join order and not layer order** (Android holds layers 7–23, the iPhone 24–36), so what determines
+it is not established.
 
-**5. Memory headroom is the live risk, and it scales with how long the run holds buffers open.** The
-laptop's minimum free RAM was **89.2 MiB of 3,973 MiB** on the cold run and 208.8 MiB on the short
-warm one, from 277 and 83 samples. Android fell to 282 MiB free of 3,472 MiB with RSS peaking at
-1,410 MiB, and its log opens with `prior_exit: LOW_MEMORY` — the OS had already killed the app for
-memory on some earlier occasion. The iPhone logged one `memory_warning` while still holding
-2,071 MB of headroom, which looks system-wide rather than this app being squeezed. Nothing failed,
-but the first cold run after any reinstall is the dangerous one.
+**These windows account for most of the non-compute time but not all of it, and the remainder is
+still unidentified.** Warm, `split_generation` was 126.0 s with 27.0 s of compute, leaving 99.0 s,
+of which the two windows are 66.9 s — **32.1 s (32% of the non-compute time) is unaccounted for**.
+Cold, 476.6 s of non-compute against 379.7 s of windows leaves **96.9 s (20%)**. `unaccounted_ms`
+does not cover this: it measures wall clock no *top-level phase* claims, and `split_generation` is a
+single phase with no internal breakdown, so a 0.1% `unaccounted_ms` says the phases tile the run and
+says nothing about how the time inside the biggest phase divides. Local model loading, graph setup
+and the residual upload are candidates, and none of them is measured. **So F43's gap is narrowed,
+not closed.**
 
-**6. Cross-device log correlation works, and the offsets are fixed, not jitter.** The laptop sends
-its join ack **before** it logs the join (`scripts/split_cluster.py:192` then `:196`), so the gap
-between a phone's `join_accepted` and the laptop's `join` is a lower bound on clock skew:
+**5. Memory headroom is the live risk, and the driver is what the run allocates, not how long it
+lasts.** The laptop's minimum free RAM was **89.2 MiB of 3,973 MiB** on the cold run and 208.8 MiB
+on the warm one, from 277 and 83 samples. An earlier draft of this finding read that pressure as
+scaling with run duration. **The data refutes that, and says the opposite:** the warm run consumed
+**1,631.5 MiB** (1,840.3 → 208.8) against the cold run's **928.1 MiB** (1,017.3 → 89.2), so the
+run 3.4× shorter consumed 1.8× more. The cold run only ended lower because it started 823 MiB
+lower. Android behaved the same way — 799 → 282 MiB cold and 1,171 → 637 MiB warm, drops of 517 and
+534 MiB, with near-identical peak RSS — which is the signature of a fixed allocation, not of
+duration. Android's log also opens with `prior_exit: LOW_MEMORY`, but that record predates both
+runs and explains neither. The iPhone logged one `memory_warning` while still holding 2,071 MB of
+headroom, which looks system-wide rather than this app being squeezed. Nothing failed. **What this
+supports is that an 89.2 MiB floor is close on a 4 GB laptop and that the starting state decides how
+close; it does not support "a cold run is inherently riskier", which would need a controlled
+comparison this pair does not provide.**
+
+**6. Cross-device log correlation works, and the per-device offset is persistent — though what
+causes it is not pinned down.** The laptop sends its join ack before it logs the join
+(`scripts/split_cluster.py:192` then `:196`), and the gap between a phone's `join_accepted` and the
+laptop's `join` is:
 
 | | laptop ahead of iPhone | laptop ahead of Android |
 |---|---:|---:|
 | cold | 828 ms | 555 ms |
 | warm | 826 ms | 548 ms |
 
-Stable to 2–7 ms across runs 11 minutes apart, so these are **fixed clock offsets**. The correction
-validates itself: on raw timestamps the two phones disagree by 354 ms about when the laptop tore the
-run down, and skew-corrected they agree to **81 ms** (+966 ms and +1,047 ms after the laptop ended
-the phase). So `ts`/`wall` does answer "which device saw it first" — but only after anchoring on the
-join handshake. Raw comparison is wrong by up to 0.83 s, which is irrelevant to a 10 s heartbeat and
-fatal to sub-second ordering.
+Stable to 2–7 ms across runs 11 minutes apart. The offsets survive an out-of-sample test: derived
+from the join handshake and applied to the teardown nine minutes later, they move the two phones
+from **354 ms** of disagreement about when the laptop closed the run to **81 ms** (+966 ms and
++1,047 ms after the laptop ended the phase). An offset that corrects a different, later event is
+measuring something persistent per device rather than a property of the join moment.
+
+**It is not a rigorous bound on clock skew, and an earlier draft of this finding over-claimed that.**
+`await send(...)` only writes and drains the socket; it does not mark when the phone received the
+bytes, and the laptop's log line follows on its own schedule after an `await`. The inequality that
+actually holds is `skew > laptop_send − phone_receive`, and only `laptop_log` is observed, so the
+828 ms figure is a bound only insofar as the gap between sending and logging is small — which is
+likely from the two cheap statements in between, but was not measured. A persistent per-device
+processing or latency bias would produce the same numbers. Clock offset remains much the more
+plausible reading, because 0.8 s of one-way latency on a home LAN is not credible, but **separating
+the two needs a round-trip clock-sync measurement, and nothing in the kit performs one.**
+
+The operational conclusion does not depend on which it is, and holds either way: **`ts`/`wall`
+answers "which device saw it first" only after anchoring on a shared event, and raw cross-device
+comparison is wrong by up to 0.83 s** — irrelevant to a 10 s heartbeat, fatal to sub-second
+ordering.
 
 **Verified:** `docs/evidence/physical-f45-logging/{cold,warm}/report.json` — `status`, `build`
 (`mismatch`/`complete`/`unknown`), `capacity`, `model_checksum`, `phases`, `host_memory`,
@@ -3077,6 +3113,16 @@ and its `Info.plist` `SCBuildCommit`, and in the kit's `_internal/build-stamp.js
   fourth-fork cost F32 warned about — but no code was read to confirm that, and no experiment
   separates it from a coordinator-side ordering. The potential prize, if it is parallelisable, is the
   serial 380 s cold window falling toward ~221 s and the 67 s warm window toward ~40 s.
+- **Most of the non-compute time is attributed, 20–32% of it is not.** 96.9 s cold and 32.1 s warm
+  sit inside `split_generation` with nothing measuring them. Local model loading, graph setup and
+  the residual upload are untested candidates. Closing this needs spans *inside* `split_generation`,
+  which the current `Timeline` does not provide.
+- **The offsets are not shown to be clock skew rather than a persistent per-device latency bias.**
+  No round-trip measurement was taken, and the 828 ms figure is a bound only if the laptop's log
+  follows its `send` closely, which was not measured.
+- **Neither run establishes why the laptop's floor differed.** The two runs started 823 MiB apart,
+  so the 89.2 MiB minimum is not attributable to run length, cache state or anything else without a
+  controlled comparison from a matched starting state.
 - **The clock offsets were measured, not corrected anywhere in the code.** Nothing in the kit records
   or applies them; a reader must derive the offset from the join handshake by hand. The two anchors
   per run are also both laptop-to-phone, so phone-to-phone skew is inferred by subtraction.
@@ -3092,7 +3138,15 @@ physical run that cannot name its build is a kit problem rather than a missing f
 `<unknown>` state in a report means someone is running a stale app. Three things change what to work
 on next. The sequential phone loading is now the largest identified saving in the cold path and the
 first thing to investigate, ahead of any compute optimisation, because compute is 5.5% of a cold run.
-The laptop's 89.2 MiB floor makes memory headroom a release concern for the 4 GB machine, and the
-operator should expect the first run after a reinstall to be both the slowest and the riskiest. And
-any future cross-device diagnosis must anchor on the join handshake before comparing timestamps —
+The laptop's 89.2 MiB floor makes memory headroom a release concern for the 4 GB machine — on what
+a run allocates, not on how long it takes, and how close it comes depends on the starting state, so
+the useful next measurement is a matched-start comparison rather than more cold-versus-warm pairs.
+And any future cross-device diagnosis must anchor on a shared event before comparing timestamps —
 `ts` alone is not sufficient, which refines rather than withdraws what F44 claimed for it.
+
+**One instrumentation gap follows directly.** `Timeline` times only top-level phases, so
+`split_generation` — 91% of the cold run — is a single opaque span, and 20–32% of the non-compute
+time inside it cannot be attributed from the laptop's side at all. Spans within that phase, or a
+per-endpoint upload counter sampled over time, are what would close F43 rather than narrow it. Until
+then a low `unaccounted_ms` should be read as "the phases tile the run", never as "the time is
+explained".
