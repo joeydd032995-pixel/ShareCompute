@@ -230,13 +230,56 @@ this fixture and differed at token 20. The physical commands use a 16-token fixt
 for that reason. A mixed-CPU run can still differ sooner; the strict gate will fail
 rather than quietly relax numerical validation. A 16-token PASS proves the bounded
 three-worker execution, not numerical identity for every possible prompt or length.
-Preserve `report.json` and `*.log` for diagnosis; do not publish the pairing directory.
+Preserve `report.json`, `events.jsonl` and `*.log` for diagnosis; do not publish the pairing
+directory. The dashboard's download includes all of them.
 Model-generated fixture text is not a factual answer or a model quality evaluation.
 
 Backgrounding the iPhone disconnects it. A lost worker, allocation refusal, bad token,
 wrong runtime, stalled heartbeat, timeout, or failed native decode fails the run.
 No partial generation is accepted. Restart the coordinator and reconnect the workers
 for another run; this proof does not claim live failover or in-process recovery.
+
+## What a run measures
+
+Three physical runs could not say which build produced them, and F42's failure cannot be explained
+because no log of it was ever captured. Every run now records the following, and records it **even
+when the run fails** — a failed run's measurements are the diagnostic.
+
+| In `report.json` | What it answers |
+|---|---|
+| `build.coordinator`, `build.probe`, `build.workers`, `build.app_builds` | Which commit each component was built from. `unknown` where a component cannot say. The probe is listed because it runs **both** the baseline and the split, so a probe from another commit makes the two token streams the proof compares incomparable. |
+| `build.mismatch`, `build.commits` | Whether two components disagree. A run with mixed builds executes and keeps its timings, but **cannot be a PASS**: it is not comparable evidence. |
+| `build.unknown` | Components that reported no commit. That is missing provenance, not a contradiction, so it does not fail the run — it warns. |
+| `model_checksum.seconds`, `.mib_per_s` | How long checksumming the model took, and how fast. |
+| `model_checksum.exceeded_heartbeat_limit` | Whether that checksum outlasted the 10 s heartbeat limit. Harmless now, because the checksum runs off the event loop, but `true` means this machine was slow enough that a kit older than PR #36 would have dropped every device here (F41). |
+| `phases` | Every phase with its start and duration, plus `unaccounted_ms` — the share of the wall clock no phase claims. F43 could not say where 115 of 141 seconds went; this is the number that says. |
+| `host_memory.at_start`, `.min_available_bytes` | Laptop memory headroom, sampled throughout. F43 recorded none. |
+| `loop_stalls` | Every time the coordinator's event loop stopped running, with its length. An alternative cause of a dropped heartbeat (F42), now distinguishable from a quiet phone. |
+
+`events.jsonl` beside the report is one JSON object per line, flushed as it happens, so a run that is
+killed still leaves its history. Each line has `at_ms`, `ts` and `ev`; joins carry each worker's
+build, platform, peer and budget.
+
+**Use `ts`, not `at_ms`, to compare the three logs.** Each device's `at_ms` counts from when *its
+own* log began, and the phone apps start long before a run does, so their elapsed values have
+unrelated origins — lining the logs up on `at_ms` puts events in the wrong order. `ts` is UTC and is
+the same field on every device: the laptop and iPhone both call it `ts`, and Android writes the
+identical value as `wall`. "Which device saw the failure first" is the question F42 could not answer,
+and `ts` is what answers it.
+
+Two limits worth knowing. A logging failure never fails a run: if the disk fills or goes read-only
+the file sink is dropped, `events.jsonl` stops there, and the run and `report.json` continue — the
+timeline is still in the report. And the mixed-build gate compares commits only, so it does not
+notice a component built from a *modified* checkout; `build.coordinator.dirty` records that for the
+laptop, but a worker binary carries only the bare commit it was branched from. That can only arise
+when building from source — a packaged kit and the CI-built phone apps are never in that state.
+
+Both phone apps keep their own log and can export it, so a phone that appears to go silent can be
+asked what it saw. The quickstart has the buttons.
+
+A checksum rate is a property of the machine at that moment, not of its hardware: on a loaded host
+this project measured 11 MiB/s for a file the same host hashed at 320 MiB/s when idle. Read
+`exceeded_heartbeat_limit` rather than comparing rates between runs.
 
 ## Build and verify from source
 

@@ -23,6 +23,7 @@ import webbrowser
 import zipfile
 import qrcode
 import qrcode.image.svg
+import build_stamp
 import split_cluster as cluster
 import download_split_model as model
 
@@ -58,7 +59,9 @@ def lan_addresses():
     return rank_addresses(route, candidates)
 
 def startup_banner(hosts, url):
-    lines = ['ShareCompute is running. Keep this window open until the test finishes.', '']
+    lines = ['ShareCompute is running. Keep this window open until the test finishes.', '',
+             f'This kit was built from ShareCompute {build_stamp.describe(cluster.KIT_BUILD)}.'
+             ' Quote that if you report a result.', '']
     if hosts:
         lines.append(f'Laptop Wi-Fi address: {hosts[0]}')
         if len(hosts) > 1: lines.append(f'  Other addresses on this laptop: {", ".join(hosts[1:])}')
@@ -205,7 +208,8 @@ class TestKit:
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
                 for path in self.current_out.iterdir():
-                    if path.name == 'report.json' or path.suffix == '.log': z.write(path, path.name)
+                    # events.jsonl is the machine-readable history; without it a failure is unexplainable (F44).
+                    if path.name in ('report.json', 'events.jsonl') or path.suffix == '.log': z.write(path, path.name)
             return buf.getvalue()
 
 PAGE = '''<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

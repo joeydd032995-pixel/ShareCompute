@@ -12,6 +12,9 @@ uint64_t sc_worker_cache_hit_bytes(void);
 uint64_t sc_worker_cache_stored_bytes(void);
 uint64_t sc_worker_cache_rejected(void);
 const char * sc_worker_revision(void);
+// The ShareCompute commit this worker was built from, or "unknown". Every platform links this
+// library, so one definition stamps the laptop, Android and iOS workers alike (F44).
+const char * sc_worker_build(void);
 #ifdef __cplusplus
 }
 #endif

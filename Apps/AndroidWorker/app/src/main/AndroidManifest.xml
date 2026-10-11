@@ -15,5 +15,7 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Executes assigned model layers for a user-paired laptop during a bounded test generation" />
         </service>
+        <!-- Serves one exported log to the app the operator picks in the share sheet. Not exported. -->
+        <provider android:name=".LogProvider" android:authorities="${applicationId}.logs" android:exported="false" android:grantUriPermissions="true" />
     </application>
 </manifest>

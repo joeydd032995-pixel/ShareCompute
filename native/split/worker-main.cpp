@@ -7,7 +7,12 @@
 
 int main(int argc, char ** argv) {
     if (argc == 2 && !strcmp(argv[1], "--version")) { puts(sc_worker_revision()); return 0; }
+    // Separate from --version, whose output the coordinator compares exactly against the pinned revision.
+    if (argc == 2 && !strcmp(argv[1], "--build")) { puts(sc_worker_build()); return 0; }
     if (argc != 4 && argc != 5) { fprintf(stderr, "usage: sc-rpc-worker PORT BUDGET_MIB THREADS [CACHE_DIR]\n"); return 2; }
+    printf("SC_WORKER build=%s runtime=%s budget_mib=%s threads=%s cache=%s\n", sc_worker_build(),
+           sc_worker_revision(), argv[2], argv[3], argc == 5 ? argv[4] : "off");
+    fflush(stdout);
     std::thread([] {
         for (;;) {
             printf("SC_STATS {\"allocated_bytes\":%llu,\"peak_bytes\":%llu,\"graph_calls\":%llu,"

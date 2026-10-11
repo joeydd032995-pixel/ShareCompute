@@ -826,3 +826,63 @@ machine has that failure mode, not re-diagnose a logless run).
 The attribution survives on the window and the arithmetic. What does not survive is calling any of it a
 control. With no log of the original failure, that occurrence is no longer settleable by anything
 obtainable — which is the clearest argument yet for F42's diagnostics.
+
+## 2026-10-10 — Comprehensive logging and build provenance (F44)
+
+Owner's request: log the checksum, put the build in the reports, give each phone an exportable log,
+and measure the important metrics. Decisions taken by the owner: a mixed-build run **executes and
+keeps its timings but cannot be a PASS**, and it all lands as one PR.
+
+- **One hook stamps three workers.** `SC_BUILD_COMMIT` is compiled into `sc-worker-core`, which the
+  laptop, Android and iOS workers all link, so `sc_worker_build()` gives each one its commit with no
+  per-platform build-system work. `--version` is untouched byte for byte, because the coordinator
+  compares it exactly.
+- **What a run now records:** `build` (per component, plus `mismatch` and `unknown`),
+  `model_checksum` with `exceeded_heartbeat_limit`, `phases` with `unaccounted_ms`, `host_memory`,
+  `loop_stalls`, and `events.jsonl` beside the report. Attached even when the run fails.
+- **The checksum number is load-dependent, not hardware-dependent.** 469 MiB took 42.1 s (11.1 MiB/s)
+  under load and 1.45 s (322 MiB/s) idle on the same container — a 29× spread. Read
+  `exceeded_heartbeat_limit`, not the rate. This also sharpens F42: a loaded laptop can blow the 10 s
+  limit on the *small* model, which the addendum's arithmetic had treated as safe.
+- **Two defects found in review, both fixed.** My own memory sampler called a function that shells out
+  on macOS — on the event loop, which is precisely what F41 cost us; it now runs through
+  `asyncio.to_thread`. The Android export ran on the UI thread behind a 2 s drain, an ANR risk on a
+  slow phone; it now builds the file on a worker thread.
+- **Dispatched in parallel:** `android-developer` and `ios-developer` built their apps' logs against a
+  written contract. The Android work deviated with reason (a 45-line `LogProvider` instead of adding
+  the AndroidX dependency) and I reviewed the provider's path handling, read-only enforcement and
+  secret scrubbing rather than taking the report on trust. The iOS agent accidentally stashed the
+  shared tree and recovered it; I verified my own work survived before continuing.
+- **The honest gap is iOS.** There is no Swift toolchain in this container — not even `swiftc -parse`.
+  CI is the first thing that will compile it. F44 says so.
+
+## 2026-10-10 — PR #41 review round: the probe joins the mixed-build gate (F44 addendum)
+
+CI on `b943c20` went green on all seven jobs, closing F44's largest stated gap: the iOS Swift had
+never been compiled anywhere, and both `ios` and `ios-simulator` now build it, with
+`ios-simulator` running a real split with the iPhone app as a worker. `desktop (windows-latest)`
+executed the previously unrun Windows `host_memory` branch.
+
+Codex raised five issues on `03a5f32`; all five were real and four needed fixing (the fifth, the
+workflow path filters, was already fixed in `b943c20`).
+
+- `sc-split-probe` gained `--build` and joined `build_summary`. It runs both the baseline and the
+  split, so it decides whether the compared token streams are comparable — and it was the only
+  executable outside the gate. `--version` left byte-identical, because `check_binary` compares it
+  exactly.
+- `report['build']` is recomputed in the `finally` block, so a run that fails *while workers are
+  joining* — F42's scenario — keeps its provenance instead of the coordinator-only stub.
+- `EventLog` drops its file sink on a write error instead of raising into the coordinator's
+  coroutines and cleanup path.
+- Every coordinator record carries a UTC `ts`, so the laptop's log can be ordered against the
+  phones' (`ts` on iOS, `wall` on Android).
+
+Tests 52 + 13 pass. `verify_split_runtime.py` exit 0; all seven of its reports carry the probe
+stamp, including its two deliberate failures. Negative controls: a 3 s join timeout keeps full
+provenance in the FAIL report, and removing only the `finally` recomputation reduces it to the stub.
+
+Follow-up: `ios (ios-simulator)` failed on `7199460` with `Coordinator did not start`. The probe's
+`binary_build` query sat in the startup span, which has a 30 s deadline in `verify_ios_simulator.py`,
+alongside two `check_binary` subprocesses that can each take 10 s on a loaded runner. Moved after
+`pairing-ready`. Verified: real loopback PASS with all five components agreeing, `startup` 8.5 ms and
+the probe query marked at 14.7 ms, outside the deadline window. The Windows test fix also went green.
