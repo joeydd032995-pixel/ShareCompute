@@ -947,11 +947,18 @@ Recorded as F46.
   to the tunnel's ephemeral port string; ports ascend with join order in both runs, matching the
   observed laptop, iPhone, Android order.
 - The async upload exists but the loader cannot reach it under mmap, and even `set_tensor_async` keeps
-  a blocking hash check under upstream's own TODO. The warm-run saving I quoted in conversation
-  (~27 s) was therefore overstated for the obvious fix; the cold figure (~159 s) is an upper bound
-  that assumes the phones' links are independent, which no run has tested.
-- F45's unattributed 96.9 s / 32.1 s is matched to within 3.1 s / 1.5 s by the interval from the
-  iPhone's channel opening to its first commit. What is in that interval is unmeasured.
+  a blocking hash check for cacheable weights under upstream's own TODO. The warm-run saving I quoted
+  in conversation (~27 s) was therefore overstated for the obvious fix; the cold figure (~159 s) is an
+  upper bound that assumes the phones' links are independent, which no run has tested.
+- F45's unattributed 96.9 s / 32.1 s lies between the iPhone's channel opening and Android's last
+  cache record, with no large interval outside them. About 54 s of the cold front interval is
+  plausibly the first 330 MB tensor's transfer (arithmetic, not measured); ~40 s is unexplained.
+
+Corrected after Codex's review of PR #43 (three P2s, all right): the per-tensor blocking claim now
+distinguishes the 1 MiB threshold; `CPU_Mapped` sorts first in the load order; the phones' cache
+lines are coalesced (5 s iOS, 10 s Android), so the 3.1 s / 1.5 s remainders were never a precision
+claim. Looking at the last one also exposed my own error: the iPhone rate of 8.2 MB/s counted the
+first file's bytes against a window that starts after it arrived; the like-for-like rate is 6.09.
 
 Corrected while writing it: I had mixed line numbers from the pinned file and the patched working
 tree in conversation, and the warm-run node mapping in my first check matched by bytes sent, which is

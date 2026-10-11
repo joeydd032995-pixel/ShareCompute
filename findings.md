@@ -3170,16 +3170,21 @@ What serialises is how it is called. `rpc_dispatcher::send` enqueues and then wa
 with a sentinel message (`:527`). The loader is one thread in one loop: `load_all_data`
 (`llama-model-loader.cpp:1493`) iterates every tensor (`:1625`) and, under mmap, calls
 `ggml_backend_tensor_set` (`:1670`), which for RPC is the buffer-interface `set_tensor`
-(`ggml-rpc.cpp:786` → `ggml_backend_rpc_buffer_set_tensor`, `:720`). That function blocks twice per
-tensor: the hash check with a response (`:730`) and, on a miss, the data send (`:740`). Each tensor
-therefore waits for its endpoint's acknowledgement before the next begins, and the three idle
-dispatcher threads take turns.
+(`ggml-rpc.cpp:786` → `ggml_backend_rpc_buffer_set_tensor`, `:720`). That function blocks on
+the data send (`:740`), and for a cacheable weight it first blocks on the hash check with a
+response (`:730`). Cacheable means larger than `HASH_THRESHOLD` (`rpc_use_hash_cache`, `:717`),
+which `llama-cache.patch` lowers from 10 MiB to 1 MiB (`llama-cache.patch:23-26`), so tensors at or
+below 1 MiB take the data send only and never the hash round trip. Either way each tensor waits for
+its endpoint's acknowledgement before the next begins, and the three idle dispatcher threads take
+turns.
 
 **2. The async upload exists, is wired, and does not help as written.** `set_tensor_async`
 (`ggml-rpc.cpp:952`, wired at `:1073`, with `.synchronize` at `:1078`) sends the data with
-`send_async` (`:973`). Its hash check still uses the blocking `send` (`:963`), directly under
-upstream's own `// TODO: make this async` (`:962`). So even the async entry point blocks once per
-tensor on the hash round trip. The payload is safe to hand off: `serialize_set_tensor` copies it
+`send_async` (`:973`). For a cacheable weight (above the 1 MiB threshold) its hash check still uses the
+blocking `send` (`:963`), directly under upstream's own `// TODO: make this async` (`:962`), so even
+the async entry point blocks once per cacheable tensor on the hash round trip. Tensors at or below
+the threshold skip that branch and go straight to `send_async` (`:973`): for those the async entry
+point really does not block. The payload is safe to hand off: `serialize_set_tensor` copies it
 (`memcpy`, `:708`). The loader cannot reach the async path in any case. Its own async uploader is
 refused under mmap (`llama-model-loader.cpp:1527`, `if (use_mmap || check_tensors) return nullptr`),
 and both runs logged `load_mode = mmap` (`split.log:263` in `cold/` and `warm/`). Separately, RPC
@@ -3195,10 +3200,14 @@ layer order".** Under mmap the loader does not re-sort (`llama-model-loader.cpp:
 (`llama-model-loader.h:156-165`), loaded at `llama-model.cpp:1937`. An RPC buffer type is named
 `"RPC" + device + "[" + endpoint + "]"` (`ggml-rpc.cpp:1092`); `device` is the per-endpoint device
 index, 0 for each of our one-device workers, so the sort falls through to the endpoint string, which
-here is `127.0.0.1:<ephemeral port>` of the laptop-side tunnel. In both runs the ports ascend in
-join order (cold 61587 laptop, 61605 iPhone, 61614 Android; warm 62347, 62357, 62365), the
-lexicographic order is laptop, iPhone, Android, and that is the observed order: the laptop's own
-context first, then the iPhone window, then the Android window. The iPhone joined before Android
+here is `127.0.0.1:<ephemeral port>` of the laptop-side tunnel. The host CPU buffer type sorts before every `RPC0[...]` name ('C' < 'R'), so
+the 315.30 MiB `CPU_Mapped` buffer in the same logs (`split.log:2297`) is the first context in
+`ctx_map`, ahead of the laptop's. Under mmap its tensors are bound to mapped addresses rather than
+copied (the branch records `mmap_used` ranges, `llama-model-loader.cpp:1666-1668`; I did not trace
+the whole branch), so I expect it to be cheap, but that is not measured. In both runs the ports
+ascend in join order (cold 61587 laptop, 61605 iPhone, 61614 Android; warm 62347, 62357, 62365), the
+lexicographic order among the RPC contexts is laptop, iPhone, Android, and that is the observed
+order: the laptop's RPC context, then the iPhone window, then the Android window. The iPhone joined before Android
 both times (`events.jsonl`).
 
 **4. F45's unattributed time is accounted for to within 3 s, by the interval before the first phone
@@ -3212,24 +3221,54 @@ closes both:
 | warm | 126.0 s | 27.0 | 30.6 | 26.6 | 40.3 | 1.5 (1.2%) |
 
 Each term is a duration inside one device's own log, so the 0.83 s clock offsets (F45) do not enter.
-What the front interval contains is **not measured**. The name order above puts the laptop's own
-546.83 MiB context first, which makes it the leading candidate, followed by the iPhone's first
-tensor (330,612,736 B in the cold run). The laptop's cache counters were zero in both runs, so
-nothing in the cache shortens that segment. This is an additive fit across four logs and not a
-measurement of the laptop's load, and it is the reason F45's "20-32% unattributed" should now read
-"located, not explained".
+
+**The window endpoints are observations, not commit times.** The phones do not timestamp individual
+commits: iOS `noteCache` coalesces changes into one line per 5 s (`WorkerModel.swift:263`,
+`:437-452`) and Android `WeightCache.observe` writes at most every 10 s (`WeightCache.java:27-40`).
+Start points are not delayed (iOS `lastCacheLine` starts at `.distantPast`; Android `reportedAt` is
+set when the session begins), so a first record is within a heartbeat of the first commit. A last
+record can follow the last commit: the previous record bounds it at 5.4 s (iPhone, cold) and 5.3 s
+(warm), and 10.0 s / 10.1 s for Android's last two records, tightened by Android's own native
+samples to 2.0 s (cold: the stored total was still below its final value at 06:18:17.98, final at the
+06:18:19.99 record) and 6.0 s (warm: still below at 06:23:06.41, final at the 06:23:12.43 record).
+That lag is as large as or larger than the 3.1 s and 1.5 s remainders, so the remainders are **not**
+a precision claim and the windows' lengths carry the same slack. What the table does show is that
+the run's non-compute time lies between the iPhone's data channel opening and Android's last cache
+record, with no large interval outside them.
+
+**What the front interval contains is not measured, but part of it is pinned down.** Its end is the
+first iPhone record, 330,612,736 B in the cold run, and a file is committed only after it has been
+received whole. That size is exactly a Q8_0 [151,936 x 2,048] tensor (151,936 x 2,048 x 34/32), the
+shape of Qwen2.5-3B's token embedding (the `CPU_Mapped` buffer above is the same 315.30 MiB); I did
+not check tensor names. Receiving it is therefore inside the front interval. At the iPhone's rate
+over the rest of the window, 6.09 MB/s (969,277,440 B over 159.1 s), that is about 54 s of the
+93.8 s, **if** the first file moved at the later rate. **The 8.2 MB/s I first wrote for the iPhone
+counted that first file's bytes against a window that starts after it arrived**; the like-for-like
+rates are 6.09 MB/s (iPhone) and 6.18 MB/s (Android, 1,364,230,144 B over 220.6 s), so the two
+phones ran at nearly the same speed. The laptop's own 546.83 MiB context is a much weaker candidate
+than I first wrote: at the 134 MiB/s the checksum reads the same file (F45) it is about 4 s,
+which is arithmetic with a different access pattern and not a measurement. That leaves roughly 40 s
+of the cold front interval unexplained. The laptop's cache counters were zero in both runs, so
+nothing in the cache shortens that segment. This is an additive fit across four logs. It is the
+reason F45's "20-32% unattributed" should now read "located, partly explained". The warm front
+interval (30.6 s) was not decomposed.
 
 **5. What overlapping the phones could save is bounded far more loosely than first stated.** In
 session this was put at about 159 s cold and 27 s warm, the smaller phone window in each run. Those
 are upper bounds that assume the two phones' paths are independent, and three things cap them. (a)
 No run has had two phones transferring at once, so whether the laptop's single Wi-Fi link shares or
-adds bandwidth is unknown; sequentially the phones ran at 6.2 MB/s (Android) and 8.2 MB/s (iPhone).
+adds bandwidth is unknown; sequentially the phones ran at 6.18 MB/s (Android) and 6.09 MB/s (iPhone).
 (b) The loader's per-tensor read of the mmapped file and its `fnv_hash` stay on one thread however
-the sends are dispatched. (c) The warm run's cost is the blocking hash round trip (`:730`, `:963`),
-because a hit sends no data: switching the loader to `set_tensor_async` removes none of it. The warm
-saving needs the hash check itself to become non-blocking, which needs a continuation (the response
-decides whether to send data) and is the change upstream marked TODO. **The "right" fix described in
-session, async upload plus a per-endpoint `synchronize`, would therefore not deliver the warm gain.**
+the sends are dispatched. (c) For the cacheable weights (above 1 MiB; 85 files on Android, `warm/android-log.json` line 168) a
+warm hit sends no data and its cost is the blocking hash round trip (`:730`, `:963`), which
+switching to `set_tensor_async` does not remove. Tensors at or below 1 MiB, which are most of what
+the warm phones still received (about 33 MiB), would stop blocking, and async dispatch could overlap
+serialising and hashing with sends, so the warm gain from async alone is **not zero**; how much of
+the warm cost is hash round trips and how much is sub-threshold sends was not measured. Making the
+hash check itself non-blocking needs a continuation (the response decides whether to send data) and
+is the change upstream marked TODO. **The "right" fix described in session, async upload plus a
+per-endpoint `synchronize`, would therefore not by itself remove the per-cacheable-tensor round
+trip, and the warm gain it would deliver is unknown.**
 
 **Verified:** `git -C .deps/llama-split show 4da6337:<path> | grep -n` for every `file:line` above
 (`ggml-rpc.cpp`, `llama-model-loader.cpp`, `llama-model-loader.h`, `llama-model.cpp`); the two patch
@@ -3255,8 +3294,13 @@ the channel-open, first-commit and last-commit timestamps in the table.
   `serialize_set_tensor` copies the payload, but not for anything else a queued send might reference.
 - **The iPhone's cacheable-file count** is not recorded (Android's is 85, `warm/android-log.json`
   line 168), so no per-tensor time is given for the iPhone.
-- **Our own patches' behaviour at these call sites** was checked only by the absence of changed
-  `send` lines, not by reading the patched `set_tensor` paths line by line.
+- **Our own patches' behaviour at these call sites** was checked by the absence of changed `send`
+  lines and by the `HASH_THRESHOLD` change (`llama-cache.patch:23-26`), not by reading the patched
+  `set_tensor` paths line by line.
+- **Whether the first iPhone record is one file.** The size matches one tensor exactly and later
+  records are 24-52 MB, but the log does not name files, so "one 330 MB tensor" is an inference.
+- **The 54 s and 4 s figures** are rate arithmetic (the iPhone's later rate; the checksum's disk
+  rate), not measurements of the first transfer or of the laptop's load.
 
 **Consequence:** the sequential loading is upstream structure, not something the coordinator does, so
 it cannot be fixed from the kit. The primitives for overlap already exist in `ggml-rpc` and are
@@ -3266,4 +3310,5 @@ blocking, and under mmap the loader needs its own path. The next measurement wor
 and decides whether to try: push to both phones at once, outside llama.cpp, and see whether their
 rates add. Independently, F45's blind spot is now concrete. A phase marker at the first phone commit
 would have produced the table in item 4 without reconstructing it by hand from four logs, and the
-coordinator can derive it from the workers' heartbeat cache counters.
+coordinator can derive it from the workers' heartbeat cache counters. That also fixes the slack
+above: the relay sees counters every 0.25-0.5 s, where the phones' own lines are coalesced to 5-10 s.
