@@ -934,3 +934,26 @@ overstatements were fixed the same way; append-only protects *merged* findings).
 flatly backwards: memory pressure does not scale with run duration — the shorter warm run consumed
 1.8× more memory than the cold one, which a subtraction I should have done before writing would
 have shown.
+
+## 2026-10-11 — F46: why the phones load one after the other, from the pinned llama.cpp source
+
+Read the weight-upload path at `4da6337` (source only, nothing run), prompted by F45's open question.
+Recorded as F46.
+
+- The serialisation is in the loader's calling pattern, not in `ggml-rpc`: every endpoint already has
+  its own dispatcher thread and queue, but `load_all_data` is one loop over tensors and the buffer
+  `set_tensor` blocks on each. The earlier "single-threaded client" guess in F45 was half right.
+- The order between phones is a `strcmp` on the buffer-type name, which for our workers falls through
+  to the tunnel's ephemeral port string; ports ascend with join order in both runs, matching the
+  observed laptop, iPhone, Android order.
+- The async upload exists but the loader cannot reach it under mmap, and even `set_tensor_async` keeps
+  a blocking hash check under upstream's own TODO. The warm-run saving I quoted in conversation
+  (~27 s) was therefore overstated for the obvious fix; the cold figure (~159 s) is an upper bound
+  that assumes the phones' links are independent, which no run has tested.
+- F45's unattributed 96.9 s / 32.1 s is matched to within 3.1 s / 1.5 s by the interval from the
+  iPhone's channel opening to its first commit. What is in that interval is unmeasured.
+
+Corrected while writing it: I had mixed line numbers from the pinned file and the patched working
+tree in conversation, and the warm-run node mapping in my first check matched by bytes sent, which is
+near zero for warm phones, so it labelled every endpoint "laptop". Both are redone against the pinned
+revision and model-buffer size.
