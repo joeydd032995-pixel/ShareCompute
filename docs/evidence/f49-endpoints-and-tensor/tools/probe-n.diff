@@ -1,0 +1,11 @@
+--- native/split/probe.cpp	2026-10-10 16:32:54.787734239 +0000
++++ $SCRATCH/nep/probe_n.cpp	2026-10-11 18:32:04.597576202 +0000
+@@ -28,7 +28,7 @@
+         auto shares = cfg.value("shares", std::vector<float>{});
+         int limit = cfg.value("tokens", 24);
+         require(limit >= 1 && limit <= 128, "tokens must be 1..128");
+-        require(endpoints.size() <= 3 && endpoints.size() == shares.size(), "endpoint/share mismatch");
++        require(endpoints.size() <= 16 && endpoints.size() == shares.size(), "endpoint/share mismatch");
+         require(std::set<std::string>(endpoints.begin(), endpoints.end()).size() == endpoints.size(), "duplicate endpoint");
+         llama_log_set([](ggml_log_level, const char * text, void *) { fputs(text, stderr); }, nullptr);
+         llama_backend_init();

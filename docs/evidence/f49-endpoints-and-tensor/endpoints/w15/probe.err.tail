@@ -1,0 +1,40 @@
+llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {    64,     1,     1,     1 }] is used by node 'Kcur-21' (ROPE)
+llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {    64,     1,     1,     1 }] is used by node 'Qcur-22' (ROPE)
+llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {    64,     1,     1,     1 }] is used by node 'Kcur-22' (ROPE)
+llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {    64,     1,     1,     1 }] is used by node 'Qcur-23' (ROPE)
+llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {    64,     1,     1,     1 }] is used by node 'Kcur-23' (ROPE)
+llama_graph_n_input_tensors: input tensor '                      inp_tokens' [i32, ne = {    64,     1,     1,     1 }] is used by node 'embd' (GET_ROWS)
+sched_reserve: RPC0[127.0.0.1:54000] compute buffer size =     5.35 MiB
+sched_reserve: RPC0[127.0.0.1:54001] compute buffer size =     5.35 MiB
+sched_reserve: RPC0[127.0.0.1:54002] compute buffer size =     5.13 MiB
+sched_reserve: RPC0[127.0.0.1:54003] compute buffer size =     5.35 MiB
+sched_reserve: RPC0[127.0.0.1:54004] compute buffer size =     5.35 MiB
+sched_reserve: RPC0[127.0.0.1:54005] compute buffer size =     5.13 MiB
+sched_reserve: RPC0[127.0.0.1:54006] compute buffer size =     5.35 MiB
+sched_reserve: RPC0[127.0.0.1:54007] compute buffer size =     5.35 MiB
+sched_reserve: RPC0[127.0.0.1:54008] compute buffer size =     5.13 MiB
+sched_reserve: RPC0[127.0.0.1:54009] compute buffer size =     5.35 MiB
+sched_reserve: RPC0[127.0.0.1:54010] compute buffer size =     5.35 MiB
+sched_reserve: RPC0[127.0.0.1:54011] compute buffer size =     5.13 MiB
+sched_reserve: RPC0[127.0.0.1:54012] compute buffer size =     5.35 MiB
+sched_reserve: RPC0[127.0.0.1:54013] compute buffer size =     5.13 MiB
+sched_reserve: RPC0[127.0.0.1:54014] compute buffer size =    38.19 MiB
+sched_reserve:        CPU compute buffer size =     0.69 MiB
+sched_reserve: graph: nodes = 822, splits = 16, input objects = 4, input tensors = 6
+sched_reserve: reserve took 43.11 ms, sched copies = 4
+~llama_context: RPC0[127.0.0.1:54000] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:54001] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:54002] compute buffer size is   5.1299 MiB, matches expectation of   5.1299 MiB
+~llama_context: RPC0[127.0.0.1:54003] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:54004] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:54005] compute buffer size is   5.1299 MiB, matches expectation of   5.1299 MiB
+~llama_context: RPC0[127.0.0.1:54006] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:54007] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:54008] compute buffer size is   5.1299 MiB, matches expectation of   5.1299 MiB
+~llama_context: RPC0[127.0.0.1:54009] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:54010] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:54011] compute buffer size is   5.1299 MiB, matches expectation of   5.1299 MiB
+~llama_context: RPC0[127.0.0.1:54012] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:54013] compute buffer size is   5.1309 MiB, matches expectation of   5.1309 MiB
+~llama_context: RPC0[127.0.0.1:54014] compute buffer size is  38.1875 MiB, matches expectation of  38.1875 MiB
+~llama_context:        CPU compute buffer size is   0.6943 MiB, matches expectation of   0.6943 MiB

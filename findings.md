@@ -3517,3 +3517,99 @@ per-phase timing would say what it is doing. (3) The case for the upstream
 non-blocking hash check (F46) is stronger than it was: the two phones' warm loads are 72.5 s of the run,
 on independent flash, and overlapping them would save up to the smaller, 34.9 s, less whatever of the laptop's own hashing of the
 same bytes cannot overlap.
+
+## F49 — On loopback the split runs unchanged with 4 to 15 RPC endpoints and tokens equal to the reference (16 aborts); tensor split also runs with equal tokens but needs about 146 round trips a token per link instead of 1 and is 2.1-2.6x slower with no network at all; neither has run on a physical device
+
+The operator asked three things before more device work: how to connect more than three devices (two of one kind), why the split shares layers and not compute, and what tensor parallelism over RPC would take. Six
+read-only workers (`linux-backend` twice, `linux-developer`, `windows-backend`, `android-backend`, `ios-backend`) audited the code and ran loopback experiments in scratch directories; nothing in the repository was changed.
+Their results were not all recorded as the workers reported them. This finding says, for each claim, whether **[re-run]** I repeated it myself on a clean container, **[worker]** a worker measured it and I did not
+repeat it, or **[read]** it is a reading of source. Raw files, the scratch probes as diffs against `native/split/probe.cpp`, the harnesses and the analysis script are in
+`docs/evidence/f49-endpoints-and-tensor/`. Everything here is Linux x86-64 loopback on a 4-core container with no Wi-Fi, no TLS relay and no phone.
+
+**1. The native split is not limited to three endpoints; the limit is 15.**
+- **[read]** The only native line that stops it is `native/split/probe.cpp:31`, `endpoints.size() <= 3`. Nothing else in `native/split/` is keyed to a count or a node name; the budget and cache counters are
+  process-global, one worker per process.
+- **[re-run]** With that limit raised to 16 in a scratch copy of the probe (`tools/probe-n.diff`) and the unmodified `sc-rpc-worker` and `models/split-proof.gguf`, 4, 6 and 15 workers each produced the 16
+  tokens of the single-process reference, and every endpoint received layers (25 placement slots: 24 layers and the output slot). 16 workers aborted at
+  `ggml/src/ggml-backend.cpp:1856`, `GGML_ASSERT(n_backends <= GGML_SCHED_MAX_BACKENDS)` (`GGML_SCHED_MAX_BACKENDS` is 16 at `:764`). The client's own CPU backend takes one of the 16 slots, so the ceiling is **15 RPC
+  endpoints**. `GGML_RPC_MAX_SERVERS 16` in `ggml-rpc.h` is not the binding limit.
+- **[worker]** 5, 8 and 12 workers also matched; a 57-token prompt with 96 generated tokens matched at 3, 4, 5 and 6; a 212-token prompt matched at 6; 12 back-to-back 6-worker runs all exited 0 with equal tokens.
+- **[re-run, saved output]** Qwen2.5-3B Q8_0 across **six** workers (budgets 768/2048/1536/768/2048/1536) gave tokens equal to `native/split/reference-capacity.json`. Placement slots per endpoint were
+  4/8/7/3/9/6 (the last includes the output slot). Peak RPC allocations were 326.3, 640.8, 562.1, 247.7, 719.4 and 748.3 MiB, each inside its budget. Wall time was 295 s, mostly the cold read of the model
+  file. I compared the saved output with the reference; I did not repeat the 5-minute run. In its last `SC_STATS` line the final worker showed 15 graph calls and the others 16; not investigated.
+- **Harness lesson, repeated.** Piping the harness through `head` killed it before its cleanup and leaked worker processes. The worker found this, and my first re-run hit it too: later runs reused earlier
+  workers. The numbers above are from the clean re-runs with no pipe and zero workers left afterwards.
+- **Upstream issue ggml-org/llama.cpp#28487** (F32: RPC deadlock with 3+ endpoints on the CPU backend) could not be read; the container gets HTTP 403 for that repository. No run above hung, and the pinned source
+  shows the structure the issue describes (one dispatcher thread and queue per endpoint, blocking sends, a blocking hash-checked `set_tensor`) without showing a deadlock. This does **not** refute the report:
+  these runs were short, on a 4-core machine, probe straight to worker, no relay, no network.
+
+**2. What else is fixed to three nodes (all outside `native/split`) [read, spot-checked by me].**
+`scripts/split_cluster.py:32` (`NODES`), `:85` (`zip(NODES, budgets)`, which silently truncates), `:494` and `:499` (the proof gate indexes `workers['android']` and `workers['iphone']`), `:574`
+(`len(relay.nodes) < 3`), `:629-630` (probe endpoint and share order), `:693` and `:703` (`--budgets nargs=3`), `:704` (`--kill-worker choices`); `scripts/split_launcher.py:200` and `:229` (two fixed phone
+panels) and no `cache_dir` anywhere in it, which is why the laptop's own worker runs uncached (F48); `Apps/AndroidWorker/.../WorkerSession.java:44` and `:78` (the literal `"android"`);
+`Apps/ComputeWorker/Sources/WorkerModel.swift:294` and `:336` (the literal `"iphone"`). The pairing payload already carries `node`, `token` and `budget_mib`, each phone already has its own QR, and
+`run_log.py` and `build_stamp.py` take node names as data, so the wire protocol is not the blocker. The phone apps take the budget from the payload; only the node name is hard-coded. The node name on the
+iOS app also acts as a wrong-QR guard, which a generalisation has to replace.
+One latent defect, **[read, no sanitizer run]**: when `params.tensor_split` is set, `llama_model` copies `llama_max_devices()` floats from it (`src/llama-model.cpp:1278`, 16 at `src/llama.cpp:86`), and the
+probe passes a vector of only N floats. Placement uses the first N, so it is probably benign, but it is a read past the end that no test would show. Padding `shares` to 16 in `probe.cpp` would remove it.
+
+**3. Tensor split runs over our RPC workers, within our budgets, with equal tokens.**
+- **[re-run]** `LLAMA_SPLIT_MODE_TENSOR` with flash attention forced (`tools/probe-tp.diff`), three `sc-rpc-worker` processes, shares and budgets 768/2048/1536. Tokens equal the reference for 0.5B and for 3B
+  Q8_0. Whole-decode time per token (16 tokens), layer versus tensor: **0.5B 0.20 s versus 0.53 s (2.6x); 3B 0.48 s versus 1.02 s (2.1x)**. Over a steady 13-step window the 3B figures were 0.47 s and 1.08 s.
+  The worker reported about 2.0 s for tensor against F43's 0.44 s for layer (4.5x), on a box shared with other agents' processes; mine are a same-session pair on a quiet container. Single runs; ratios are noisy.
+- **[re-run, counting proxy, 3B, steady decode window, per token]**
+
+  | | layer split | tensor split |
+  |---|---|---|
+  | client to worker, link 1 / 2 / 3 | 0.011 / 0.011 / 0.010 MB | **42.7 / 29.3 / 16.4 MB** |
+  | worker to client, link 1 / 2 / 3 | 0.008 / 0.008 / **0.608** MB | 1.28 / 0.88 / 0.80 MB |
+  | direction switches (a round trip is two) | 2.0 / 1.9 / 1.9 | **290 / 146 / 146** |
+
+  So layer split costs about one blocking exchange per link per token; tensor split about 145, 73 and 73. The worker counted **73 all-reduces per token** on 3B (36 layers x 2 plus one) and 292 cross-device
+  copies **[worker, `GGML_META_DEBUG`]**. The resolution is the proxy's 0.1 s sampling.
+- **The logits dominate layer split's traffic.** 0.608 MB per token on the last link is 151,936 x 4 B: the output layer sits on the **last** endpoint and returns F32 logits every token. The activation
+  copies are about 8 KB (2048 x 4 B), consistent with F32 at hidden width 2048 (inferred from size, not read from the wire format). Earlier writing that called per-token transfer "16 KiB" left the logits out.
+- **Why it is slow [read].** `ggml_backend_rpc_buffer_cpy_tensor` returns false when source and destination are on different servers (`ggml-rpc.cpp:775-777`), so `ggml_backend_tensor_copy` does a get to the
+  host and a set (`ggml-backend.cpp:499-509`); `ggml_backend_rpc_get_proc_address` returns only `add_server` and `start_server` (`ggml-rpc.cpp:2405-2412`), so the meta backend has no RPC all-reduce and uses its
+  generic fallback. In our star topology a copy between two phones is phone, relay, probe, relay, phone. That the ~85 MB per token beyond the activations is RPC graph descriptors is **inferred** from the byte
+  accounting and the code, not instrumented.
+- **[worker] Emulated link.** A scratch proxy with 0.5 ms one-way and 216 Mbit/s to the laptop and 2.5 ms and 48 Mbit/s to each phone (F45/F48 rates): layer decode 0.55-0.62 s a token (whole loop 1.06-1.17 s
+  against 0.77 s physical, so the emulation is pessimistic by about 1.5x), **tensor 6.4-6.6 s a token, 5.6-11x slower**; prefill 8.65 s against 1.24 s. The proxy is symmetric, with no TLS framing, loss or jitter,
+  and the tensor runs produced a correct 4-token prefix, not 16. I did not repeat this.
+- **[worker] Other tensor-mode measurements.** Peaks 654.6/1464.5/1140.6 MiB (3,259.7 total, against F43's 3,209.1), nothing refused; every device carries a full 37.6 MiB compute buffer, so the laptop's grows from 11.8;
+  the weight cache is only partly effective (3,495 MB sent cold, 1,279 MB warm, -63%, against -98.7% for layer split) because row-split pieces fall under the 1 MiB hash threshold; attention follows the shares
+  only to a granularity of one KV head (3B has 2 KV heads, so one device idles per layer). Qwen2 is not excluded by `llm_arch_supports_sm_tensor`.
+- **[worker, secondhand] Upstream master** reportedly adds an RPC all-reduce that works for exactly 2 ranks and needs servers to reach each other directly. Neither holds for us. Read from raw.githubusercontent
+  by the worker; not built or tested.
+
+**4. A lever that is not tensor mode [worker].** The probe is single-sequence. A scratch batched probe (timing only, repeated last prompt token, not generation quality) on the same emulated link and layer
+split gave 0.95, 2.3 and 2.4 tokens/s aggregate at 1, 8 and 32 sequences. It raises throughput only when several independent generations are wanted and does not shorten one answer. The ceiling is the
+608 KB of logits per sequence over the last worker's link.
+
+**5. The Android phone reports 3,472 MiB, not 8 GB [re-run, parsed from the four committed Android logs].** `total_mib` is 3,472 in every `mem` row of `physical-f45-logging` and `physical-f48-spans` (device
+`motorola moto g 5G - 2024`, Android 15). `avail_mib` at app and session start ranged 968-1,398 MiB. During the 3B runs it fell to 282 MiB (F45) and 439 MiB (F48) with resident size peaking at 1,173 and 1,050 MiB;
+`low` was never set. The 2,048 MiB budget is 59% of the visible figure. Installed RAM is not established (the figure excludes memory the OS reserves; I did not look up the model's variants), so "8 GB Android
+phone" in `CLAUDE.md` is the operator's statement, not a measurement. The Android code passes the literal `2` as every phone worker's compute-thread count (`worker-jni.cpp:11`; logged as `threads: 2` in `native_listener_start`), and the phone's core count is not recorded.
+
+**Verified:**
+- **[re-run]** The 4/6/15-endpoint matches, the 16-endpoint abort and its assert line, the 3B six-worker tokens against `reference-capacity.json`, tensor mode's equal tokens at 0.5B and 3B, the layer/tensor
+  decode times on loopback, the per-token bytes and direction switches (`python3 -I docs/evidence/f49-endpoints-and-tensor/tools/analyze_decode_window.py <run dir>` reproduces the table), and the Android memory figures.
+- **[read]** `ggml-backend.cpp:763-764,1856`; `ggml-rpc.cpp:775-777,2405-2412`; `ggml-backend.cpp:499-509`; `llama-model.cpp:1276-1279`; the hard-coded names in section 2.
+
+**Not verified:**
+- **Anything on a physical device or a real network.** No device has run more than three endpoints or tensor mode. Wi-Fi round-trip time has never been measured in this project; per-node compute time
+  has never been measured either, which is what decides whether per-token time is compute or network.
+- **Through the relay.** The endpoint runs bypassed the TLS relay and `split_cluster.py`; the relay's four-channel limit, `validate_proof` and the launcher were not exercised for N other than 3.
+- **Mixed architectures.** Token equality across x86 and ARM devices at N above 3 is untested; F37 and F40 already flag near-tie drift as a risk.
+- **Workers that receive no layers** (more endpoints than placement slots, or a tiny share). Derived from the placement code, not run.
+- **Everything marked [worker]**, including the whole emulated-link comparison, the tensor-mode cache and allocation figures, the batched-sequence scaling and the upstream-master claim. The 4.5x loopback ratio the worker
+  reported is not reproduced by my re-run (2.1-2.6x); both are single runs on a shared container.
+- Issue #28487 itself; any sanitizer run on the `tensor_split` read; any Metal, CUDA or Vulkan build.
+
+**Consequence:** more devices add **memory, not speed** in this design: a token still passes through every stage in turn, and each extra stage adds a round trip, a hop through the laptop and a failure point.
+Capacity scales as far as the budgets of the extra devices go, and 15 endpoints is the ceiling at this pin. **Tensor split is closed here as a measured negative on this topology**: it works and matches, and
+costs two orders of magnitude more round trips because the RPC backend has no device-to-device path; only a change to RPC (not a configuration) could alter that. For several devices of one kind, the
+native change is small (raise the cap to 15 and pad `shares` to 16) and the work is in the coordinator, launcher and the two phone apps, **Python first** per `docs/AGENT-OWNERSHIP.md`. Decisions the operator
+has made for that design: remote PCs take ids `laptop-2`, `laptop-3` and so on and the coordinator's own worker stays `laptop`, with a `managed` flag in the roster telling them apart; a roster may omit the
+coordinator's own worker; no abort-on-mixed-build option; an optional per-device layer weight that defaults to the memory budget and is not an automatic policy, because no per-device speed measurement exists to
+choose it from. Phone budgets cannot be sized from device RAM today: the apps log it locally and the coordinator never receives it. Nothing here is implemented.

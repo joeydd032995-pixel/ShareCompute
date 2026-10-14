@@ -1009,3 +1009,23 @@ both runs plus the laptop report for run 2 only; the laptop's cold report was no
   step overstates it (iPhone 37.3 MB/s over its phase, not 40.8).
 - Evidence masked as before (LAN IPs, the Windows user name).
 
+
+## 2026-10-14 — F49: more than three endpoints, and tensor split over RPC (loopback only)
+
+Operator asked how to connect several devices of one kind, why the split shares layers and not compute, and what
+tensor parallelism over RPC would take. Six read-only workers audited and measured; I re-ran the headline numbers
+on a clean container before recording them. Nothing was changed outside the docs.
+
+- The native split is limited to **15** RPC endpoints (the scheduler's 16 slots include the client's CPU), not 3;
+  `probe.cpp:31` is the only native line. 4, 6 and 15 workers matched the reference on 0.5B; 3B across six matched
+  `reference-capacity.json`. Wi-Fi, the relay and mixed x86/ARM are untested.
+- Everything else fixed to three names is Python, the launcher and the two phone apps. Design decisions made by the
+  operator: remote PCs are `laptop-2`, `laptop-3`, ...; the coordinator's own worker is optional; no abort on mixed
+  builds; an optional per-device weight defaulting to the budget.
+- Tensor split runs with equal tokens but is 2.1-2.6x slower with no network, from about 146 round trips a token per
+  link instead of 1. Closed as a measured negative on this topology.
+- My re-run found the worker's loopback ratio (4.5x) came from a shared box; mine is 2.1-2.6x. A first re-run also hit
+  the worker's harness leak (output piped through `head`) and was redone.
+- The Android phone reports 3,472 MiB visible; `CLAUDE.md` says 8 GB. Installed RAM is not established.
+- Not done: any physical run, any code. Next in the plan: the per-node graph-start stamp, then more than 2 threads on the
+  phones, both needing a rebuild and a device run.

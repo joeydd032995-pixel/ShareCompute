@@ -1,0 +1,1 @@
+{"endpoints": ["127.0.0.1:51051", "127.0.0.1:51052", "127.0.0.1:51053"], "shares": [768, 2048, 1536], "tokens": 16, "model": "/home/user/ShareCompute/models/split-proof.gguf", "prompt": "The capital of France is", "split_mode": "layer", "nseq": 1}

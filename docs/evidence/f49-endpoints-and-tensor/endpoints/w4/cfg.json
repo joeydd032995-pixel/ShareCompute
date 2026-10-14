@@ -1,0 +1,1 @@
+{"model":"/home/user/ShareCompute/models/split-proof.gguf","prompt":"The capital of France is","tokens":16,"endpoints":["127.0.0.1:54000","127.0.0.1:54001","127.0.0.1:54002","127.0.0.1:54003"],"shares":[512,512,512,512]}
