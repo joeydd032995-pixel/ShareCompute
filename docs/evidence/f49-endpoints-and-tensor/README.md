@@ -33,8 +33,8 @@ from their own location and `$SCRATCH`, not from a particular machine. Model fil
 | `endpoints/c3pad`, `c3unpad` | the control for the unpadded `tensor_split` read: three workers, 0.5B, padded and unpadded; byte-identical peaks (F37's figures) and equal tokens |
 | `tensor/f_layer05`, `f_tensor05` | 0.5B, three workers, layer versus tensor split, through the counting proxy with no added delay |
 | `tensor/f_layer3b`, `f_tensor3b`, `f_tensor3b_unpad` | 3B Q8_0, the same, tensor also with the unpadded read. `proxyN.json` is a proxy's totals for the whole run (loading included); `proxyN.json.ts` is its 10 Hz history (time, bytes to the server, bytes to the client, direction switches per connection, and the older all-connections count); `probe.err.markers` holds the `SC_T` timestamps |
-| `unpadded_first_runs/` | the first runs, made with the first probe (unpadded `shares`) and the first proxy (one last-direction for all connections together), including the 3B six-worker run by the `linux-backend` worker. They agree with the runs above; the old proxy files have no `turns_global` column and `analyze_decode_window.py` reads both |
-| `tools/probe-n.diff`, `tools/probe-tp.diff` | the two first scratch probes (limit raised; tensor mode and marks), superseded by `probe-f49.diff` |
+| `unpadded_first_runs/` | the first runs, made with the first probe (unpadded `shares`) and the first proxy (one last-direction for all connections together), including the 3B six-worker run by the `linux-backend` worker. They agree with the runs above; the old proxy files have no `turns_global` column and `analyze_decode_window.py` reads both. `unpadded_first_runs/tools/` holds the two first scratch probes as diffs (`probe-n.diff`: limit raised; `probe-tp.diff`: tensor mode and timestamp marks), superseded by `tools/probe-f49.diff` |
+
 
 ## What changed after review
 
