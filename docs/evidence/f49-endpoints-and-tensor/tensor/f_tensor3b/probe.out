@@ -1,0 +1,1 @@
+SC_RESULT {"decode_ms":16430.734301,"ok":true,"prefill_ms":2048.27751,"prompt_tokens":5,"text":" Paris. The capital of Spain is Madrid. The capital of Italy is Rome.","token_ids":[12095,13,576,6722,315,17689,374,24081,13,576,6722,315,15344,374,21718,13],"wall_ms":41023.255436}

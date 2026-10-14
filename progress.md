@@ -1022,9 +1022,9 @@ on a clean container before recording them. Nothing was changed outside the docs
 - Everything else fixed to three names is Python, the launcher and the two phone apps. Design decisions made by the
   operator: remote PCs are `laptop-2`, `laptop-3`, ...; the coordinator's own worker is optional; no abort on mixed
   builds; an optional per-device weight defaulting to the budget.
-- Tensor split runs with equal tokens but is 2.1-2.6x slower with no network, from about 146 round trips a token per
+- Tensor split runs with equal tokens but is 2.1-2.8x slower with no network, from about 146 round trips a token per
   link instead of 1. Closed as a measured negative on this topology.
-- My re-run found the worker's loopback ratio (4.5x) came from a shared box; mine is 2.1-2.6x. A first re-run also hit
+- My re-run found the worker's loopback ratio (4.5x) came from a shared box; mine is 2.1-2.8x. A first re-run also hit
   the worker's harness leak (output piped through `head`) and was redone.
 - The Android phone reports 3,472 MiB visible; `CLAUDE.md` says 8 GB. Installed RAM is not established.
 - Not done: any physical run, any code. Next in the plan: the per-node graph-start stamp, then more than 2 threads on the

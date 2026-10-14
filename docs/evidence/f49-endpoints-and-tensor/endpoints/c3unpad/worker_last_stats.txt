@@ -1,0 +1,3 @@
+worker0: SC_STATS {"allocated_bytes":59005184,"peak_bytes":59005184,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker1: SC_STATS {"allocated_bytes":133527296,"peak_bytes":133527296,"graph_calls":15,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker2: SC_STATS {"allocated_bytes":257146368,"peak_bytes":257146368,"graph_calls":15,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}

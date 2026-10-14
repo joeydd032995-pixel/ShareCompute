@@ -1,0 +1,40 @@
+sched_reserve: RPC0[127.0.0.1:56002] compute buffer size =    38.44 MiB
+sched_reserve:        CPU compute buffer size =     0.69 MiB
+sched_reserve: graph: nodes = 822, splits = 4, input objects = 4, input tensors = 6
+sched_reserve: reserve took 12.42 ms, sched copies = 4
+SC_T prefill_start 1791990285.839
+SC_T prefill_end 1791990286.446
+SC_T dec_start 0 1791990286.687
+SC_T dec_end 0 1791990286.806
+SC_T dec_start 1 1791990286.884
+SC_T dec_end 1 1791990286.983
+SC_T dec_start 2 1791990287.047
+SC_T dec_end 2 1791990287.170
+SC_T dec_start 3 1791990287.240
+SC_T dec_end 3 1791990287.363
+SC_T dec_start 4 1791990287.426
+SC_T dec_end 4 1791990287.524
+SC_T dec_start 5 1791990287.609
+SC_T dec_end 5 1791990287.722
+SC_T dec_start 6 1791990287.784
+SC_T dec_end 6 1791990287.909
+SC_T dec_start 7 1791990287.987
+SC_T dec_end 7 1791990288.114
+SC_T dec_start 8 1791990288.194
+SC_T dec_end 8 1791990288.298
+SC_T dec_start 9 1791990288.383
+SC_T dec_end 9 1791990288.494
+SC_T dec_start 10 1791990288.572
+SC_T dec_end 10 1791990288.681
+SC_T dec_start 11 1791990288.750
+SC_T dec_end 11 1791990288.870
+SC_T dec_start 12 1791990288.933
+SC_T dec_end 12 1791990289.031
+SC_T dec_start 13 1791990289.095
+SC_T dec_end 13 1791990289.214
+SC_T dec_start 14 1791990289.284
+SC_T dec_end 14 1791990289.409
+~llama_context: RPC0[127.0.0.1:56000] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:56001] compute buffer size is   5.3486 MiB, matches expectation of   5.3486 MiB
+~llama_context: RPC0[127.0.0.1:56002] compute buffer size is  38.4434 MiB, matches expectation of  38.4434 MiB
+~llama_context:        CPU compute buffer size is   0.6943 MiB, matches expectation of   0.6943 MiB

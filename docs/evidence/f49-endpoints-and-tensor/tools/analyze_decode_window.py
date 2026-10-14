@@ -4,7 +4,8 @@ usage: python3 -I analyze_decode_window.py RUN_DIR [LINKS]
 RUN_DIR holds probe.err or probe.err.markers (with the SC_T dec_start/dec_end lines written by probe-tp)
 and proxyN.json.ts (time, bytes client->server, bytes server->client, turns; 10 Hz).
 The window skips the first two decode steps. 'turns' counts direction switches on a
-link, so one request/response pair is two turns. Resolution is the proxy's 0.1 s sampling.
+connection (columns: time, bytes to server, bytes to client, turns, and from the fixed proxy turns_global, the
+older all-connections count), so one request/response pair is two turns. Resolution is the proxy's 0.1 s sampling.
 """
 import re, sys
 D = sys.argv[1]; links = int(sys.argv[2]) if len(sys.argv) > 2 else 3
@@ -23,4 +24,5 @@ for i in range(1, links + 1):
             if r[0] <= t: best = r
         return best
     a, b = at(t0), at(t1)
-    print(f"  link{i}: c2s {(b[1]-a[1])/n/1e6:.3f} MB/token  s2c {(b[2]-a[2])/n/1e6:.3f} MB/token  turns {(b[3]-a[3])/n:.1f}/token")
+    g = f"  turns_global {(b[4]-a[4])/n:.1f}/token" if len(b) > 4 else ""
+    print(f"  link{i}: c2s {(b[1]-a[1])/n/1e6:.3f} MB/token  s2c {(b[2]-a[2])/n/1e6:.3f} MB/token  turns {(b[3]-a[3])/n:.1f}/token{g}")
