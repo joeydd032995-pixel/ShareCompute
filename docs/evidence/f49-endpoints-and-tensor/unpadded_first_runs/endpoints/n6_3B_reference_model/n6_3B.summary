@@ -1,0 +1,16 @@
+n6_3B rc=0 wall=295.436849004
+SC_RESULT {"decode_ms":14095.242236,"ok":true,"prefill_ms":1535.654104,"prompt_tokens":5,"text":" Paris. The capital of Spain is Madrid. The capital of Italy is Rome.","token_ids":[12095,13,576,6722,315,17689,374,24081,13,576,6722,315,15344,374,21718,13],"wall_ms":295413.454342}
+
+37
+RPC0 layers: 0 1 2 3 
+RPC1 layers: 4 5 6 7 8 9 10 11 
+RPC2 layers: 12 13 14 15 16 17 18 
+RPC3 layers: 19 20 21 
+RPC4 layers: 22 23 24 25 26 27 28 29 30 
+RPC5 layers: 31 32 33 34 35 36 
+worker0 last stats: SC_STATS {"allocated_bytes":342144000,"peak_bytes":342144000,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker1 last stats: SC_STATS {"allocated_bytes":671896576,"peak_bytes":671896576,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker2 last stats: SC_STATS {"allocated_bytes":0,"peak_bytes":589458432,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker3 last stats: SC_STATS {"allocated_bytes":259705856,"peak_bytes":259705856,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker4 last stats: SC_STATS {"allocated_bytes":754334720,"peak_bytes":754334720,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker5 last stats: SC_STATS {"allocated_bytes":784596992,"peak_bytes":784596992,"graph_calls":15,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}

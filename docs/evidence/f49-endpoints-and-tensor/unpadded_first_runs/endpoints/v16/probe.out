@@ -1,0 +1,29 @@
+[New LWP 27935]
+[New LWP 27932]
+[New LWP 27926]
+[New LWP 27919]
+[New LWP 27911]
+[New LWP 27905]
+[New LWP 27897]
+[New LWP 27891]
+[New LWP 27883]
+[New LWP 27877]
+[New LWP 27870]
+[New LWP 27863]
+[New LWP 27856]
+[New LWP 27848]
+[New LWP 27842]
+[New LWP 27834]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+0x00007f3e62710813 in __GI___wait4 (pid=27936, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+#0  0x00007f3e62710813 in __GI___wait4 (pid=27936, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+30	in ../sysdeps/unix/sysv/linux/wait4.c
+#1  0x000055a7014efdd3 in ggml_print_backtrace ()
+#2  0x000055a7014eff7b in ggml_abort ()
+#3  0x000055a70150a81b in ggml_backend_sched_new ()
+#4  0x000055a70120987d in llama_context::sched_reserve() ()
+#5  0x000055a70120aee9 in llama_context::llama_context(llama_model const&, llama_context_params) ()
+#6  0x000055a70120c1d4 in llama_init_from_model ()
+#7  0x000055a7011c661b in main ()
+[Inferior 1 (process 27747) detached]

@@ -1,0 +1,6 @@
+worker0: SC_STATS {"allocated_bytes":0,"peak_bytes":342144000,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker1: SC_STATS {"allocated_bytes":0,"peak_bytes":671896576,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker2: SC_STATS {"allocated_bytes":0,"peak_bytes":589458432,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker3: SC_STATS {"allocated_bytes":0,"peak_bytes":259705856,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker4: SC_STATS {"allocated_bytes":0,"peak_bytes":754334720,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker5: SC_STATS {"allocated_bytes":0,"peak_bytes":784596992,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}

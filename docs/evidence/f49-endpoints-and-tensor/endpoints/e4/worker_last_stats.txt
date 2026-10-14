@@ -1,0 +1,4 @@
+worker0: SC_STATS {"allocated_bytes":80130560,"peak_bytes":80130560,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker1: SC_STATS {"allocated_bytes":70151168,"peak_bytes":70151168,"graph_calls":16,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker2: SC_STATS {"allocated_bytes":67817984,"peak_bytes":67817984,"graph_calls":15,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}
+worker3: SC_STATS {"allocated_bytes":237187584,"peak_bytes":237187584,"graph_calls":15,"cache_hit_bytes":0,"cache_stored_bytes":0,"cache_rejected":0}

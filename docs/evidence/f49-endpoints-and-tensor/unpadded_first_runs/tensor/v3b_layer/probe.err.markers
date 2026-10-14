@@ -1,0 +1,37 @@
+SC_DEVICE 0 RPC0
+SC_DEVICE 1 RPC1
+SC_DEVICE 2 RPC2
+llama_context: flash_attn            = auto
+llama_context: pipeline parallelism enabled
+SC_T prefill_start 1791989094.373
+SC_T prefill_end 1791989095.524
+SC_T dec_start 0 1791989096.099
+SC_T dec_end 0 1791989096.377
+SC_T dec_start 1 1791989096.566
+SC_T dec_end 1 1791989096.832
+SC_T dec_start 2 1791989097.017
+SC_T dec_end 2 1791989097.288
+SC_T dec_start 3 1791989097.475
+SC_T dec_end 3 1791989097.749
+SC_T dec_start 4 1791989097.931
+SC_T dec_end 4 1791989098.225
+SC_T dec_start 5 1791989098.413
+SC_T dec_end 5 1791989098.694
+SC_T dec_start 6 1791989098.867
+SC_T dec_end 6 1791989099.130
+SC_T dec_start 7 1791989099.310
+SC_T dec_end 7 1791989099.579
+SC_T dec_start 8 1791989099.756
+SC_T dec_end 8 1791989100.027
+SC_T dec_start 9 1791989100.226
+SC_T dec_end 9 1791989100.616
+SC_T dec_start 10 1791989100.870
+SC_T dec_end 10 1791989101.148
+SC_T dec_start 11 1791989101.336
+SC_T dec_end 11 1791989101.614
+SC_T dec_start 12 1791989101.795
+SC_T dec_end 12 1791989102.075
+SC_T dec_start 13 1791989102.272
+SC_T dec_end 13 1791989102.576
+SC_T dec_start 14 1791989102.774
+SC_T dec_end 14 1791989103.075
