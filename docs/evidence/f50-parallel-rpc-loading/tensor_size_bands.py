@@ -4,7 +4,9 @@ usage: python3 -I tensor_size_bands.py MODEL.gguf   (needs .deps/llama-split/ggu
 token_embd.weight is reported separately: the probe keeps it on the host, not on an RPC endpoint.
 """
 import sys
-sys.path.insert(0, "/home/user/ShareCompute/.deps/llama-split/gguf-py")
+from pathlib import Path
+# repository root = three levels above this file (docs/evidence/f50-parallel-rpc-loading/)
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".deps" / "llama-split" / "gguf-py"))
 from gguf import GGUFReader
 MiB = 1048576
 r = GGUFReader(sys.argv[1])
