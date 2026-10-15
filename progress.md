@@ -1029,3 +1029,12 @@ on a clean container before recording them. Nothing was changed outside the docs
 - The Android phone reports 3,472 MiB visible; `CLAUDE.md` says 8 GB. Installed RAM is not established.
 - Not done: any physical run, any code. Next in the plan: the per-node graph-start stamp, then more than 2 threads on the
   phones, both needing a rebuild and a device run.
+
+## 2026-10-15 — F50: parallel loading across RPC endpoints (research only)
+
+Operator asked for "Turboload"-style parallel RPC loading patches. No merged upstream change does it; findings, sources and limits are in F50 and `docs/evidence/f50-parallel-rpc-loading/`.
+
+- PR #20062 (closed unmerged) replaces the serial context loop F46 found; it does not apply to the pin. PR #26291 (open) parallelizes client-side hashing; it applies cleanly and would cover 89% of the 3B model's RPC bytes (measured).
+- Turboload (the operator's link) is a six-commit branch on an older protocol (4.1 against our 7.0), CUDA-centric, needs a local model copy at the same path, and shows no integrity check; its own table attributes most of its gain to CUDA pinned staging.
+- Page content came through a fetch tool's summaries (secondhand); the PR diffs were read directly. Nothing was built or run.
+- Next, unchanged: the instrumentation change (graph-start stamp, `SC_STATS` timestamps) gains loader timers (hash time, per-tensor set time, per-endpoint busy intervals) before any port.

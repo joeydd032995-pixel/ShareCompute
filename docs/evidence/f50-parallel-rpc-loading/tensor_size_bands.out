@@ -1,0 +1,4 @@
+tensors 435; total excluding token_embd 3127.6 MiB; token_embd 315.3 MiB
+<=1 MiB    253 tensors     39.2 MiB   1.3% of bytes
+1-10 MiB    72 tensors    306.0 MiB   9.8% of bytes
+>10 MiB    109 tensors   2782.4 MiB  89.0% of bytes
