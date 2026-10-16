@@ -3616,3 +3616,51 @@ native change is small (raise the cap to 15 and pad `shares` to 16) and the work
 has made for that design: remote PCs take ids `laptop-2`, `laptop-3` and so on and the coordinator's own worker stays `laptop`, with a `managed` flag in the roster telling them apart; a roster may omit the
 coordinator's own worker; no abort-on-mixed-build option; an optional per-device layer weight that defaults to the memory budget and is not an automatic policy, because no per-device speed measurement exists to
 choose it from. Phone budgets cannot be sized from device RAM today: the apps log it locally and the coordinator never receives it. Nothing here is implemented.
+
+## F50 — No merged upstream change parallelizes loading across RPC endpoints; the closest candidates are a closed PR (#20062) that replaces the serial context loop F46 found and an open one (#26291) that parallelizes hashing, and the fast fork (Turboload) is CUDA-centric, on an older protocol and unchecked; none has run here, and where the phones' 36 s phases go is still unknown
+
+The operator asked whether patches of a "Turboload" kind, parallel RPC loading, exist upstream or in forks, and later supplied the project. Method and its limits are in
+`docs/evidence/f50-parallel-rpc-loading/README.md`: pages were read through a fetch tool that returns a small model's summary (**[fetched]**, secondhand); two PR diffs were downloaded and read by me
+(**[read]**); source of the pinned tree was read or measured here (**[verified here]**). The container cannot read `github.com/ggml-org` or `raw.githubusercontent.com`. Searches are US-only.
+
+**1. Upstream, as of 2026-10-15 [fetched].**
+
+| Item | State | What it does |
+|---|---|---|
+| PR #20062, "parallel model loading across GPU contexts" | closed unmerged by its author on 2026-07-24 after maintainer feedback (`std::thread` portability, untestable flag combinations, nobody to maintain it) | `-pl/--parallel-load N` / `LLAMA_ARG_PARALLEL_LOAD`: one thread per backend context |
+| PR #26291, "rpc: parallelize cached tensor hashing during model load" | open since 2026-07-29, ready since 08-08, rebased 09-19/20; no maintainer review visible | opt-in worker pool (`GGML_RPC_LOAD_THREADS`) that hashes large mmap-backed tensors concurrently; `set_tensor` transactions stay serialized; no protocol change. Authors report 1.5-2x on many-core hosts and 48% off a 318 GiB load |
+| Issue #25890, "model load serializes read + hash + dispatch on one host core" | closed "not planned" by the stale bot on 09-13; a request to reopen on 09-20 has no reply | the report that led to #26291; also says the server-side cache walk stays on one core |
+| Issue #16434, parallel loading across rpc-servers | closed by the stale bot 2025-11-19, nothing implemented | notes parallelism cannot help uncached loads, which are network-bound |
+| Issue #10095, local model copy | closed 2025-03-28 as done by the `-c` hash cache (#12496) | the origin of the cache we already carry |
+| PR #18626, "rpc: implement event and async backend APIs" | merged 2026-08-26 | one `rpc_dispatcher` thread per endpoint; no-reply commands |
+
+**2. Turboload [fetched; the code itself mostly not seen].** `luxemque/turboload.llama.cpp` is an archive (README, `PARALLEL_RPC_LOADING.md`, `benchmarks/`); the code is six commits on the branch `parallel-rpc-loading` of `luxemque/llama.cpp` (five on
+2026-04-24, one on 07-30; the commits list the author and Claude as contributors; the author says there will be no upstream PR; MIT).
+- **Mechanism:** a new `RPC_CMD_SET_TENSOR_FROM_FILE` makes the worker `pread` its own copy of the GGUF (path and offsets from the head); a worker read pool of width 8 with an ack-sender thread; a head-side read pool; async dispatch with a receiver thread per endpoint; a mutex around `ggml_backend_tensor_set`; CUDA pinned staging (`cudaHostAlloc`) on the rpc-server. Six optional env vars.
+- **Requirements:** patched rpc-servers (an old worker closes the socket on the unknown opcode), the model at the **same absolute path on every node**, `--no-mmap`, same build everywhere.
+- **Result (the author's, one data point, no run count, no tests described):** 318 GB Kimi-K2.6 Q2 across three NVIDIA GB10 workers on 200 GbE with local NVMe, cold load 701 s to 66 s. The write-up's own table puts **pinned staging alone at 701 s to about 114 s**, and that part needs CUDA workers.
+- **Base:** its header reads RPC protocol 4.1.0 and `GGML_OP_COUNT == 96`; ours is 7.0.0 and 101. The visible part of its `ggml-rpc.cpp` has its own `rpc_load_pipeline` and no `rpc_dispatcher`, so it appears to predate #18626 (merged 2026-08-26); its own base commit is not stated. About +1,650/-46 lines, in five files by the write-up and six by the compare page, mostly `ggml-rpc.cpp`.
+- **Correctness, from the visible client code:** the response to a from-file read carries `result` and `bytes_read` and no hash; the async path counts bytes before any reply arrives and does not check short reads; the sender and the receiver share one socket on the stated assumption that no sync RPC is concurrent. A `LLAMA_RPC_MODEL_ROOT` path guard exists but is optional. The server side was not seen.
+
+**3. What I checked on our pin (`4da6337`).**
+- **[verified here]** None of `parallel_load`, `GGML_RPC_LOAD_THREADS` or `SET_TENSOR_FROM_FILE` exists in the pinned `src/`, `ggml/` or `common/`. The pin has the dispatcher (`ggml-rpc.cpp:422`, in the pin with our patches applied) and protocol 7.0.0 (`ggml-rpc.h:9-11`), and the loader still walks the contexts serially (`src/llama-model.cpp:1937-1938`, one `load_all_data` per context): this is F46's serial walk.
+- **[read]** #20062's change is exactly that loop, replaced by `std::async` per context bounded by `LLAMA_ARG_PARALLEL_LOAD`, with the progress callback dropped on the parallel path and, in that version, parallel by default when there is more than one context. It touches five files and **does not apply** to the pin (`apply_check.txt`: `common/common.h`, `src/llama-model-loader.{cpp,h}`); a port would need the `load_tensors` hunk, a mutex around the mmap bookkeeping and an atomic progress counter.
+- **[read, verified here]** #26291's diff is 8,272 bytes in two files (`src/llama-model-loader.cpp`, `tools/rpc/README.md`) and **applies cleanly** to the patched pin. It skips tensors at or below 10 MiB; our `llama-cache.patch` sets the hash threshold to 1 MiB. Measured on `models/split-capacity.gguf` (`tensor_size_bands.out`): of 3,127.6 MiB of weights excluding `token_embd` (315.3 MiB, kept on the host), **89.0% of bytes are in 109 tensors above 10 MiB, 9.8% in 72 tensors between 1 and 10 MiB, 1.3% below 1 MiB**. So the pool would cover 89% of the bytes the RPC endpoints receive; the rest keeps the serial path, which is correct. (My earlier estimate of 11% from the model's dimensions was close but not the measurement.)
+
+**4. What each would do for us [reasoning; nothing measured].**
+- **#20062-style (overlap the endpoints):** the warm run's iPhone and Android phases are 34.9 s and 37.6 s one after the other (F48), on separate flash, so overlap could save up to the smaller. The cold path is bounded by each phone's Wi-Fi at about 6 MB/s; overlap helps only if the two links are independent (unknown, F46) and the Python relay, a single thread at 27 MB/s to a local worker, keeps up.
+- **#26291 (parallel hashing):** helps only as far as hashing is a large share of the 98 s, which is unmeasured, and the laptop has two cores shared with the relay and its worker.
+- **Turboload's worker-side reads:** our hash cache is the equivalent and verifies every hit (F38). What differs is that in a warm run the laptop still reads and hashes every tensor before asking the phone. A saved per-tensor hash list on the laptop could skip that; this is **my idea, not Turboload's, and untested**. Its same-absolute-path rule does not fit phone app sandboxes, it has no integrity check, and `--no-mmap` is risky on a laptop whose free RAM bottomed at 89.2 MiB (F45; my inference).
+- **CUDA staging and the pread pools** target hardware we do not use or limits we have not shown.
+- **prima.cpp** (ICLR 2026) takes the other route: each device loads its own layers from a local file and prefetches in a ring, with no weight upload. It is a different system, not a patch.
+
+**Verified:**
+- **[verified here]** the pin's missing code, the dispatcher, the protocol version, the serial loop lines; the `git apply --check` results (`apply_check.txt`); the tensor size bands.
+- **[read]** both PR diffs, in full for #26291 and in its main hunks for #20062.
+
+**Not verified:**
+- **Anything about the Turboload code beyond the first part of one file**, and every number in its write-up; I built and ran none of these patches, here or on a device.
+- **Where the phones' 34.9 s and 37.6 s go**: hashing on the laptop, the phone's read and verify, the tunnel round trips, or the relay. Without that, no candidate can be ranked. The page summaries may also be wrong; I did not reread the issue threads beyond them.
+- Whether concurrent `tensor_set` calls to different endpoints are safe with our two carried patches; whether the phones' links are independent.
+
+**Consequence:** F46 called the loader "upstream structure and not fixable from the kit". That is true of configuration, but a small patch can change it: we already carry two, and #20062's `load_tensors` hunk is the right size. No merged upstream change does it, so it would be a third carried patch needing a port. Before porting anything, **measure inside the loader**. The planned instrumentation change (graph-start stamp, `SC_STATS` timestamps) should also record the laptop's hash time, the time of each tensor set, and each endpoint's busy intervals. The rule it sets: hashing a large share points to #26291; endpoint phases dominating with independent links points to a #20062-style port; neither points to the phones' own read and verify, which none of these touches. Nothing here is implemented.

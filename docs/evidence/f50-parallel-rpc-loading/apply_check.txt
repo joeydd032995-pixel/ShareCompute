@@ -1,0 +1,12 @@
+# git apply --check of the two fetched PR diffs against the pinned tree (working tree = pin + native/split patches)
+# pin: 4da6337767f973e2b4d0797e5b323d77d8565e4a
+## PR 26291 (sha256 b032ec9c5a04df1852dc8bb4fb047b1b3b10a202ec5bf7a263b2c229d3a054c8, 8272 bytes)
+exit 0: applies cleanly
+## PR 20062 (sha256 48ccb9dfa635bc2d93c5764ba57289687e5edb7118b6133b1c692ef34a43510e, 10560 bytes)
+error: patch failed: common/common.h:453
+error: common/common.h: patch does not apply
+error: patch failed: src/llama-model-loader.cpp:552
+error: src/llama-model-loader.cpp: patch does not apply
+error: patch failed: src/llama-model-loader.h:9
+error: src/llama-model-loader.h: patch does not apply
+exit 1
