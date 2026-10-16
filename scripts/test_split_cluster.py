@@ -646,4 +646,64 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await close(writer)
 
+class PlainLocalTests(unittest.IsolatedAsyncioTestCase):
+    """The loopback-only listener for workers inside the coordinator process (F51): data channels only, still token-checked."""
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory(); directory = Path(self.temp.name) / 'pairing'
+        self.config = init_cluster(directory, '127.0.0.1', 0)
+        self.relay = Relay(self.config, directory); await self.relay.start(); await self.relay.start_local()
+        self.pair = dict(self.config['nodes']['iphone'], port=self.relay.port)
+    async def asyncTearDown(self):
+        await self.relay.stop(); self.temp.cleanup()
+    async def plain(self):
+        return await asyncio.open_connection('127.0.0.1', self.relay.local_port)
+    async def test_listens_on_loopback_only(self):
+        host = self.relay.local_server.sockets[0].getsockname()[0]
+        self.assertEqual(host, '127.0.0.1')
+    async def test_control_connection_refused_without_tls(self):
+        reader, writer = await self.plain(); output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            await send(writer, {'kind': 'control', 'node': 'iphone', 'token': self.pair['token'],
+                                'runtime': REV, 'budget_mib': self.pair['budget_mib'], 'platform': 'ios', 'simulator': False})
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+        await close(writer)
+        self.assertEqual(self.relay.nodes, {})
+        self.assertIn('Rejected iphone control connection from 127.0.0.1: Control connections require TLS', output.getvalue())
+    async def test_bad_token_refused(self):
+        reader, writer = await self.plain(); output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            await send(writer, {'kind': 'data', 'node': 'iphone', 'token': 'incorrect', 'channel': '0' * 32})
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+        await close(writer)
+        self.assertIn('Authentication failed', output.getvalue()); self.assertNotIn('incorrect', output.getvalue())
+    async def test_unsolicited_data_refused(self):
+        reader, writer = await self.plain()
+        with contextlib.redirect_stdout(io.StringIO()):
+            await send(writer, {'kind': 'data', 'node': 'iphone', 'token': self.pair['token'], 'channel': '0' * 32})
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+        await close(writer)
+    async def test_bytes_cross_in_both_directions_and_are_counted(self):
+        control_reader, control_writer = await paired_connection(self.pair)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                await send(control_writer, {'kind': 'control', 'node': 'iphone', 'token': self.pair['token'],
+                                            'runtime': REV, 'budget_mib': self.pair['budget_mib'], 'platform': 'ios', 'simulator': False})
+                self.assertTrue((await receive(control_reader))['ok'])
+            host, port = self.relay.nodes['iphone']['endpoint'].split(':')
+            probe_reader, probe_writer = await asyncio.open_connection(host, int(port))
+            opened = await receive(control_reader)
+            self.assertEqual(opened['op'], 'open')
+            data_reader, data_writer = await self.plain()
+            await send(data_writer, {'kind': 'data', 'node': 'iphone', 'token': self.pair['token'], 'channel': opened['channel']})
+            self.assertTrue((await receive(data_reader))['ok'])
+            payload = os.urandom(300_000)
+            probe_writer.write(payload); await probe_writer.drain()
+            self.assertEqual(await asyncio.wait_for(data_reader.readexactly(len(payload)), 5), payload)
+            data_writer.write(b'reply'); await data_writer.drain()
+            self.assertEqual(await asyncio.wait_for(probe_reader.readexactly(5), 5), b'reply')
+            self.assertEqual(self.relay.nodes['iphone']['bytes'], [len(payload), 5])
+            await close(probe_writer); await close(data_writer)
+        finally:
+            await close(control_writer)
+
 if __name__ == '__main__': unittest.main()

@@ -155,6 +155,7 @@ class Relay:
         self.last_tick = time.monotonic(); self.worst_stall = 0.0; self.stall_at = 0.0; self.monitor = None
         self.stalls = []  # every stall this run, so a report can show whether the laptop kept up (F44)
         self.events = None  # set by the coordinator; the relay logs joins and faults through it
+        self.local_server = None; self.local_port = None  # plain loopback listener for workers in this process (F51)
 
     def fail(self, reason):
         if not self.closing:
@@ -168,6 +169,15 @@ class Relay:
                                                  ssl_handshake_timeout=10, limit=16384)
         self.port = self.server.sockets[0].getsockname()[1]
         self.monitor = asyncio.create_task(self.watch_loop())
+
+    async def start_local(self):
+        """Listen on loopback without TLS, for data channels of workers running inside this process.
+
+        A worker in the coordinator process reaches the relay over 127.0.0.1, so TLS protects nothing there
+        and costs one encryption and one decryption of every byte on the single thread that also reads every
+        phone's heartbeat (F51). Only data channels are accepted, and each still presents its node token."""
+        self.local_server = await asyncio.start_server(lambda r, w: self.accept(r, w, plain=True), '127.0.0.1', 0, limit=16384)
+        self.local_port = self.local_server.sockets[0].getsockname()[1]
 
     async def watch_loop(self):
         """Notice when this process stops running, which makes every device look silent at once."""
@@ -186,7 +196,7 @@ class Relay:
         now = time.monotonic()
         return max(now - self.last_tick - .5, self.worst_stall if now - self.stall_at < 30 else 0.0)
 
-    async def accept(self, reader, writer):
+    async def accept(self, reader, writer, plain=False):
         task = asyncio.current_task(); self.tasks.add(task); self.writers.add(writer)
         node = kind = None; control = False
         try:
@@ -197,6 +207,7 @@ class Relay:
             token = hello.get('token')
             if not isinstance(token, str) or not hmac.compare_digest(token, pair['token']): raise ValueError('Authentication failed')
             if kind == 'control':
+                if plain: raise ValueError('Control connections require TLS')
                 if node in self.nodes: raise ValueError('Duplicate worker')
                 if hello.get('runtime') != REV or hello.get('budget_mib') != pair['budget_mib']:
                     raise ValueError('Runtime or memory budget mismatch')
@@ -265,7 +276,7 @@ class Relay:
     async def stop(self):
         self.closing = True
         if self.monitor: self.monitor.cancel(); await asyncio.gather(self.monitor, return_exceptions=True)
-        listeners = [self.server, *self.listeners]
+        listeners = [self.server, *self.listeners, *([self.local_server] if self.local_server else [])]
         for listener in listeners: listener.close()
         # Python 3.12+ waits for accepted connections in Server.wait_closed().
         # Disconnect external phone controls before waiting for the TLS server.
@@ -306,7 +317,11 @@ class Worker:
         self.proc = None; self.channels = set(); self.data_failed = asyncio.Event()
 
     async def tunnel(self, channel):
-        remote = await paired_connection(self.pair)
+        # A worker inside the coordinator process is given the relay's plain loopback port (F51).
+        if self.pair.get('local_port'):
+            remote = await asyncio.wait_for(asyncio.open_connection('127.0.0.1', self.pair['local_port'], limit=16384), 10)
+        else:
+            remote = await paired_connection(self.pair)
         try:
             await send(remote[1], {'kind': 'data', 'node': self.pair['node'], 'token': self.pair['token'], 'channel': channel})
             if not (await receive(remote[0])).get('ok'): raise ConnectionError('Data authentication rejected')
@@ -502,6 +517,9 @@ def validate_proof(baseline, result, log, records, before, physical, build=None)
 async def run_coordinator(a):
     out = a.out.resolve(); out.mkdir(parents=True, exist_ok=False)
     local = a.mode != 'coordinator'; physical = not local
+    # Workers in this process that skip TLS on their data channels. Off unless asked for: it trades a loopback-only
+    # listener without TLS for about 5% of load time on loopback (F51).
+    plain_nodes = set(getattr(a, 'plain_local', None) or [])
     directory = out / 'pairing' if local else a.config.resolve().parent
     config = init_cluster(directory, '127.0.0.1', 0, a.budgets) if local else json.loads(a.config.read_text())
     relay = Relay(config, directory); workers = {}; tasks = []; fault = None
@@ -531,6 +549,7 @@ async def run_coordinator(a):
         with timeline.span('startup'):
             check_binary(a.worker_binary); check_binary(a.probe_binary)
             await relay.start()
+            if plain_nodes: await relay.start_local()
         async def watch_memory():
             """Headroom on a 4 GB laptop, which F43 did not record.
 
@@ -562,6 +581,7 @@ async def run_coordinator(a):
         timeline.mark('probe_build', build=build_stamp.short_commit(probe_build))
         for node in (NODES if a.mode == 'loopback' else ('laptop', 'android') if a.mode == 'simulator' else ('laptop',)):
             pair = dict(config['nodes'][node]); pair['host'] = '127.0.0.1'; pair['port'] = relay.port
+            if node in plain_nodes: pair['local_port'] = relay.local_port
             cache_dir = getattr(a, 'cache_dir', None)
             worker = Worker(pair, a.worker_binary, out / f'{node}-worker.log', cache_dir and Path(cache_dir) / node)
             workers[node] = worker
@@ -702,6 +722,8 @@ def main():
         p.add_argument('--join-timeout', type=float, default=180); p.add_argument('--timeout', type=float, default=300)
         p.add_argument('--budgets', nargs=3, type=int, default=[768,2048,1536])
         p.add_argument('--kill-worker', choices=NODES if mode == 'loopback' else ['android'] if mode == 'simulator' else [], default=None)
+        p.add_argument('--plain-local', nargs='*', choices=NODES, default=[], metavar='NODE',
+                       help='Workers this process starts that reach the relay without TLS, over a loopback-only listener.')
         p.add_argument('--cache-dir', type=Path, default=None,
                        help='Give each worker this process starts a weight cache under DIR/<node>. Phones manage their own.')
     a = parser.parse_args()
