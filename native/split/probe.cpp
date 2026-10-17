@@ -4,6 +4,7 @@
 #include "nlohmann/json.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <set>
@@ -41,6 +42,16 @@ int main(int argc, char ** argv) {
             fprintf(stderr, "SC_DEVICE %zu %s\n", i, ggml_backend_dev_name(devices.back()));
         }
         devices.push_back(nullptr);
+        // Load the endpoints' weights at the same time (llama-parallel-load.patch). An SC_PARALLEL_LOAD already
+        // set in the environment wins, so a run can be pinned either way; the config key is the default.
+        if (!getenv("SC_PARALLEL_LOAD")) {
+            const char * mode = cfg.value("parallel_load", true) ? "1" : "0";
+#ifdef _WIN32
+            _putenv_s("SC_PARALLEL_LOAD", mode);
+#else
+            setenv("SC_PARALLEL_LOAD", mode, 0);
+#endif
+        }
         auto params = llama_model_default_params();
         params.n_gpu_layers = endpoints.empty() ? 0 : 999;
         params.split_mode = LLAMA_SPLIT_MODE_LAYER;

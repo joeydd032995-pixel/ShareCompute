@@ -1,0 +1,32 @@
+{
+  "serial": {
+    "tokens": [
+      12095,
+      13,
+      1084,
+      374,
+      279,
+      7772,
+      3283,
+      304
+    ],
+    "text": " Paris. It is the largest city in",
+    "wall_s": 4.1,
+    "said_parallel": false
+  },
+  "parallel": {
+    "tokens": [
+      12095,
+      13,
+      1084,
+      374,
+      279,
+      7772,
+      3283,
+      304
+    ],
+    "text": " Paris. It is the largest city in",
+    "wall_s": 3.7,
+    "said_parallel": true
+  }
+}

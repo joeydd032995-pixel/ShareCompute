@@ -3664,3 +3664,49 @@ The operator asked whether patches of a "Turboload" kind, parallel RPC loading, 
 - Whether concurrent `tensor_set` calls to different endpoints are safe with our two carried patches; whether the phones' links are independent.
 
 **Consequence:** F46 called the loader "upstream structure and not fixable from the kit". That is true of configuration, but a small patch can change it: we already carry two, and #20062's `load_tensors` hunk is the right size. No merged upstream change does it, so it would be a third carried patch needing a port. Before porting anything, **measure inside the loader**. The planned instrumentation change (graph-start stamp, `SC_STATS` timestamps) should also record the laptop's hash time, the time of each tensor set, and each endpoint's busy intervals. The rule it sets: hashing a large share points to #26291; endpoint phases dominating with independent links points to a #20062-style port; neither points to the phones' own read and verify, which none of these touches. Nothing here is implemented.
+
+
+## F51 — On loopback the 3B load is serial and 68-78% of it is the laptop waiting on the workers, not hashing; loading the endpoints at the same time cuts the full gate's split_generation by about 31% with equal tokens, and the change is now a third carried patch that ThreadSanitizer finds clean
+
+F50 ended with a rule: measure inside the loader before porting anything. This finding is that measurement, the patch it pointed to, and its checks. Everything ran on this container (x86_64 Linux, 4 cores shared by every process) on loopback, with three workers at the real budgets (768, 2048, 1536 MiB), the phones' two with a hash cache, and the 3B Q8_0 model. Evidence is in `docs/evidence/f51-parallel-load/`.
+
+**1. Where the load goes [measured].** A timer around the three steps of `ggml_backend_rpc_buffer_set_tensor` (the hash on the laptop, the hash-check round trip, the full send; `set-tensor-timing.diff`, applied only to a scratch build):
+
+| | load wall | hashing on the laptop | hash-check round trip (the laptop waiting on the worker) | sending |
+|---|---|---|---|---|
+| warm | about 28 s | 4.4 s (16%) | 22.0 s (78%) | 1.2 s |
+| cold | about 45 s | 4.4 s (10%) | 29.6 s (68%) | 9.7 s |
+
+The per-call times sum to the load wall time within 5% in both, so the load is serial end to end, which is F46's mechanism seen from inside. Warm, the round trip is each worker reading its cached file and re-hashing it before replying (F38's check); cold, it is the wait behind earlier no-reply uploads queued on that endpoint's dispatcher (`ggml-rpc.cpp:469-518`: a `send` that expects a reply waits for everything queued before it). So #26291 (parallel client hashing) is bounded by about 4 s here, and F50's other candidate, overlapping the endpoints, is the one that applies.
+
+**2. The change.** One thread per remote context in `llama_model_base::load_tensors`, with these guards, each from reading `load_all_data` (`src/llama-model-loader.cpp:1493-1790`): only when tensors come from the mmap (the file path shares one seek and read position); host-buffer contexts load first and serially (they update `mmaps_used` and the mlock state); `size_done` is atomic and the final unmap runs once (`unmapped.exchange(true)`); the progress callback is called by one thread at a time through a mutex wrapper with a shared cancel flag. The last guard exists because llama.cpp installs its own dot-printing callback whenever none is set (`src/llama.cpp:412-426`), so "no callback" is never true; my first version assumed it was, and `verify_parallel_load.py` failed on its marker line, which is how I found out. Each endpoint has its own dispatcher thread and queue, so `send` is safe from several threads even for one endpoint. Off with `SC_PARALLEL_LOAD=0`; `sc-split-probe` turns it on by default (`parallel_load` in its config, or an `SC_PARALLEL_LOAD` already in the environment, wins). It is `native/split/llama-parallel-load.patch`, third in `PATCHES`.
+
+**3. What it does [measured, loopback].**
+
+| Run (3B, 16 tokens, full coordinator gate, `PASS` against `pinned-reference` every time, text identical, no loop stalls) | split_generation |
+|---|---|
+| `SC_PARALLEL_LOAD=0` | 50.1 s, 48.0 s |
+| default (parallel) | 34.3 s, 33.1 s |
+
+About 31% less. The experiment version before the patch measured 47.6 s serial and 31.6 s parallel in the same gate, and 25-33 s against 12 s warm and 33-46 s against 17.5 s cold when the probe alone is timed. The three uploads, which started 6 to 19 s after one another, now start within a second of each other. The gain is below the 41-52% ceiling because three workers and the relay share four cores.
+
+**4. The relay [measured; PR #48].** A single asyncio thread did TLS at about 140-146 MiB/s however many streams there were (a threaded bridge was not better with three), which matches F46's 27 MB/s on the slower laptop. Letting only the laptop's own worker skip TLS (`--plain-local laptop`, opt-in) gained about 5% (34.5/34.8 s to 33.1/32.5 s); skipping it for every worker, an upper bound only, gained about 22% (27.4/26.3 s).
+
+**5. Checks on the patch.**
+- `scripts/verify_parallel_load.py` runs the same three-worker split with the switch off and on and requires equal tokens and the log line `loading 3 remote contexts in parallel` only in the parallel run. It passes on the proof model with the normal build and with a ThreadSanitizer build of the same sources (no race report; a race would exit 66).
+- Negative control: with `size_done` made a plain `size_t` in the ThreadSanitizer tree, the same run reports `data race` at `llama-model-loader.cpp:1750` and exits 66. The tool can see this class of race here, and the patch's atomic is what removes it.
+- The three patches apply in order to a clean checkout of the pin and give the tree that was built.
+
+**Verified:**
+- `python3 scripts/verify_parallel_load.py --bin-dir /tmp/claude-0/sc-build/bin --model models/split-proof.gguf`: `VERIFIED parallel loading gives the same tokens as serial loading, and the switch is live`; the same with `--bin-dir /tmp/claude-0/sc-tsan/bin` under `TSAN_OPTIONS="halt_on_error=0 exitcode=66"`.
+- The four gate reports in `docs/evidence/f51-parallel-load/gate-reports/` (`ser-1`, `ser-2`, `def-1`, `def-2`), each `PASS`, each with every component on one commit.
+- `python3 scripts/test_split_cluster.py` 79 tests and `python3 scripts/test_split_launcher.py` 13 tests pass; `python3 scripts/validate-agents.py` passes.
+
+**Not verified:**
+- **Nothing ran on a physical device**, and the phones' own 35-38 s warm phases (F48) are not visible from loopback. Whether the two phones' Wi-Fi links are independent decides the cold gain on hardware and is still unknown (F46). Estimate only, no run behind it: F48's warm load was 98 s, made of 34.9 s (iPhone), 37.6 s (Android) and 21 s (laptop) one after the other; with independent links the load would approach the longest of them, about 38 s, a saving near 55 s of 140.
+- **Android, iOS and Windows builds of the patch.** It is plain C++ (`std::async`, `std::mutex`, `getenv`; `_putenv_s` on Windows in the probe) and CI builds each, but only the Linux build has run here.
+- **ThreadSanitizer saw the probe process on the 0.5B model only.** The 3B model under ThreadSanitizer and the workers' own processes were not examined (the patch does not change the worker). Other callers of `load_all_data` (`llama-cli`, `llama-server`) were not run.
+- **Timings are two to four runs per condition on a machine whose cold runs varied (an earlier uninstrumented cold load took 70.9 s against 48.2 s instrumented, cause unknown).** The 31% is a rough figure. Hash-check round trips on the phones were not timed.
+- **The worker's re-hash of every cache hit (F38)** is still 78% of the warm load on loopback and is untouched; parallel loading hides it behind the other endpoints but does not shorten the slowest one.
+
+**Consequence:** Loading the endpoints at the same time is now part of the runtime and on by default in the probe, so F46's "not fixable from the kit" is settled the other way: a third carried patch fixes it. It adds a patch to carry across every pin bump (it touches `llama-model.cpp` and the loader), and `SC_PARALLEL_LOAD=0` is the switch back. The next costs, in order of what loopback shows: the slowest single endpoint (warm, the worker re-hashing its cache file on every hit), and then the relay (PR #48). The physical gain should be measured on the next device run before it is quoted: report `SC_PARALLEL_LOAD=0` against default on the same cache state.

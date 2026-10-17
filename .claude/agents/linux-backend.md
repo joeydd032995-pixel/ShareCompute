@@ -13,7 +13,7 @@ Read `CLAUDE.md` first, then F25, F33, F35, F36, F37 and F38 in `findings.md`.
 
 - `native/split/**`: `worker.cpp` and `worker.h` (`sc_worker_run(port, budget, threads, cache_dir)`,
   the loopback-only RPC listener), `worker-main.cpp`, `probe.cpp` (the bounded generation the coordinator
-  runs), `llama-budget.patch`, `llama-cache.patch`, `llama-revision.txt` and `CMakeLists.txt`.
+  runs), `llama-budget.patch`, `llama-cache.patch`, `llama-parallel-load.patch`, `llama-revision.txt` and `CMakeLists.txt`.
 - `scripts/build_split_runtime.py`: one CMake entry point for `desktop`, `android`, `ios` and
   `ios-simulator`.
 
