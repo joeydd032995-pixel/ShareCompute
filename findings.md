@@ -3710,3 +3710,13 @@ About 31% less. The experiment version before the patch measured 47.6 s serial a
 - **The worker's re-hash of every cache hit (F38)** is still 78% of the warm load on loopback and is untouched; parallel loading hides it behind the other endpoints but does not shorten the slowest one.
 
 **Consequence:** Loading the endpoints at the same time is now part of the runtime and on by default in the probe, so F46's "not fixable from the kit" is settled the other way: a third carried patch fixes it. It adds a patch to carry across every pin bump (it touches `llama-model.cpp` and the loader), and `SC_PARALLEL_LOAD=0` is the switch back. The next costs, in order of what loopback shows: the slowest single endpoint (warm, the worker re-hashing its cache file on every hit), and then the relay (PR #48). The physical gain should be measured on the next device run before it is quoted: report `SC_PARALLEL_LOAD=0` against default on the same cache state.
+
+
+### F51 addendum — CI built the patch on Linux, Windows, Android and both iOS targets, and ran `verify_parallel_load.py` on Linux and Windows; the physical gain is still unmeasured
+
+On the pushed commit `1839960` (PR #48) all 14 checks passed. What that adds to F51's **Not verified** list, and what it leaves:
+
+- **Now verified [CI logs, job 117259316762 and 117259316836]:** `desktop (ubuntu-24.04)` and `desktop (windows-latest)` each built the three patches and ran `python scripts/verify_parallel_load.py` on the 0.5B proof model, ending `VERIFIED parallel loading gives the same tokens as serial loading, and the switch is live` with the same eight token ids as here (Linux: serial 2.0 s, parallel 1.8 s; Windows: parallel 3.9 s). So `_putenv_s` in the probe and the `std::async` loader change compile and behave on MSVC. `android`, `ios (ios)` and `ios (ios-simulator)` built the patched runtime; the simulator job also runs the split.
+- **Still not verified:** every other item in F51's list stands. In particular nothing ran on a physical device, whether the phones' links overlap is unknown, ThreadSanitizer saw only the probe on the 0.5B model, and the CI timings (about 2 s loads of a 0.5B model on a shared runner) say nothing about the 3B model's gain.
+
+**Consequence:** the "builds on other platforms" caveat in F51 and in `CLAUDE.md` is closed; the physical measurement (`SC_PARALLEL_LOAD=0` against default on the same cache state) is the remaining step before the gain is quoted for the operator's devices.
