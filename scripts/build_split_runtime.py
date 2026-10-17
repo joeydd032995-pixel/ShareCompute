@@ -17,7 +17,8 @@ def run(*args, cwd=None):
     subprocess.run([str(x) for x in args], cwd=cwd, check=True)
 
 # Applied in order; each is a diff against the tree the previous ones produce.
-PATCHES = [ROOT / 'native/split/llama-budget.patch', ROOT / 'native/split/llama-cache.patch']
+PATCHES = [ROOT / 'native/split/llama-budget.patch', ROOT / 'native/split/llama-cache.patch',
+           ROOT / 'native/split/llama-parallel-load.patch']
 
 def patched_tree(source, patches):
     """The tree HEAD becomes with these patches applied, built in a scratch index."""

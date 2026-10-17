@@ -34,9 +34,11 @@ KV, and compute buffers; code, graph metadata, TLS, and the laptop's non-RPC all
 are additional. Model sizes and layer counts do not produce perfectly balanced bytes.
 
 All binaries use llama.cpp revision
-`4da6337767f973e2b4d0797e5b323d77d8565e4a` with two repository patches, applied in order by
-`scripts/build_split_runtime.py`: `native/split/llama-budget.patch` (buffer budgets and counters)
-and `native/split/llama-cache.patch` (the weight cache below).
+`4da6337767f973e2b4d0797e5b323d77d8565e4a` with three repository patches, applied in order by
+`scripts/build_split_runtime.py`: `native/split/llama-budget.patch` (buffer budgets and counters),
+`native/split/llama-cache.patch` (the weight cache below) and `native/split/llama-parallel-load.patch`
+(the endpoints' weights load at the same time instead of one after the other; `SC_PARALLEL_LOAD=0` turns it off,
+and `scripts/verify_parallel_load.py` checks it).
 CPU-only execution avoids dependence on incompatible device GPU runtimes.
 
 ## Weight cache

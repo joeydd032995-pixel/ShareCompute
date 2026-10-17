@@ -1,0 +1,53 @@
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -733,17 +733,39 @@
+     return size > HASH_THRESHOLD && tensor->buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
+ }
+ 
++// MEASUREMENT ONLY (F51): per-endpoint time spent in the three steps of a weight upload.
++struct sc_load_stat { double hash_ms = 0, hashrt_ms = 0, send_ms = 0, first_ms = -1, last_ms = 0; uint64_t n_hash = 0, n_send = 0, n_hit = 0, b_hash = 0, b_send = 0; };
++struct sc_load_all {
++    std::mutex mu; std::unordered_map<const void *, sc_load_stat> by; std::vector<const void *> order;
++    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
++    double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); }
++    sc_load_stat & get(const void * k) { if (!by.count(k)) order.push_back(k); return by[k]; }
++    ~sc_load_all() {
++        int i = 0;
++        for (auto k : order) { auto & s = by[k];
++            fprintf(stderr, "SC_LOAD ep=%d hash_ms=%.0f hashrt_ms=%.0f send_ms=%.0f first_ms=%.0f last_ms=%.0f n_hash=%llu n_hit=%llu n_send=%llu mib_hashed=%.1f mib_sent=%.1f\n",
++                    i++, s.hash_ms, s.hashrt_ms, s.send_ms, s.first_ms, s.last_ms, (unsigned long long) s.n_hash, (unsigned long long) s.n_hit,
++                    (unsigned long long) s.n_send, s.b_hash / 1048576.0, s.b_send / 1048576.0); }
++    }
++};
++static sc_load_all g_sc_load;
++
+ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
+     rpc_tensor rpc_tensor = serialize_tensor(tensor);
+     uint8_t cache_flag = 0;
++    double t_begin; { std::lock_guard<std::mutex> l(g_sc_load.mu); t_begin = g_sc_load.now_ms(); auto & s = g_sc_load.get(ctx->dispatcher.get()); if (s.first_ms < 0) s.first_ms = t_begin; }
+     if (rpc_use_hash_cache(tensor, size)) {
+         auto request = std::make_shared<rpc_msg_set_tensor_hash_req>();
+         request->tensor = rpc_tensor;
+         request->offset = offset;
++        double th0; { std::lock_guard<std::mutex> l(g_sc_load.mu); th0 = g_sc_load.now_ms(); }
+         request->hash = fnv_hash((const uint8_t*)data, size);
++        double th1; { std::lock_guard<std::mutex> l(g_sc_load.mu); th1 = g_sc_load.now_ms(); }
+         rpc_msg_set_tensor_hash_rsp response;
+         ctx->dispatcher->send(RPC_CMD_SET_TENSOR_HASH, request, sizeof(*request), &response, sizeof(response));
++        double th2; { std::lock_guard<std::mutex> l(g_sc_load.mu); th2 = g_sc_load.now_ms();
++            auto & s = g_sc_load.get(ctx->dispatcher.get()); s.hash_ms += th1 - th0; s.hashrt_ms += th2 - th1; s.n_hash++; s.b_hash += size; s.last_ms = th2; if (response.result) s.n_hit++; }
+         if (response.result) {
+             // the server has the same data, no need to send it
+             return;
+@@ -752,8 +774,10 @@
+         cache_flag = 1;
+     }
+     size_t input_size;
++    double ts0; { std::lock_guard<std::mutex> l(g_sc_load.mu); ts0 = g_sc_load.now_ms(); }
+     auto input = serialize_set_tensor(rpc_tensor, cache_flag, offset, data, size, input_size);
+     ctx->dispatcher->send(RPC_CMD_SET_TENSOR, input, input_size);
++    { std::lock_guard<std::mutex> l(g_sc_load.mu); double ts1 = g_sc_load.now_ms(); auto & s = g_sc_load.get(ctx->dispatcher.get()); s.send_ms += ts1 - ts0; s.n_send++; s.b_send += size; s.last_ms = ts1; }
+ }
+ 
+ static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
