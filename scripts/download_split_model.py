@@ -13,12 +13,23 @@ SHA256 = '74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db'
 # same model (1,890 MiB on one worker) fits the Android budget alone and would prove nothing (F40).
 CAPACITY_URL = 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/7dabda4d13d513e3e842b20f0d435c732f172cbe/qwen2.5-3b-instruct-q8_0.gguf'
 CAPACITY_SHA256 = '6dcc22694c8654b045ec40bbe350212b88893fd9010e8474bae5b19a43578ba1'
+# Speed-comparison models (not capacity proofs: each fits the Android budget alone). Both are pinned to a
+# Hugging Face commit. Their reference tokens come from a single-process run of the pinned runtime on Linux
+# x86-64, because neither the 4 GB laptop nor a quick local baseline can run them unsplit.
+CODER_URL = 'https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/f86cb2c1fa58255f8052cc32aeede1b7482d4361/qwen2.5-coder-1.5b-instruct-q8_0.gguf'
+CODER_SHA256 = '507de59046601282ba768a9789900e6ccf60ed93ddf346730b7c68eb0715bc47'
+Q4_URL = 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/7dabda4d13d513e3e842b20f0d435c732f172cbe/qwen2.5-3b-instruct-q4_k_m.gguf'
+Q4_SHA256 = '626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d'
 PROFILES = {
     'proof': {'url': URL, 'sha256': SHA256, 'bytes': 491400032, 'label': 'test model', 'file': 'model.gguf',
-              'probe_timeout': 300},
+              'probe_timeout': 300, 'reference': None},
     # The first run uploads about 2,580 MiB to the phones, so the generation is given an hour.
     'capacity': {'url': CAPACITY_URL, 'sha256': CAPACITY_SHA256, 'bytes': 3616088480, 'label': '3B capacity model',
-                 'file': 'model-capacity.gguf', 'probe_timeout': 3600},
+                 'file': 'model-capacity.gguf', 'probe_timeout': 3600, 'reference': 'reference-capacity.json'},
+    'coder': {'url': CODER_URL, 'sha256': CODER_SHA256, 'bytes': 1894532160, 'label': 'Coder 1.5B Q8_0 model',
+              'file': 'model-coder.gguf', 'probe_timeout': 1800, 'reference': 'reference-coder.json'},
+    'qwen3b-q4': {'url': Q4_URL, 'sha256': Q4_SHA256, 'bytes': 2104932768, 'label': '3B Q4_K_M model',
+                  'file': 'model-qwen3b-q4.gguf', 'probe_timeout': 1800, 'reference': 'reference-qwen3b-q4.json'},
 }
 
 def digest(path):

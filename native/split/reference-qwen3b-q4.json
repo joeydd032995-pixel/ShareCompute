@@ -1,0 +1,27 @@
+{
+  "profile": "qwen3b-q4",
+  "model_sha256": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
+  "runtime": "4da6337767f973e2b4d0797e5b323d77d8565e4a",
+  "prompt": "The capital of France is",
+  "tokens": 16,
+  "token_ids": [
+    12095,
+    13,
+    576,
+    6722,
+    315,
+    17689,
+    374,
+    24081,
+    13,
+    576,
+    6722,
+    315,
+    15344,
+    374,
+    21718,
+    13
+  ],
+  "text": " Paris. The capital of Spain is Madrid. The capital of Italy is Rome.",
+  "source": "sc-split-probe with no endpoints (whole model in one process), greedy, Linux x86-64, 2026-10-22."
+}

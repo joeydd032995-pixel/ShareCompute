@@ -1,0 +1,27 @@
+{
+  "profile": "coder",
+  "model_sha256": "507de59046601282ba768a9789900e6ccf60ed93ddf346730b7c68eb0715bc47",
+  "runtime": "4da6337767f973e2b4d0797e5b323d77d8565e4a",
+  "prompt": "The capital of France is",
+  "tokens": 16,
+  "token_ids": [
+    12095,
+    13,
+    12095,
+    374,
+    279,
+    7772,
+    3283,
+    304,
+    9625,
+    323,
+    374,
+    279,
+    12752,
+    11,
+    6955,
+    11
+  ],
+  "text": " Paris. Paris is the largest city in France and is the cultural, economic,",
+  "source": "sc-split-probe with no endpoints (whole model in one process), greedy, Linux x86-64, 2026-10-22."
+}

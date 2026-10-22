@@ -42,6 +42,8 @@ def main():
     command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--name','ShareCompute','--paths',str(ROOT/'scripts'),'--distpath',str(ROOT/'dist'),'--workpath',str(ROOT/'build/pyinstaller'),'--specpath',str(ROOT/'build'),
         '--add-data',str(ROOT/'native/split/llama-revision.txt')+':native/split',
         '--add-data',str(ROOT/'native/split/reference-capacity.json')+':native/split',
+        '--add-data',str(ROOT/'native/split/reference-coder.json')+':native/split',
+        '--add-data',str(ROOT/'native/split/reference-qwen3b-q4.json')+':native/split',
         '--add-data',str(stage/'phone-downloads.json')+':.', '--add-data',str(licenses)+':licenses',
         '--add-data',str(stage/'build-stamp.json')+':.']
     for name in ('sc-rpc-worker','sc-split-probe'):command+=['--add-binary',str(a.bin_dir.resolve()/(name+suffix))+':bin']
