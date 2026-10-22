@@ -64,6 +64,14 @@ class ReferenceTests(unittest.TestCase):
         ref = load_reference(shipped, models.CAPACITY_SHA256, PROMPT, 16)
         self.assertEqual(len(ref['token_ids']), 16)
 
+    def test_every_pinned_profile_ships_a_reference_for_its_own_model(self):
+        import download_split_model as models
+        native = Path(__file__).resolve().parents[1] / 'native/split'
+        for name, profile in models.PROFILES.items():
+            if not profile['reference']: continue
+            ref = load_reference(native / profile['reference'], profile['sha256'], PROMPT, 16)
+            self.assertEqual(len(ref['token_ids']), 16, name)
+
 class SilenceTests(unittest.TestCase):
     def test_the_two_causes_give_opposite_advice(self):
         laptop = describe_silence('iphone', 14); phone = describe_silence('iphone', 0)

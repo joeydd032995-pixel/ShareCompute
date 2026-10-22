@@ -27,6 +27,14 @@ If Windows asks about network access, permit the launcher on your private networ
 
 Open the laptop launcher, click **Start test**, then scan/connect both phone apps. The model is reused. Each phone keeps the model data it was sent, so a repeat test with the same model uploads only a small fraction over Wi-Fi and starts much sooner; the first test after installing, clearing, or changing the model still uploads everything. On the real devices, the second run sent the phones 24.4 MiB instead of 325.0 MiB and finished in 18 s instead of 70 s ([evidence](evidence/physical-weight-cache/)). Both apps show how much is cached and have a **Clear cached model data** button. If the iPhone signature expired, refresh it in SideStore first. No development environment is required. Tap Connect again after a test disconnects.
 
+## Speed-comparison models (Coder 1.5B Q8_0, 3B Q4_K_M)
+
+Two more choices in the dashboard exist to compare **speed**, not capacity: **Coder 1.5B Q8_0 (1.9 GB)** (Qwen2.5-Coder 1.5B Instruct) and **3B Q4_K_M (2.1 GB)** (Qwen2.5-3B Instruct). Either fits the Android budget on its own, so `report.json` correctly says `"exceeds_largest_worker_budget": false`; the split still spreads the layers across all three devices by the usual budgets (768 / 2048 / 1536 MiB).
+
+- Pick the model next to the Wi-Fi address and press **Start test**. The first run uploads about 1.8 GB (Coder) or 2 GB (3B Q4_K_M) to the phones; later runs reuse their cache.
+- The run is checked against tokens recorded in advance from a single-process run of the same runtime on Linux x86-64 (`native/split/reference-coder.json`, `reference-qwen3b-q4.json`). On the loopback rehearsal both passed with equal tokens (3 workers, 16 tokens). Q4_K_M and ARM CPUs can round differently, so a physical FAIL on tokens is possible; the report still keeps the timings.
+- Read the speed from `report.json`: `generation.decode_ms` for the 16 tokens. On the Linux loopback rehearsal (no network) decode took 3.9 s (Coder) and 7.1 s (3B Q4_K_M), so these models cannot reach 10 tok/s over Wi-Fi with the current split.
+
 ## The 3B capacity test
 
 The quick test uses a model that fits on any one device. The capacity test uses Qwen2.5-3B at Q8_0, which no single worker budget can hold (3,183 MiB needed; the largest budget is 2,048 MiB), so a PASS means the three devices computed something none of them could have run alone within these limits. It has passed twice on the operator's own laptop, Android phone and iPhone ([evidence](evidence/physical-3b-capacity/); the loopback rehearsal is [here](evidence/capacity-loopback/)). Allow about 8 minutes for the first run and 2–3 for later ones, once the phones have the weights cached.

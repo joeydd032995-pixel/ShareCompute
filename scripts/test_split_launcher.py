@@ -64,6 +64,16 @@ class ModelChoiceTests(unittest.TestCase):
             self.kit.start('192.168.1.2','capacity');self.kit.thread.join()
         self.assertEqual((self.kit.profile,self.kit.model_path.name),('capacity','model-capacity.gguf'))
 
+    def test_speed_models_keep_their_own_files_and_references(self):
+        import download_split_model as models
+        for choice, name in (('coder','model-coder.gguf'),('qwen3b-q4','model-qwen3b-q4.gguf')):
+            with self.subTest(choice):
+                with mock.patch.object(TestKit,'prepare_and_run'):
+                    self.kit.state['active']=False;self.kit.start('192.168.1.2',choice);self.kit.thread.join()
+                self.assertEqual((self.kit.profile,self.kit.model_path.name),(choice,name))
+                self.assertTrue(models.PROFILES[choice]['reference'])
+        self.assertEqual(len({p['file'] for p in models.PROFILES.values()}),len(models.PROFILES))
+
 class AddressTests(unittest.TestCase):
     def test_active_route_wins_over_virtual_adapters(self):
         # Wi-Fi on 10/8 must beat VirtualBox's host-only 192.168.56.1 and a WSL 172.x adapter.
