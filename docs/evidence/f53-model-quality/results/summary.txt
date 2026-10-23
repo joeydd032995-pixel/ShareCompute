@@ -1,0 +1,8 @@
+model                PPL bits/byte     KLD  top1%  MMLU%   HS%
+coder15b-q4km     13.900     0.907  0.6181   67.2   32.3  54.0
+coder15b-q8       13.476     0.896  0.5896   68.3    nan  55.0
+granite-q4km       7.601     0.826     nan    nan   36.0  73.5
+olmoe-q4km        12.346     0.813     nan    nan   41.3  81.0
+qwen15b-q4km      10.091     0.796  0.3861   73.8   37.3   nan
+qwen3b-q4km        8.887     0.752  0.0379   90.1   40.7  72.0
+qwen3b-q8          8.564     0.740     nan    nan   39.7  73.5

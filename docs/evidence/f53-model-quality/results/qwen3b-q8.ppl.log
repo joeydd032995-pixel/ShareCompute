@@ -1,0 +1,12 @@
+0.00.708.563 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.05.957.208 I cmn          init: llama threadpool init, n_threads = 4
+0.06.245.407 I 
+0.06.245.543 I system_info: n_threads = 4 (n_threads_batch = 4) / 4 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | AMX_INT8 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.06.245.622 I perplexity: saving all logits to /tmp/claude-0/-home-user-ShareCompute/bdd55be5-a93d-5763-88be-e46f2a15e093/scratchpad/qlab/out/ref.kld
+0.06.245.636 I perplexity: tokenizing the input ..
+0.06.353.457 I perplexity: tokenization took 107.805 ms
+0.06.353.626 I perplexity: calculating perplexity over 60 chunks, n_ctx=512, batch_size=2048, n_seq=4
+0.23.888.035 I perplexity: 17.39 seconds per pass - ETA 4.33 minutes
+[1]6.6800,[2]9.0795,[3]8.5735,[4]8.4344,[5]8.5135,[6]8.8035,[7]8.9033,[8]9.3732,[9]9.8763,[10]10.2358,[11]10.1458,[12]10.3133,[13]10.6938,[14]10.3484,[15]10.2152,[16]10.3821,[17]9.7863,[18]9.8326,[19]9.7255,[20]9.6648,[21]9.4077,[22]9.4122,[23]9.0450,[24]8.6104,[25]8.3914,[26]8.2109,[27]8.0029,[28]7.8704,[29]7.9386,[30]7.8736,[31]7.8200,[32]7.8199,[33]7.7193,[34]7.7507,[35]7.8296,[36]7.9154,[37]8.0237,[38]8.0828,[39]8.0278,[40]8.0914,[41]8.0840,[42]8.0450,[43]8.0881,[44]8.0658,[45]8.0764,[46]8.0769,[47]8.2288,[48]8.2958,[49]8.2660,[50]8.3210,[51]8.3538,[52]8.3595,[53]8.3840,[54]8.4545,[55]8.4480,[56]8.5022,[57]8.4705,[58]8.4886,[59]8.5296,[60]8.5641,
+4.20.894.993 I Final estimate: PPL = 8.5641 +/- 0.18232
+

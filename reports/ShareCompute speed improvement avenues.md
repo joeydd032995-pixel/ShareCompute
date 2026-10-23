@@ -107,3 +107,28 @@ E3, the x86 half of E4, E5 and the instrumentation for E1, E6 and E7 can all run
 Each lever in the source report optimises a term the measurements show is small: bytes of activations (0.5% of the token), idle pipeline stages (which only speculation or batching can fill), expert placement (a capacity trick the layer split already delivers) and makespan (a throughput objective). The term that is large, 0.3–0.6 s/token of compute and overhead, has never been timed, and the project's own build configuration is the cheapest suspect. Equally telling, the two most promising levers conflict: removing the logits (rank 3) and verifying several tokens at once (rank 6) both want control of the last link's output, so the order of work is forced, backend sampling first and a worker-side multi-row argmax only if speculation survives E5 and E6.
 
 A second pattern runs across the notes: most of the surviving gains, including compile flags, speculation, a Q4 file and an MoE model, can stop being bit-exact against the pinned token reference that the F37/F43 gate relies on, and backend sampling keeps tokens equal only if argmax ties break the same way. The gate, not the lever, is the hidden blocker. Rebuilding it around a same-build control run is the cheapest enabling work in the list, and it should land before the first optimisation does. Everything here rests on one 16-token prompt, one Wi-Fi network and three devices, so whichever lever survives its experiment still needs a longer run to be believed.
+
+## Follow-up (2026-10-22): what was measured after this report
+
+The report's ranking is unchanged and **nothing in it has run on a device**. Three things were added afterwards ([F52](../findings.md), [F53](../findings.md), [F54](../findings.md)).
+
+**1. The MoE and quality gap is now measured on CPU** (a Linux container, not the phones; [evidence](../docs/evidence/f53-model-quality/)). The MoE section above says no quality comparison against the dense 3B existed. One now does:
+
+| Model | Wikitext bits/byte | MMLU % | HellaSwag % | HumanEval (55 problems), chat template |
+|---|---|---|---|---|
+| Qwen2.5-3B Q8_0 (reference) | 0.740 | 39.7 | 73.5 | 24/26 on the first 26 (full run lost) |
+| Qwen2.5-3B Q4_K_M | 0.752 | 40.7 | 72.0 | not run |
+| Coder-1.5B Q4_K_M | 0.907 | 32.3 | 54.0 | 40/55 (72.7%) |
+| Coder-1.5B Q8_0 | 0.896 | not valid | 55.0 | 40/55 (72.7%) |
+| OLMoE-1B-7B Q4_K_M | 0.813 | 41.3 | 81.0 | 16/55 (29.1%) |
+| Granite 3.1 3B-A800M Q4_K_M | 0.826 | 36.0 | 73.5 | 24/55 (43.6%) |
+
+- Q8_0 to Q4_K_M costs the 3B about 4% perplexity (same top token 90.1% of the time).
+- OLMoE is a peer of the 3B on MMLU and HellaSwag but passes far fewer code problems, so the "small-active MoE through the existing layer split" variant above is a general-knowledge option, not a coding one.
+- The Coder 1.5B matches the 3B on code within the noise (about ±6.7 points at n = 55) while reading about a third of the bytes (1.1 GB against 3.3 GB), and is far behind on MMLU and HellaSwag.
+- Noise is about ±2.8 points on MMLU and ±3 on HellaSwag. MMLU here is zero-shot likelihood scoring, far below published values; compare models with each other only. Generation speeds on the container are not comparable across runs because its CPU changed between them.
+- An evaluation build compiled with `-march=native` produced garbage from the Coder Q8_0 file and later crashed with "Illegal instruction" on another host; builds with explicit AVX2 or AVX512+VNNI were correct. This is why the report's own compile-flag experiment (E4) should use explicit flags. Which build produced which row: the 3B Q8_0 reference, Coder Q4_K_M and Coder Q8_0 perplexity, MMLU and HellaSwag, and the raw code runs for the 3B Q8_0 and Coder Q4_K_M, came from the native build on the earlier host, where it generated sane output; the 3B Q4_K_M, OLMoE and Granite evaluations, every chat-template code run, and the Coder Q8_0 raw code run came from the AVX512+VNNI build. The two builds were not compared on the same file beyond the Coder Q8_0 check, and the KL divergences compare AVX512 runs against logits saved by the native build.
+
+**2. The test kit can now run two of these models on your devices** (F54, pull request #49). The dashboard offers **Coder 1.5B Q8_0 (1.9 GB)** and **3B Q4_K_M (2.1 GB)**, each checked against Linux-recorded reference tokens. A three-worker loopback split of each passes with equal tokens; decode with no network took 3.9 s (Coder, about 4 tok/s) and 7.1 s (3B Q4_K_M, about 2.2 tok/s) for 16 tokens. Neither is a capacity result. See the [quickstart](../docs/TEST-KIT-QUICKSTART.md).
+
+**3. What this means for the 10-20 tok/s goal.** Even with no network at all, both loopback decodes are below 5 tok/s, which agrees with the report's derived ceiling of about 3-5 tok/s for a layer split of a 3B model. A smaller or lower-bit model is a precondition, not a sufficient fix: the compute-side suspects in the report (per-node timing, the CPU compile flags) still decide how close a physical run gets. The unfinished measurements (3B Q8_0 full chat code run, 3B Q4_K_M code test, OLMoE Q3_K_M) are listed in F53.
