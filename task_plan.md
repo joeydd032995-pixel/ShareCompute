@@ -37,6 +37,13 @@ address space or a model larger than the three devices together.
    (PR #28), and closing a phone app mid-run (expect a clean, named FAIL).
 4. ~~**Roster.**~~ **Done 2026-10-07, by the owner's decision.** `windows-*`, `linux-*` and
    `android-*` are un-gated and now own the split's code. `docs/AGENT-OWNERSHIP.md` has the table.
+5. **Speed — open (F52, F53, F54).** The operator's target is 10-20 tok/s; the 3B Q8_0 split runs at about 1.2-1.4.
+   A layer split of that model tops out near 3-5 tok/s with no network (derived), so the target needs a smaller or
+   lower-bit model. In order: (a) physical runs of the new `coder` (Coder 1.5B Q8_0) and `qwen3b-q4` (3B Q4_K_M) kit
+   profiles, reading `generation.decode_ms`; (b) per-node compute timing and Wi-Fi round-trip measurement, neither
+   ever taken; (c) backend sampling on loopback through the F49 counting proxy (removes the 0.608 MB logits return);
+   (d) an A/B of the CPU compile flags (the phone builds log no ARM dotprod/i8mm; x86 AVX is forced off). Quality
+   cost of the smaller models is in F53. Nothing in this item has run on a device.
 
 See [the three-device setup and proof guide](docs/THREE-DEVICE-MODEL-SPLIT.md).
 `Sources/ShareComputeCore` remains unchanged and dependency-free. Historical MLX and

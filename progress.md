@@ -1038,3 +1038,12 @@ Operator asked for "Turboload"-style parallel RPC loading patches. No merged ups
 - Turboload (the operator's link) is a six-commit branch on an older protocol (4.1 against our 7.0), CUDA-centric, needs a local model copy at the same path, and shows no integrity check; its own table attributes most of its gain to CUDA pinned staging.
 - Page content came through a fetch tool's summaries (secondhand); the PR diffs were read directly. Nothing was built or run.
 - Next, unchanged: the instrumentation change (graph-start stamp, `SC_STATS` timestamps) gains loader timers (hash time, per-tensor set time, per-endpoint busy intervals) before any port.
+
+## 2026-10-22 — F52-F54: speed research, model-quality measurements, and two new kit profiles
+
+Operator target: 10-20 tok/s (the split runs at about 1.2-1.4). Merged as PR #49 (`ecaae8c`), docs brought up to date afterwards.
+
+- **F52 (research, nothing run on a device):** seven research notes and a report (`reports/ShareCompute speed improvement avenues.md`). Logits are 92.7% of per-token traffic, so activation quantization saves about 3.5 ms against about 101 ms for removing the logits return; the network explains only 29-41% of the loopback-to-physical gap; a 3B Q8_0 layer split tops out near 3-5 tok/s (derived). Codex's four review findings on the report were all valid and fixed (relative links, the 80 ms vs 240 ms latency cases, the n-gram speedup mixture, the draft-model break-even).
+- **F53 (measured in a Linux container):** 3B Q4_K_M +3.8% perplexity against Q8_0; OLMoE level on MMLU and HellaSwag but 29-33% on a 55-problem HumanEval subset against 58%; Coder 1.5B 72.7% with a chat template. Mistakes along the way, recorded so they are not repeated: ARC with a large batch ran out of memory (exit 137); two memory-heavy jobs at once restarted the container; a `-march=native` build gave `????` from the Coder Q8_0 file and later died with "Illegal instruction" on a different host; raw completion scored Granite 0/55 where its chat template scored 24/55. The container was recycled several times, killing background jobs; the queue was made resumable.
+- **F54 (loopback only):** `coder` and `qwen3b-q4` profiles, references recorded on Linux, three-worker loopback PASS for both, 80 and 14 unit tests OK, CI run 39830868791 green.
+- **Not done:** any physical run of the new profiles; per-node timing; Wi-Fi round trips; backend sampling over RPC; the 3B Q8_0 full chat HumanEval; the 3B Q4_K_M code test; OLMoE Q3_K_M.

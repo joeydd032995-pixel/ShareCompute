@@ -20,6 +20,8 @@ Android phone and iPhone** ([evidence](docs/evidence/physical-three-device/), F3
 run used a 0.5B model and 16 tokens. Nothing here claims a single shared 20 GB address space,
 or that a model larger than any one device has run.
 
+**Speed (2026-10-22).** The target is now 10-20 tokens/s, against about 1.2-1.4 on the 3B Q8_0 model. A research pass ([report](reports/ShareCompute%20speed%20improvement%20avenues.md), [F52](findings.md)) found that a layer split of that model tops out near 3-5 tok/s even with no network (derived), so reaching the target means a smaller or lower-bit model. [F53](findings.md) measured what that costs in quality on CPU (evidence in [docs/evidence/f53-model-quality/](docs/evidence/f53-model-quality/)), and the test kit now offers **Coder 1.5B Q8_0** and **Qwen2.5-3B Q4_K_M** ([F54](findings.md)), which pass a loopback split but have not run on the physical devices.
+
 See [the three-device setup and proof guide](docs/THREE-DEVICE-MODEL-SPLIT.md).
 `Sources/ShareComputeCore` remains unchanged and dependency-free. Historical MLX and
 simulation work below remains useful context, but does not meet this objective by itself.

@@ -92,6 +92,17 @@ end to end, and the second, with the phones' weight caches warm, 2.4 minutes.
 - **Reproduce on loopback:** `python3 scripts/download_split_model.py --profile capacity`, then
   `python3 scripts/verify_capacity.py --bin-dir build/desktop/bin --model models/split-capacity.gguf --out split-runs/capacity`.
 
+## Speed-comparison models
+
+Two more pinned profiles exist to compare **speed**, not capacity: `coder` (Qwen2.5-Coder-1.5B-Instruct Q8_0, 1.9 GB) and
+`qwen3b-q4` (Qwen2.5-3B-Instruct Q4_K_M, 2.1 GB). Each fits the Android budget alone, so neither is claimed as a capacity result
+(`exceeds_largest_worker_budget` is false); the split still places layers across all three devices by the usual budgets. Each is
+checked against tokens recorded from a single-process run on Linux (`native/split/reference-coder.json`,
+`reference-qwen3b-q4.json`). On a Linux loopback rehearsal both passed with equal tokens and decode took 3.9 s (Coder) and
+7.1 s (3B Q4_K_M) for 16 tokens with no network (`evidence/f54-speed-model-profiles/`, F54). **They have not run on the physical
+devices.** Reproduce with `python3 scripts/download_split_model.py --profile coder` (or `qwen3b-q4`) and `split_cluster.py loopback --reference`.
+Their quality against the 3B Q8_0 model is in F53 (`evidence/f53-model-quality/`).
+
 ## Get the builds
 
 1. Check out `main`.
