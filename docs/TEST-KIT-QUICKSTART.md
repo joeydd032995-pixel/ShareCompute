@@ -4,20 +4,22 @@ This kit is for a 4 GB laptop, 8 GB Android phone, and 8 GB iPhone. It splits on
 
 ## Downloads
 
-[Current build](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633) from `main` at commit `c7fb789`. Sign in to GitHub to download artifacts. Take the laptop kit and both phone apps from this same build.
+Everything is on one page: **[github.com/joeydd032995-pixel/ShareCompute/releases/latest](https://github.com/joeydd032995-pixel/ShareCompute/releases/latest)**. No GitHub sign-in, and the files do not expire. You never need the Actions tab.
 
-| Device | Download |
+| Device | File on that page |
 | --- | --- |
-| Windows 10/11 x86-64 laptop | [Standalone Windows kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660254154) |
-| Ubuntu 24.04+ x86-64 laptop | [Standalone Linux kit](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11661396530) |
-| Android 9+ ARM64 | [Worker APK](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660756347) |
-| iPhone iOS 16+ | [Worker IPA (requires signing)](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660432499) |
+| Windows 10/11 x86-64 laptop | `ShareCompute-Windows-laptop.zip` |
+| Ubuntu 24.04+ x86-64 laptop | `ShareCompute-Linux-laptop.zip` |
+| Android 9+ ARM64 phone | `ShareCompute-Android-phone.apk` |
+| iPhone iOS 16+ | `ShareCompute-iPhone-unsigned.ipa` (requires signing, see below) |
 
-Both packaged laptop executables passed real-model three-process inference tests in CI, and the iPhone app passed native inference in the iOS simulator. On 2026-10-07 the kit passed on a real Windows laptop, Android phone and iPhone ([evidence](evidence/physical-three-device/)), and on 2026-10-08 a build with the weight cache passed twice in a row on the same devices ([evidence](evidence/physical-weight-cache/)). The reports do not record the exact commit of the build the operator used. These artifacts expire on 2027-01-08; a later successful run of the same workflow on `main` produces replacements.
+Take the laptop file for your OS plus the two phone files; they come from the same build, which the release notes name by commit. The page is replaced on every successful build of `main`. (The release job is new and has not run yet; until the first successful `main` build the page does not exist, and the older artifact links in git history are the fallback.)
+
+Both packaged laptop executables passed real-model three-process inference tests in CI, and the iPhone app passed native inference in the iOS simulator. On 2026-10-07 the kit passed on a real Windows laptop, Android phone and iPhone ([evidence](evidence/physical-three-device/)), and on 2026-10-08 a build with the weight cache passed twice in a row on the same devices ([evidence](evidence/physical-weight-cache/)). The reports do not record the exact commit of the build the operator used. 
 
 ## First use
 
-1. Download the **ShareCompute-Windows** or **ShareCompute-Linux** kit from the linked successful build. Extract the artifact ZIP, then the kit ZIP inside it. Keep the entire `ShareCompute` folder together. Windows 10/11 x86-64: double-click `Start.cmd`. Linux x86-64 (Ubuntu 24.04 or newer): run `sh Start.sh` (if permissions were lost, first run `chmod +x ShareCompute`). Your browser opens the local dashboard.
+1. Download the laptop ZIP for your OS and extract it. Keep the entire `ShareCompute` folder together. Windows 10/11 x86-64: double-click `Start.cmd`. Linux x86-64 (Ubuntu 24.04 or newer): run `sh Start.sh` (if permissions were lost, first run `chmod +x ShareCompute`). Your browser opens the local dashboard.
 2. Use **phone downloads** in the dashboard, or the table above, to get the matching **Android APK** and **iPhone IPA**. On the iPhone, delete any older ShareCompute Worker first: the current app shows **Scan laptop QR** at the top, while an old build shows **Import iphone.json** instead. Android 9+ ARM64: extract the ZIP, install the APK, and permit installation from that download source if prompted. iPhone (iOS 16+): install the IPA through [SideStore](https://docs.sidestore.io/docs/installation/prerequisites). Its initial setup needs your laptop, Apple account, a USB cable, and the documented signing/device-trust/Developer Mode steps. Windows and Linux are supported; you do not need your own Mac. Free-account signing requires periodic refresh. This Apple step cannot be removed by the launcher. The IPA alone is not directly installable.
 3. On the iPhone, turn on Settings › Privacy & Security › Local Network › ShareCompute Worker. Put all three devices on the same Wi-Fi with no VPN on the phones. Click **Start test** on the laptop. The verified 469 MiB model downloads once. In each phone app, tap **Scan laptop QR** and scan that phone's code on the laptop screen. Allow camera, local-network and (on Android) notification access when asked. Keep the iPhone app open on screen until the result appears; iOS disconnects it in the background. The Android app keeps computing if you lock that phone or switch apps, and shows a "ShareCompute is computing" notification with a **Disconnect** button. Click **Download report**.
 

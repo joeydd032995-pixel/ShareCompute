@@ -169,3 +169,31 @@ jobs:
           path: |
             split-runs/packaged/self-test/report.json
             split-runs/packaged/self-test/*.log
+  release:
+    # One place to download everything: the "latest" release holds exactly four files,
+    # named by device. Public, no GitHub sign-in, and no 90-day expiry like artifacts.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [test-kit, android, ios]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: parts
+      - name: Collect the four device downloads
+        run: |
+          mkdir -p out
+          cp "$(find parts/ShareCompute-Windows -name 'ShareCompute-Windows.zip')" out/ShareCompute-Windows-laptop.zip
+          cp "$(find parts/ShareCompute-Linux -name 'ShareCompute-Linux.zip')" out/ShareCompute-Linux-laptop.zip
+          cp "$(find parts/split-android-apk -name '*.apk' | head -n1)" out/ShareCompute-Android-phone.apk
+          cp "$(find parts/split-ios -name 'ShareCompute-unsigned.ipa')" out/ShareCompute-iPhone-unsigned.ipa
+          ls -l out
+      - name: Publish rolling latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="Built from commit ${GITHUB_SHA} (run ${GITHUB_RUN_ID}). Take the laptop file for your OS plus the Android and iPhone files. The IPA is unsigned: install it with SideStore. See docs/TEST-KIT-QUICKSTART.md."
+          gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create latest out/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ShareCompute latest build" --notes "$NOTES"

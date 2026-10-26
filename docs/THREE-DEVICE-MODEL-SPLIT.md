@@ -95,7 +95,7 @@ end to end, and the second, with the phones' weight caches warm, 2.4 minutes.
 ## Get the builds
 
 1. Check out `main`.
-2. Open the [current Actions run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633)
+2. Easiest: take the four files from the [latest release](https://github.com/joeydd032995-pixel/ShareCompute/releases/latest) and skip the rest of this step. Otherwise open the [Actions run](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633)
    for commit `c7fb789` and download the matching
    [Windows](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11660254154),
    [Linux](https://github.com/joeydd032995-pixel/ShareCompute/actions/runs/38026778633/artifacts/11661396530),
