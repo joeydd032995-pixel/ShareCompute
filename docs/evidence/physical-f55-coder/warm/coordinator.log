@@ -1,0 +1,308 @@
+Joined laptop: windows budget=768 MiB build=06d7893
+Joined iphone: ios budget=1536 MiB build=06d7893
+Joined android: android budget=2048 MiB build=06d7893
+Checksummed the model: 1807 MiB in 12.0 s (150 MiB/s); the heartbeat limit is 10 s.
+  This took longer than the 10 s heartbeat limit. It is harmless now, because the checksum runs off the event loop, but it means this machine was slow enough that a kit older than PR #36 would have dropped every device here (F41).
+{
+  "status": "PASS",
+  "physical_devices": true,
+  "runtime": "4da6337767f973e2b4d0797e5b323d77d8565e4a",
+  "build": {
+    "coordinator": {
+      "commit": "06d789390f57bd2918ab1e21df8d08d436087f9a",
+      "short": "06d7893",
+      "dirty": false,
+      "source": "GITHUB_SHA",
+      "built_at": "2026-10-22T21:01:17Z",
+      "component": "kit"
+    },
+    "probe": "06d789390f57bd2918ab1e21df8d08d436087f9a",
+    "workers": {
+      "laptop": "06d789390f57bd2918ab1e21df8d08d436087f9a",
+      "iphone": "06d789390f57bd2918ab1e21df8d08d436087f9a",
+      "android": "06d789390f57bd2918ab1e21df8d08d436087f9a"
+    },
+    "app_builds": {
+      "laptop": "06d789390f57bd2918ab1e21df8d08d436087f9a",
+      "iphone": "06d789390f57bd2918ab1e21df8d08d436087f9a",
+      "android": "06d789390f57bd2918ab1e21df8d08d436087f9a"
+    },
+    "note": "Each worker reports the ShareCompute commit its native runtime was built from. `app_build` is the surrounding app or kit and is recorded but not compared, because a wrapper may legitimately be stamped differently from the library that computes.",
+    "commits": {
+      "06d789390f57bd2918ab1e21df8d08d436087f9a": [
+        "android-worker",
+        "coordinator",
+        "iphone-worker",
+        "laptop-worker",
+        "probe"
+      ]
+    },
+    "unknown": [],
+    "mismatch": false,
+    "complete": true
+  },
+  "scope": "physical-LAN",
+  "identity_note": "Platform and simulator flags are worker reports, not hardware attestation.",
+  "capacity_note": "Small-model splitting proof; does not prove a model larger than any one device fits.",
+  "model_checksum": {
+    "bytes": 1894532160,
+    "seconds": 12.016,
+    "mib_per_s": 150.4,
+    "heartbeat_limit_s": 10,
+    "exceeded_heartbeat_limit": true
+  },
+  "baseline_source": "pinned-reference",
+  "workers": {
+    "laptop": {
+      "layers": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "graph_calls": 16,
+      "peak_bytes": 311473152,
+      "bytes_to_worker": 298844200,
+      "bytes_from_worker": 124058,
+      "platform": "windows",
+      "simulator": false,
+      "peer": "127.0.0.1",
+      "budget_mib": 768,
+      "cache": {
+        "cache_hit_bytes": 0,
+        "cache_stored_bytes": 0,
+        "cache_rejected": 0
+      },
+      "run_allocated_bytes": 311473152
+    },
+    "android": {
+      "layers": [
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18
+      ],
+      "graph_calls": 16,
+      "peak_bytes": 663307264,
+      "bytes_to_worker": 11768720,
+      "bytes_from_worker": 124373,
+      "platform": "android",
+      "simulator": false,
+      "peer": "<android-lan-ip>",
+      "budget_mib": 2048,
+      "cache": {
+        "cache_hit_bytes": 635461632,
+        "cache_stored_bytes": 0,
+        "cache_rejected": 0
+      },
+      "run_allocated_bytes": 663307264
+    },
+    "iphone": {
+      "layers": [
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28
+      ],
+      "graph_calls": 16,
+      "peak_bytes": 741453824,
+      "bytes_to_worker": 118117849,
+      "bytes_from_worker": 9725258,
+      "platform": "ios",
+      "simulator": false,
+      "peer": "<iphone-lan-ip>",
+      "budget_mib": 1536,
+      "cache": {
+        "cache_hit_bytes": 578015232,
+        "cache_stored_bytes": 109879296,
+        "cache_rejected": 0
+      },
+      "run_allocated_bytes": 741453824
+    }
+  },
+  "generation": {
+    "decode_ms": 10603.3479,
+    "ok": true,
+    "prefill_ms": 2314.4872,
+    "prompt_tokens": 5,
+    "text": " Paris. Paris is the largest city in France and is the cultural, economic,",
+    "token_ids": [
+      12095,
+      13,
+      12095,
+      374,
+      279,
+      7772,
+      3283,
+      304,
+      9625,
+      323,
+      374,
+      279,
+      12752,
+      11,
+      6955,
+      11
+    ],
+    "wall_ms": 63440.1265
+  },
+  "matches_baseline": true,
+  "model_sha256": "507de59046601282ba768a9789900e6ccf60ed93ddf346730b7c68eb0715bc47",
+  "capacity": {
+    "model_file_bytes": 1894532160,
+    "combined_run_allocated_bytes": 1716234240,
+    "largest_worker_budget_bytes": 2147483648,
+    "exceeds_largest_worker_budget": false
+  },
+  "phases": {
+    "total_ms": 85890.0,
+    "measured_ms": 85720.0,
+    "unaccounted_ms": 170.0,
+    "phases": [
+      {
+        "name": "startup",
+        "at_ms": 0.0,
+        "duration_ms": 156.0,
+        "ok": true
+      },
+      {
+        "name": "pairing_ready",
+        "at_ms": 156.0,
+        "duration_ms": null,
+        "ok": true
+      },
+      {
+        "name": "probe_build",
+        "at_ms": 172.0,
+        "duration_ms": null,
+        "ok": true,
+        "build": "06d7893"
+      },
+      {
+        "name": "await_workers",
+        "at_ms": 172.0,
+        "duration_ms": 8813.0,
+        "ok": true,
+        "joined": [
+          "android",
+          "iphone",
+          "laptop"
+        ]
+      },
+      {
+        "name": "model_checksum",
+        "at_ms": 9015.0,
+        "duration_ms": 12016.0,
+        "ok": true,
+        "bytes": 1894532160,
+        "mib_per_s": 150.4
+      },
+      {
+        "name": "load_reference",
+        "at_ms": 21031.0,
+        "duration_ms": 0.0,
+        "ok": true
+      },
+      {
+        "name": "split_generation",
+        "at_ms": 21031.0,
+        "duration_ms": 63922.0,
+        "ok": true
+      },
+      {
+        "name": "settle_counters",
+        "at_ms": 84968.0,
+        "duration_ms": 813.0,
+        "ok": true
+      },
+      {
+        "name": "upload:android",
+        "at_ms": 25453.0,
+        "duration_ms": 49281.0,
+        "ok": true,
+        "parent": "split_generation",
+        "resolution_ms": 297.0,
+        "first_step": 196929,
+        "first_step_share": 0.017,
+        "to_worker": 11768720
+      },
+      {
+        "name": "upload:laptop",
+        "at_ms": 25547.0,
+        "duration_ms": 21859.0,
+        "ok": true,
+        "parent": "split_generation",
+        "resolution_ms": 297.0,
+        "first_step": 2042013,
+        "first_step_share": 0.007,
+        "to_worker": 298844200
+      },
+      {
+        "name": "cache:android",
+        "at_ms": 26422.0,
+        "duration_ms": 38515.0,
+        "ok": true,
+        "parent": "split_generation",
+        "resolution_ms": 594.0,
+        "first_step": 29245440,
+        "first_step_share": 0.046,
+        "hit": 635461632,
+        "stored": 0
+      },
+      {
+        "name": "cache:iphone",
+        "at_ms": 28890.0,
+        "duration_ms": 42297.0,
+        "ok": true,
+        "parent": "split_generation",
+        "resolution_ms": 593.0,
+        "first_step": 252973056,
+        "first_step_share": 0.368,
+        "hit": 578015232,
+        "stored": 109879296
+      },
+      {
+        "name": "upload:iphone",
+        "at_ms": 30922.0,
+        "duration_ms": 38875.0,
+        "ok": true,
+        "parent": "split_generation",
+        "resolution_ms": 297.0,
+        "first_step": 845337,
+        "first_step_share": 0.007,
+        "to_worker": 118117849
+      }
+    ]
+  },
+  "host_memory": {
+    "at_start": {
+      "total_bytes": 4166377472,
+      "available_bytes": 1632317440
+    },
+    "min_available_bytes": 211447808,
+    "samples": 43
+  },
+  "loop_stalls": {
+    "count": 0,
+    "worst_seconds": 0.0,
+    "stalls": []
+  },
+  "event_log": "events.jsonl"
+}

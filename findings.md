@@ -3774,3 +3774,27 @@ Seven models were measured against Qwen2.5-3B-Instruct Q8_0 on a 4-core x86-64 L
 **Not verified:** nothing ran on a physical device. Whether ARM phone CPUs reproduce the Linux-recorded Q4_K_M tokens is unknown (F37's 0.5B Q4_K_M run did on hardware, but a different model); a physical FAIL on tokens would still keep the timings. The loopback decode is a floor, not the physical speed. The upload size to the phones (about 1.8-2 GB cold) is from file sizes, not a run.
 
 **Consequence:** the operator can pick either model in the dashboard and read `generation.decode_ms` from `report.json`. Their loopback floor is already about 2-4 tok/s before any network, so neither can reach 10-20 tok/s in the three-device split (F52).
+
+## F55 — On the physical devices the Coder 1.5B Q8_0 split passes with equal tokens but decodes at only about 1.5-1.6 tok/s, 2.6-2.7x slower than its own loopback floor, and the two phones now load at the same time
+
+Two back-to-back runs of the `coder` profile (F54) on the operator's laptop, Android phone and iPhone, kit commit `06d7893`, all five components on that one commit (`docs/evidence/physical-f55-coder/`). Both PASS against `native/split/reference-coder.json` with 16 equal tokens (" Paris. Paris is the largest city in France and is the cultural, economic,"). Layers 6 / 13 / 10, run-allocated 297 / 633 / 707 MiB of 768 / 2048 / 1536, `exceeds_largest_worker_budget` false (not a capacity result).
+
+| | cold | warm |
+|---|---|---|
+| wall (`generation.wall_ms`) | 223.9 s | 63.4 s |
+| prefill (5 tokens) | 2.9 s | 2.3 s |
+| decode (16 tokens) | 10.04 s (1.59 tok/s) | 10.60 s (1.51 tok/s) |
+| bytes sent to Android / iPhone | 647.3 / 696.1 MB | 11.8 / 118.1 MB |
+| total run | 252.8 s | 85.9 s |
+
+- **Decode is not faster warm, and the loopback floor was 3.9 s.** F54's loopback rehearsal decoded the same 16 tokens in 3,912.7 ms; the devices took 10.0-10.6 s, so the network and the phone CPUs add about 6.1-6.7 s, roughly 0.4 s a token. The 3B Q8_0 decoded at 0.73-0.85 s a token (F43), so halving the weights bought about 15-25%. Decode on this split is not weight-bound; what bounds it was not measured here. F52 predicted this shape (per-token logits return, per-hop latency), and this run neither confirms nor excludes that mechanism.
+- **The phones loaded concurrently, for the first time on hardware.** Cold `upload:android` ran 31.8-231.5 s and `upload:iphone` 42.0-235.0 s: 189.5 s of overlap in about 193 s. Warm: 25.5-74.7 s and 30.9-69.8 s, the iPhone's whole 38.9 s inside Android's window. F45 saw the phones loaded strictly one after the other (0.4 s and 0.0 s overlap); the build here carries `llama-parallel-load.patch` (F51, on by default in the probe).
+- **Concurrent did not mean twice as fast on the cold path.** Android took 3.2 MB/s and the iPhone 3.6 MB/s, 6.8 MB/s together, against the 6.1 MB/s F46 estimated for the iPhone alone. That is consistent with one shared bottleneck (the laptop's relay, its uplink or the router), not shown to be one.
+- **The laptop's own load was 21.0 s cold and 21.9 s warm**, matching F48's 21 s (its weights go through the relay and its worker has no cache). The warm phone phases still took 39-49 s for 12-118 MB sent, so the cached-weight path, not transfer, dominates there; where inside it is unattributed.
+- **The checksum ran over the heartbeat limit and the run passed.** `model_checksum` took 13.2 s and 12.0 s against the 10 s limit (`exceeded_heartbeat_limit: true`, 137 and 150 MiB/s); since F41 it runs off the event loop. The laptop's free RAM bottomed at 192 MiB cold and 202 MiB warm of 3,973.
+
+**Verified:** read from `docs/evidence/physical-f55-coder/{cold,warm}/report.json`: `status`, `matches_baseline`, `generation.{prefill_ms,decode_ms,wall_ms,token_ids}`, `workers.*`, `build`, `model_checksum`, `host_memory`, and the `upload:*` and `cache:*` spans in `phases` (start `at_ms` plus `duration_ms` for the overlap arithmetic). The floor is `docs/evidence/f54-speed-model-profiles/report-coder-loopback.json`. The apps' own logs in `phones/` show the same cache hit and stored totals (635,461,632 B).
+
+**Not verified:** one prompt, 16 tokens, one pair of runs, one Wi-Fi network; no repeat to give a spread. No A/B of parallel loading against `SC_PARALLEL_LOAD=0` on hardware, so the gain from it is unmeasured: the overlap is shown, the saving is not. The per-token cost was not split into network, relay, phone compute or logits return; no per-node compute timing, Wi-Fi RTT or uplink was measured. The shared-bottleneck reading of the 6.8 MB/s is an inference. Backend sampling over RPC and the ARM/x86 compile-flag questions from F52 were not exercised. The 3B Q4_K_M profile has not run on a device.
+
+**Consequence:** 10-20 tok/s is not reachable by shrinking the model alone: the 1.5B model is only about 15-25% faster than the 3B on the same devices, and the added 0.4 s a token over loopback is the number to attack. The next cheap measurements are the ones F52 ranked: per-node compute timing and Wi-Fi RTT, then backend sampling over RPC, then the phone compile flags. A cold-path saving beyond what concurrency gave needs the shared bottleneck found first.
