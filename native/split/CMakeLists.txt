@@ -17,6 +17,21 @@ set(GGML_RPC ON CACHE BOOL "" FORCE)
 foreach(flag GGML_RPC_RDMA GGML_METAL GGML_ACCELERATE GGML_OPENMP GGML_NATIVE GGML_AVX GGML_AVX2 GGML_AVX512 GGML_FMA GGML_F16C GGML_BMI2 LLAMA_BUILD_COMMON LLAMA_BUILD_TESTS LLAMA_BUILD_EXAMPLES LLAMA_BUILD_TOOLS LLAMA_BUILD_SERVER LLAMA_BUILD_APP LLAMA_OPENSSL)
   set(${flag} OFF CACHE BOOL "" FORCE)
 endforeach()
+# Opt-in CPU instruction sets (speed experiment E4). The defaults above stay the portable baseline, so a
+# build that passes neither option is byte-for-byte what it was. Neither is enabled by CI or by the kit:
+# each changes accumulation order, so a build using one needs its own token reference (F52 report).
+#   -DSC_X86_AVX2=ON          AVX2 + FMA + F16C + BMI2 (x86-64 only; SIGILL on a CPU without them)
+#   -DSC_ARM_ARCH=armv8.2-a+dotprod   passed to ggml as GGML_CPU_ARM_ARCH (arm64 only)
+option(SC_X86_AVX2 "Enable AVX2, FMA, F16C and BMI2 in the CPU backend" OFF)
+set(SC_ARM_ARCH "" CACHE STRING "GGML_CPU_ARM_ARCH value, e.g. armv8.2-a+dotprod")
+if(SC_X86_AVX2)
+  foreach(flag GGML_AVX GGML_AVX2 GGML_FMA GGML_F16C GGML_BMI2)
+    set(${flag} ON CACHE BOOL "" FORCE)
+  endforeach()
+endif()
+if(SC_ARM_ARCH)
+  set(GGML_CPU_ARM_ARCH "${SC_ARM_ARCH}" CACHE STRING "" FORCE)
+endif()
 add_subdirectory("${LLAMA_SOURCE_DIR}" llama)
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/llama-revision.txt" SC_REVISION)
 # The ShareCompute commit, passed by build_split_runtime.py. "unknown" when built by hand, which is
