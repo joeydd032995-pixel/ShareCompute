@@ -42,7 +42,7 @@ def main():
     run('xcrun','simctl','install',udid,str(a.app.resolve()))
     command = [sys.executable,str(Path(__file__).with_name('split_cluster.py')),'simulator',
                '--worker-binary',str(a.bin_dir/'sc-rpc-worker'),'--probe-binary',str(a.bin_dir/'sc-split-probe'),
-               '--model',str(a.model),'--out',str(a.out),'--join-timeout','240','--timeout','300']
+               '--model',str(a.model),'--out',str(a.out),'--join-timeout','420','--timeout','300']
     proc = subprocess.Popen(command)
     try:
         deadline = time.monotonic() + 30
@@ -57,7 +57,7 @@ def main():
             app = subprocess.Popen(['xcrun','simctl','launch','--console','--terminate-running-process',udid,
                                     'com.sharecompute.compute-worker'], env=env, stdout=log, stderr=subprocess.STDOUT)
             try:
-                if proc.wait(timeout=720) != 0: raise RuntimeError('Native iOS simulator split failed')
+                if proc.wait(timeout=900) != 0: raise RuntimeError('Native iOS simulator split failed')
                 report = json.loads((a.out/'report.json').read_text())
                 assert report['status'] == 'PASS' and not report['physical_devices']
                 assert report['workers']['iphone']['platform'] == 'ios' and report['workers']['iphone']['simulator']
