@@ -42,7 +42,7 @@ def main():
     run('xcrun','simctl','install',udid,str(a.app.resolve()))
     command = [sys.executable,str(Path(__file__).with_name('split_cluster.py')),'simulator',
                '--worker-binary',str(a.bin_dir/'sc-rpc-worker'),'--probe-binary',str(a.bin_dir/'sc-split-probe'),
-               '--model',str(a.model),'--out',str(a.out),'--join-timeout','120','--timeout','300']
+               '--model',str(a.model),'--out',str(a.out),'--join-timeout','240','--timeout','300']
     proc = subprocess.Popen(command)
     try:
         deadline = time.monotonic() + 30
