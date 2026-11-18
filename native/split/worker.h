@@ -15,6 +15,9 @@ const char * sc_worker_revision(void);
 // The ShareCompute commit this worker was built from, or "unknown". Every platform links this
 // library, so one definition stamps the laptop, Android and iOS workers alike (F44).
 const char * sc_worker_build(void);
+// "compiled=<features> hardware=<features>": the CPU features this binary was built to use next to
+// the ones the CPU reports. A feature compiled in but absent from the hardware is a build that will crash.
+const char * sc_worker_cpu(void);
 #ifdef __cplusplus
 }
 #endif
