@@ -66,6 +66,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+          # PR branches get a read-only Gradle cache by default, so every run re-downloaded
+          # its dependencies from Maven Central and could hit its 429 rate limit.
+          cache-read-only: false
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: android-arm64
