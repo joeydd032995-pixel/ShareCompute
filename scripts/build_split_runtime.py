@@ -53,6 +53,8 @@ def main():
     p.add_argument('--out', type=Path)
     p.add_argument('--ndk', type=Path)
     p.add_argument('--jobs', type=int, default=2)
+    p.add_argument('--x86-avx2', action='store_true', help='experiment: AVX2/FMA/F16C/BMI2 (changes token reference)')
+    p.add_argument('--arm-arch', default='', help='experiment: GGML_CPU_ARM_ARCH, e.g. armv8.2-a+dotprod')
     a = p.parse_args()
     source = a.source.resolve(); out = (a.out or ROOT / 'build' / a.platform).resolve()
     if not source.exists():
@@ -68,6 +70,8 @@ def main():
     # Compiled into sc-worker-core, which every platform's worker links, so each one can name its build.
     flags = ['-DCMAKE_BUILD_TYPE=Release', f'-DLLAMA_SOURCE_DIR={source}',
              f"-DSC_BUILD_COMMIT={stamp['commit']}"]
+    if a.x86_avx2: flags.append('-DSC_X86_AVX2=ON')
+    if a.arm_arch: flags.append(f'-DSC_ARM_ARCH={a.arm_arch}')
     ios = a.platform.startswith('ios')
     if ios:
         sdk = 'iphoneos' if a.platform == 'ios' else 'iphonesimulator'

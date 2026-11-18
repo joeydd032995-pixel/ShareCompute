@@ -69,12 +69,21 @@ int main(int argc, char ** argv) {
         auto ctx_params = llama_context_default_params();
         ctx_params.n_ctx = 512; ctx_params.n_batch = 256; ctx_params.n_ubatch = 64;
         ctx_params.n_threads = 2; ctx_params.n_threads_batch = 2;
+        // Opt-in (speed experiment E3): sample greedily inside the compute graph on the device holding the
+        // output layer, so the 0.6 MB F32 logits row stays off the last link. The chain must outlive the
+        // context, and the same chain is the CPU sampler below, which returns the backend's token when
+        // there is one. EXPERIMENTAL in the pinned llama.cpp; token equality is the gate, not the speed.
+        bool backend_sampling = getenv("SC_BACKEND_SAMPLING") ? getenv("SC_BACKEND_SAMPLING")[0] == '1' : cfg.value("backend_sampling", false);
+        llama_sampler * chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+        llama_sampler_seq_config seq_sampler{0, chain};
+        if (backend_sampling) { ctx_params.samplers = &seq_sampler; ctx_params.n_samplers = 1; }
         auto ctx = llama_init_from_model(model, ctx_params); require(ctx != nullptr, "context creation failed");
         auto prefill = Clock::now();
         require(llama_decode(ctx, llama_batch_get_one(input.data(), n)) == 0, "prefill decode failed");
         double prefill_ms = ms(prefill);
         auto decode = Clock::now();
-        auto sampler = llama_sampler_init_greedy();
+        auto sampler = chain;
         std::vector<llama_token> output; std::string text;
         for (int i = 0; i < limit; ++i) {
             auto token = llama_sampler_sample(sampler, ctx, -1);
@@ -88,9 +97,9 @@ int main(int argc, char ** argv) {
         }
         require(!output.empty(), "empty generation");
         double decode_ms = ms(decode);
-        llama_sampler_free(sampler); llama_free(ctx); llama_model_free(model); llama_backend_free();
+        llama_free(ctx); llama_sampler_free(sampler); llama_model_free(model); llama_backend_free();
         json result = {{"ok",true},{"token_ids",output},{"text",text},{"prompt_tokens",n},
-                       {"prefill_ms",prefill_ms},{"decode_ms",decode_ms},{"wall_ms",ms(start)}};
+                       {"backend_sampling",backend_sampling},{"prefill_ms",prefill_ms},{"decode_ms",decode_ms},{"wall_ms",ms(start)}};
         printf("SC_RESULT %s\n", result.dump(-1, ' ', false, json::error_handler_t::replace).c_str());
         return 0;
     } catch (const std::exception & e) { fprintf(stderr, "SC_FAILURE %s\n", e.what()); return 1; }
