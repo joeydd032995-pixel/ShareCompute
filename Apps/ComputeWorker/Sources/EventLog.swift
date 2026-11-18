@@ -392,6 +392,7 @@ enum Diagnostics {
         #endif
         let native = BuildInfo.native
         let identity: LogFields = ["app_build": .text(BuildInfo.app), "native_build": .text(native),
+                "native_cpu": .text(String(cString: sc_worker_cpu())),
                 "generated_runtime_build": .text(BuildInfo.generated),
                 "runtime_revision": .text(runtimeRevision), "native_revision": .text(String(cString: sc_worker_revision())),
                 "ios": .text("\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"),
