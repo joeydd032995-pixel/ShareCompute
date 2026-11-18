@@ -183,7 +183,9 @@ final class EventLog {
     private static void appStart(Context app) {
         String nativeBuild = "unavailable", runtime = "unavailable";
         try { nativeBuild = WorkerSession.nativeBuild(); runtime = NativeWorker.revision(); } catch (Throwable t) { nativeBuild = runtime = "unavailable: " + t.getClass().getSimpleName(); }
-        event("app_start", "app_build", WorkerSession.appBuild(), "native_build", nativeBuild, "runtime", runtime, "pid", Process.myPid(),
+        String cpu = "unavailable";
+        try { cpu = NativeWorker.cpu(); } catch (Throwable t) { cpu = "unavailable: " + t.getClass().getSimpleName(); }
+        event("app_start", "app_build", WorkerSession.appBuild(), "native_build", nativeBuild, "native_cpu", cpu, "runtime", runtime, "pid", Process.myPid(),
               "version", versionName(app), "android", Build.VERSION.RELEASE, "sdk", Build.VERSION.SDK_INT,
               "device", Build.MANUFACTURER + " " + Build.MODEL, "abi", Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "unknown");
         memory(app, "start");

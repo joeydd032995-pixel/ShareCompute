@@ -12,6 +12,7 @@ int main(int argc, char ** argv) {
     if (argc != 4 && argc != 5) { fprintf(stderr, "usage: sc-rpc-worker PORT BUDGET_MIB THREADS [CACHE_DIR]\n"); return 2; }
     printf("SC_WORKER build=%s runtime=%s budget_mib=%s threads=%s cache=%s\n", sc_worker_build(),
            sc_worker_revision(), argv[2], argv[3], argc == 5 ? argv[4] : "off");
+    printf("SC_CPU %s\n", sc_worker_cpu());
     fflush(stdout);
     std::thread([] {
         for (;;) {
