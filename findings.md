@@ -3839,3 +3839,26 @@ Two back-to-back runs of the `coder` profile (F54) on the operator's laptop (AMD
 **Not verified:** one prompt, 16 tokens, one cold and one warm run, one Wi-Fi network, no repeat for a spread. No per-stage timing, so which device is slowest is unknown. `compiled=` is a compile-time macro and `hardware=` comes from the operating system, not from measuring instruction throughput. No dotprod, i8mm or AVX2 build has run on a device, so nothing here says how much they would gain, or whether tokens would stay equal (F52: kernel changes alter rounding, and the kit's PASS compares against a reference recorded on Linux x86). `events.jsonl` was not supplied. The unsigned `.ipa` was not opened. The evidence copies have LAN addresses and the Windows account name replaced (see its README); the originals were not edited otherwise.
 
 **Consequence:** the phones are the place to look first. They hold 23 of the 29 layers and their builds use none of the kernels their CPUs offer, which is the cheapest unmeasured suspect F52 named. Next: build opt-in ARM variants (`armv8.2-a+dotprod` for the Android phone, `armv8.6-a+i8mm+dotprod` for the iPhone) with a CI check that the instructions are in the binary, then A/B them on these devices; the kit's token gate may fail a variant on rounding alone, so read `generation` in a failed report before calling it broken. The laptop's AVX2 build is worth one A/B, with threads 1 versus 2. Per-stage timing (F52's E1) is still needed to say which device bounds the token time.
+
+
+## F57 — The Android NDK compiler and Apple's compiler both honour the ARM arch flag and put the dotprod and i8mm kernels into the CPU backend; the baseline has none, and the Android variant has no i8mm
+
+CI run 44450905094 on `51706cb` (PR #55), jobs `android-arm` and `ios-arm`, each building the pinned runtime twice (a baseline with no arch, then `armv8.2-a+dotprod` for Android and `armv8.6-a+i8mm+dotprod` for the iPhone) and running `scripts/check_split_arm_kernels.py` over `build/<platform>/lib/libggml-cpu.a`. Instruction counts in the disassembly:
+
+| build | `sdot` (dotprod) | `smmla` (i8mm) |
+|---|---|---|
+| Android baseline (NDK clang) | 0 | 0 |
+| Android `armv8.2-a+dotprod` | 995 | 0 |
+| iOS baseline (Apple clang) | 0 | 0 |
+| iOS `armv8.6-a+i8mm+dotprod` | 1,117 | 284 |
+
+- **The flag reaches both compilers.** Apple's compiler honours `-march=armv8.6-a+i8mm+dotprod` next to CMake's `-arch arm64`, which was the open question when the job was written.
+- **The Android variant has no `smmla`**, so it contains nothing the moto g 5G's CPU (dotprod, no i8mm, F56) cannot run. The checker fails a variant that has an instruction nobody asked for; it did not fire.
+- **The check discriminates.** Both baselines have zero of each instruction, so the counts are caused by the flag and not by hand-written assembly already in the library. The same five decisions were first exercised against aarch64 GCC cross-builds in this container (baseline 0/0; dotprod 1,020/0; i8mm 996/284), and under `qemu-user` the worker's `SC_CPU` line read `compiled=neon`, `neon,dotprod` and `neon,dotprod,i8mm` for the three builds, with `hardware=none` on a CPU without dotprod and `dotprod,i8mm,sve` on one with everything.
+- **Both variants were packaged**: `split-android-apk-dotprod` (1,368,916 B) and `split-ios-ipa-i8mm` (550,623 B) are artifacts of that run. The kit and the release do not use them.
+
+**Verified:** the `baseline:` and `variant:` lines and the `ok` from the two jobs' logs (`gh api .../actions/jobs/135314301904/logs` and `.../135314301973/logs`, filtered to those lines); both jobs and every other check on `51706cb` concluded `success` (`release` skipped by design). The GCC and `qemu-user` results are from this container, with the aarch64 cross-compiler and `qemu-user` installed here for the purpose.
+
+**Not verified:** nothing here says how fast either variant runs. No variant has been installed on a device. Whether `sdot`/`smmla` in the library means the Q8_0 matrix kernels use them on the path this model takes was not checked; the count says the instructions exist, not that they are hot. Whether tokens stay equal is unknown (F52: rounding), and the kit's token gate compares against a reference recorded on Linux x86. The variants crash on a CPU without the feature, so they are for the operator's two phones only. The counts come from a debug-free Release build disassembled whole, so they include every kernel in the archive.
+
+**Consequence:** the ARM A/B is ready to run. Install `split-android-apk-dotprod` and `split-ios-ipa-i8mm` over the current apps, run the same `coder` profile twice (cold then warm, as in F55 and F56), and compare `generation.decode_ms` and `prefill_ms` with F56's 9.83 s / 2.40 s cold and 10.12 s / 3.30 s warm. Each phone's log line `native_cpu` should now read `compiled=neon,dotprod ...` on Android and `compiled=neon,dotprod,i8mm ...` on the iPhone; if it still reads `compiled=neon` the wrong app is installed. If the report says FAIL, read `generation` first: a token mismatch with sane timings is the rounding caveat, not a broken build.
