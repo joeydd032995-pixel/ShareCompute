@@ -3798,3 +3798,44 @@ Two back-to-back runs of the `coder` profile (F54) on the operator's laptop, And
 **Not verified:** one prompt, 16 tokens, one pair of runs, one Wi-Fi network; no repeat to give a spread. No A/B of parallel loading against `SC_PARALLEL_LOAD=0` on hardware, so the gain from it is unmeasured: the overlap is shown, the saving is not. The per-token cost was not split into network, relay, phone compute or logits return; no per-node compute timing, Wi-Fi RTT or uplink was measured. The shared-bottleneck reading of the 6.8 MB/s is an inference. Backend sampling over RPC and the ARM/x86 compile-flag questions from F52 were not exercised. The 3B Q4_K_M profile has not run on a device.
 
 **Consequence:** 10-20 tok/s is not reachable by shrinking the model alone: the 1.5B model is only about 15-25% faster than the 3B on the same devices, and the added 0.4 s a token over loopback is the number to attack. The next cheap measurements are the ones F52 ranked: per-node compute timing and Wi-Fi RTT, then backend sampling over RPC, then the phone compile flags. A cold-path saving beyond what concurrency gave needs the shared bottleneck found first.
+
+
+## F56 — The first CPU reports from the physical devices show both phones' native runtimes built for plain NEON while their CPUs report dotprod (Android) and dotprod plus i8mm (iPhone), and the laptop's A9-9420e reports AVX2; the Coder 1.5B split passes twice at about 1.5 tok/s
+
+Two back-to-back runs of the `coder` profile (F54) on the operator's laptop (AMD A9-9420e, 2 cores, 3,973 MiB), Android phone (moto g 5G 2024) and iPhone (iPhone17,5), kit commit `936c69b` (the merge of PR #54, the first build that prints a CPU report), all five components on that one commit, `complete: true` (`docs/evidence/physical-f56-cpu-report/`). Both PASS against `native/split/reference-coder.json` with the same 16 tokens as F55 (" Paris. Paris is the largest city in France and is the cultural, economic,"), `matches_baseline: true`, 0 cache rejections. Layers 6 / 13 / 10 (0-5 laptop, 6-18 Android, 19-28 iPhone with the output layer).
+
+**What each device says it can run, against what its build was compiled for:**
+
+| device | `compiled=` (ggml's compile-time flags) | `hardware=` (the CPU, asked at run time) |
+|---|---|---|
+| laptop, A9-9420e | none | avx, avx2, fma, f16c, bmi2 |
+| Android, moto g 5G 2024 | neon | dotprod |
+| iPhone17,5 | neon | dotprod, i8mm |
+
+- **Neither phone's runtime uses an instruction its CPU has.** Both are built with no `-march`, which is what the pinned ggml does when `GGML_CPU_ARM_ARCH` is unset and `GGML_NATIVE` is off (`ggml/src/ggml-cpu/CMakeLists.txt`, the `if (GGML_CPU_ARM_ARCH)` branch). Q8_0 is the format with a dotprod path and an i8mm path in ggml's ARM kernels (from memory of the source; the kernels were not read for this finding).
+- **The laptop can run AVX2 builds.** All four hardware bits for an AVX2 build are present. The report says nothing about how fast Excavator runs them.
+- **PR #54's three untested detection paths all returned sane values on hardware**: the Windows `cpuid` + `XGETBV` path, Android's `AT_HWCAP`/`AT_HWCAP2` bits, and Apple's `sysctlbyname`. "Sane" means the values match what these chips are known to have; no bit was checked against a second source.
+
+| | cold | warm |
+|---|---|---|
+| wall (`generation.wall_ms`) | 231.4 s | 41.9 s |
+| prefill (5 tokens, one pass) | 2.40 s | 3.30 s |
+| decode (`decode_ms`) | 9.83 s | 10.12 s |
+| decode per step (`decode_ms` / 15) | 655 ms | 675 ms |
+| 16 / `decode_ms` (F55's convention) | 1.63 tok/s | 1.58 tok/s |
+| bytes sent to Android / iPhone | 647.3 / 696.1 MB | 11.8 / 8.2 MB |
+| total run | 275.3 s | 75.8 s |
+
+- **`decode_ms` covers 15 decode steps, not 16.** The first token comes from the prefill's logits; the loop samples 16 tokens but calls `llama_decode` only for the first 15 (`native/split/probe.cpp:88-99`). So 16 / `decode_ms` (F55's figure, 1.59 and 1.51 there) flatters the rate by about 7%; per step it is 655-675 ms, 1.5 tok/s. The two ways of counting agree with F55 to within what one pair of runs can show.
+- **Prefill costs 3.7-4.9 decode steps for 5 tokens in one pass.** If per-exchange latency dominated, one pass over 5 tokens should cost about one step, not about five. That leans toward the stages' compute rather than the round trips, but a first pass also pays one-off costs (graph reservation, first touch of weights), so this does not establish it.
+- **The iPhone returns 97.5% of what the workers send back**: 9,725,258 of 9,973,689 bytes, over 16 graph calls, 607,829 bytes each. That is one F32 logits row of the 151,936-token vocabulary (607,744 bytes) plus framing, from the device holding the output layer. It confirms F52's traffic split on hardware; its cost in time was not measured.
+- **The cache cut the wall time 81.9%** (231.4 s to 41.9 s) and the bytes sent 98.2% to Android and 98.8% to the iPhone, every cached byte a hit (635,461,632 and 687,894,528 B). On the warm run Android's cache phase took 23.0 s against the iPhone's 9.5 s for similar byte counts, 27.6 against 72.2 MB/s; why was not measured.
+- **The laptop's free RAM reached 52.6 MiB cold and 105.6 MiB warm** of 3,973 (F45 saw 89.2). Whether it paged was not measured.
+- **The 12.8 s checksum runs after the workers have joined**, and the wait for the operator to pair the phones before it was 29.4 s cold and 19.6 s warm (`phases`: `await_workers`, `model_checksum`). Nothing in the logs shows the checksum needs to wait for them.
+- **Both phones log `control_failed` after a PASS**: "The laptop closed the connection. Check the laptop dashboard for the test result." (`phones/iphone-events.jsonl:116,184`, `phones/android-log.jsonl:103,171`). It is the normal end of a run, but the label reads as an error.
+
+**Verified:** read from `docs/evidence/physical-f56-cpu-report/`: `cold|warm/report.json` (`status`, `matches_baseline`, `build`, `generation.*`, `workers.*.{layers,bytes_to_worker,bytes_from_worker,cache}`, `phases`, `host_memory`, `model_checksum`); `cold/laptop-worker.log:2` for the laptop's `SC_CPU` line; `phones/android-log.jsonl:1` and `phones/iphone-events.jsonl:1` for the phones' `native_cpu`; `cold/split.log` and `warm/split.log` for the layer assignment and the `SC_RESULT` that matches each report's `decode_ms`. Arithmetic: wall and byte reductions, per-step times, the 97.5% share and the per-graph byte count were computed from those fields. `probe.cpp:88-99` read from `main`. The existing 80 tests were not affected (no code changed by this finding).
+
+**Not verified:** one prompt, 16 tokens, one cold and one warm run, one Wi-Fi network, no repeat for a spread. No per-stage timing, so which device is slowest is unknown. `compiled=` is a compile-time macro and `hardware=` comes from the operating system, not from measuring instruction throughput. No dotprod, i8mm or AVX2 build has run on a device, so nothing here says how much they would gain, or whether tokens would stay equal (F52: kernel changes alter rounding, and the kit's PASS compares against a reference recorded on Linux x86). `events.jsonl` was not supplied. The unsigned `.ipa` was not opened. The evidence copies have LAN addresses and the Windows account name replaced (see its README); the originals were not edited otherwise.
+
+**Consequence:** the phones are the place to look first. They hold 23 of the 29 layers and their builds use none of the kernels their CPUs offer, which is the cheapest unmeasured suspect F52 named. Next: build opt-in ARM variants (`armv8.2-a+dotprod` for the Android phone, `armv8.6-a+i8mm+dotprod` for the iPhone) with a CI check that the instructions are in the binary, then A/B them on these devices; the kit's token gate may fail a variant on rounding alone, so read `generation` in a failed report before calling it broken. The laptop's AVX2 build is worth one A/B, with threads 1 versus 2. Per-stage timing (F52's E1) is still needed to say which device bounds the token time.

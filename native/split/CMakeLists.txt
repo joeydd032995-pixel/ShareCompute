@@ -18,8 +18,9 @@ foreach(flag GGML_RPC_RDMA GGML_METAL GGML_ACCELERATE GGML_OPENMP GGML_NATIVE GG
   set(${flag} OFF CACHE BOOL "" FORCE)
 endforeach()
 # Opt-in CPU instruction sets (speed experiment E4). The defaults above stay the portable baseline, so a
-# build that passes neither option is byte-for-byte what it was. Neither is enabled by CI or by the kit:
-# each changes accumulation order, so a build using one needs its own token reference (F52 report).
+# build that passes neither option is byte-for-byte what it was. The kit and the release never use them; CI builds
+# the ARM one as separate experimental apps (jobs android-arm and ios-arm). Each changes accumulation order, so a
+# build using one may need its own token reference (F52 report).
 #   -DSC_X86_AVX2=ON          AVX2 + FMA + F16C + BMI2 (x86-64 only; SIGILL on a CPU without them)
 #   -DSC_ARM_ARCH=armv8.2-a+dotprod   passed to ggml as GGML_CPU_ARM_ARCH (arm64 only)
 option(SC_X86_AVX2 "Enable AVX2, FMA, F16C and BMI2 in the CPU backend" OFF)
