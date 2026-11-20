@@ -45,7 +45,10 @@ def main():
                '--model',str(a.model),'--out',str(a.out),'--join-timeout','420','--timeout','300']
     proc = subprocess.Popen(command)
     try:
-        deadline = time.monotonic() + 30
+        # 30 s was the worst case of the coordinator's own startup (two 10 s binary queries) with
+        # no margin, and the run for 926e050 missed it on a runner whose `simctl install` alone
+        # took about 90 s. Startup is only waiting on a file here, so a long deadline costs nothing.
+        deadline = time.monotonic() + 120
         while not (a.out/'pairing-ready').exists():
             if proc.poll() is not None or time.monotonic() > deadline: raise RuntimeError('Coordinator did not start')
             time.sleep(.1)
