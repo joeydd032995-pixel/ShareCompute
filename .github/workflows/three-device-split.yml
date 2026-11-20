@@ -146,6 +146,90 @@ jobs:
             split-runs/ios-simulator/report.json
             split-runs/ios-simulator/*.log
 
+  # Speed experiment E4 (F56). The phones' runtimes are built for plain NEON while their CPUs report dotprod
+  # (the Android phone) and dotprod plus i8mm (the iPhone). These two jobs build the same apps with those
+  # instructions on, prove the instructions are in the binaries, and upload each app under its own name for an
+  # A/B on the operator's devices. Neither feeds the test kit or the release: a variant crashes on a CPU
+  # without the feature, and each changes rounding, so a variant run may fail the token gate on that alone.
+  android-arm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          cache-read-only: false
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: android-arm64
+          max-size: 500M
+      - run: python scripts/test_check_split_arm_kernels.py -v
+      - name: Build the baseline libraries (the control for the instruction check)
+        run: python scripts/build_split_runtime.py --platform android --ndk "$ANDROID_NDK_HOME" --jobs 3 --out build/android-base
+        env: {CMAKE_C_COMPILER_LAUNCHER: ccache, CMAKE_CXX_COMPILER_LAUNCHER: ccache}
+      - name: Build the dotprod libraries
+        run: python scripts/build_split_runtime.py --platform android --ndk "$ANDROID_NDK_HOME" --jobs 3 --arm-arch armv8.2-a+dotprod
+        env: {CMAKE_C_COMPILER_LAUNCHER: ccache, CMAKE_CXX_COMPILER_LAUNCHER: ccache}
+      - name: Prove the dotprod instructions are in the binary
+        run: >
+          python scripts/check_split_arm_kernels.py
+          --objdump "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump"
+          --baseline build/android-base/lib/libggml-cpu.a --variant build/android/lib/libggml-cpu.a --expect sdot
+      - name: Package Android app
+        run: |
+          export SC_NDK_VERSION="$(basename "$ANDROID_NDK_HOME")"
+          gradle -p Apps/AndroidWorker assembleDebug --no-daemon --max-workers=2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: split-android-apk-dotprod
+          path: Apps/AndroidWorker/app/build/outputs/apk/debug/*.apk
+
+  ios-arm:
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography==46.0.0
+      - run: python scripts/test_check_split_arm_kernels.py -v
+      - name: Build the baseline libraries (the control for the instruction check)
+        run: python scripts/build_split_runtime.py --platform ios --jobs 3 --out build/ios-base
+      - name: Build the dotprod and i8mm libraries
+        run: python scripts/build_split_runtime.py --platform ios --jobs 3 --arm-arch armv8.6-a+i8mm+dotprod
+      - name: Prove the dotprod and i8mm instructions are in the binary
+        run: |
+          OBJDUMP="xcrun llvm-objdump"
+          xcrun --find llvm-objdump >/dev/null 2>&1 || OBJDUMP="xcrun objdump"
+          python scripts/check_split_arm_kernels.py --objdump "$OBJDUMP" \
+            --baseline build/ios-base/lib/libggml-cpu.a --variant build/ios/lib/libggml-cpu.a --expect sdot smmla
+      - name: Generate Xcode project
+        run: |
+          command -v xcodegen || brew install xcodegen
+          export SC_NATIVE_DIR="$PWD/build/ios"
+          xcodegen generate --spec Apps/ComputeWorker/project.yml
+      - name: Build native iOS application
+        run: xcodebuild -project Apps/ComputeWorker/ComputeWorker.xcodeproj -scheme ComputeWorker -configuration Release -sdk iphoneos -derivedDataPath build/app ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned device app
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/app/Build/Products/Release-iphoneos/ComputeWorker.app build/ipa/Payload/
+          cd build/ipa
+          zip -qr ../ShareCompute-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: split-ios-ipa-i8mm
+          path: build/ShareCompute-unsigned.ipa
+
   test-kit:
     needs: [desktop, android, ios]
     strategy:
